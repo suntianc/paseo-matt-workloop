@@ -34,8 +34,6 @@
 
 ![Paseo workloop：需求共识、Direct 或 Full 路线、执行、独立审查、串行集成与交付](docs/assets/workloop.svg)
 
-流程图采用 Excalidraw 手绘风格；可下载 [可编辑源文件](docs/assets/workloop.excalidraw)，在 [Excalidraw](https://excalidraw.com) 中打开。
-
 1. **澄清并确认需求。** 编排者与用户明确目标、范围和验收方式，再共同选择 Direct 或 Full 路线。
 2. **准备任务并确认。** Direct 用一张带 `Scope` 和验收命令的 ticket 处理边界明确的小改动；Full 先形成 spec，再拆分带依赖关系的 tickets。用户确认后才启动 run。
 3. **隔离执行。** 执行者在各自的 worktree 中实现任务、自检并提交。Full 可按依赖和并发预算启动多个执行者；编排者接收完成通知并协调问题。

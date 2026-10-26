@@ -34,8 +34,6 @@ Upstream skills remain unchanged. Workloop-specific behavior lives in the local 
 
 ![Paseo workloop: shared requirements, Direct or Full route, execution, independent review, serial integration, and delivery](docs/assets/workloop.en.svg)
 
-The diagram uses Excalidraw's hand-drawn style. Download the [editable source](docs/assets/workloop.en.excalidraw) and open it in [Excalidraw](https://excalidraw.com).
-
 1. **Clarify and agree on requirements.** The orchestrator and user establish the goal, scope, and acceptance checks, then choose the Direct or Full route together.
 2. **Prepare and approve tasks.** Direct handles a bounded change with one ticket containing a `Scope` and acceptance commands. Full starts with a spec and splits it into tickets with dependencies. The run starts after user approval.
 3. **Execute in isolation.** Executors implement, self-check, and commit in separate worktrees. Full can run multiple executors within dependency and concurrency limits. The orchestrator receives completion notifications and coordinates questions.
