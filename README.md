@@ -1,116 +1,116 @@
 # paseo-matt-workloop
 
-**简体中文** · [English](README.en.md)
+**English** · [简体中文](README.zh-CN.md)
 
-基于 Matt Pocock skills 和 Paseo 的开发工作流：从需求澄清到独立审查、代码集成，让每个任务都有明确范围、验证依据和交付记录。
+A development workflow built on Matt Pocock skills and Paseo: from clarifying requirements to independent review and code integration, with an explicit scope, verification evidence, and delivery record for each task.
 
-## 1. 技能清单与描述
+## 1. Skills and descriptions
 
-整套包含 **17 个技能**：15 个来自 [mattpocock/skills](https://github.com/mattpocock/skills)，`paseo-workloop` 和 `codegraph` 为本地技能。以 `paseo-workloop` 为入口，其余技能提供各阶段的方法与约定，也可以按需单独使用。
+The collection includes **17 skills**: 15 from [mattpocock/skills](https://github.com/mattpocock/skills), plus the local `paseo-workloop` and `codegraph` skills. Start with `paseo-workloop` to coordinate the workflow; the other skills supply methods and conventions for each stage and can also be used individually.
 
-| 技能 | 描述 |
+| Skill | Description |
 | --- | --- |
-| [paseo-workloop](skills/paseo-workloop/SKILL.md) | 工作流入口。协调 Paseo 执行者和审查者，管理任务依赖、独立 worktree、审查、返工与串行集成。 |
-| [grill-me](skills/grill-me/SKILL.md) | 通过追问澄清需求、边界和设计选择，建立双方共识。 |
-| [grill-with-docs](skills/grill-with-docs/SKILL.md) | 在需求追问过程中梳理领域术语与架构决策；workloop 将决定先记录到 spec 或 ticket。 |
-| [grilling](skills/grilling/SKILL.md) | 追问的底层方法：按决策依赖分轮提问，逐步解决尚未确定的问题。 |
-| [domain-modeling](skills/domain-modeling/SKILL.md) | 统一领域术语，维护词汇表和架构决策记录（ADR）。 |
-| [to-spec](skills/to-spec/SKILL.md) | 将已有讨论整理成可执行规格，明确方案、实现决策与测试约定。 |
-| [to-tickets](skills/to-tickets/SKILL.md) | 将规格拆成可验证的纵向任务，标明任务间的阻塞依赖。 |
-| [implement](skills/implement/SKILL.md) | 根据规格或任务实施改动，遵循项目约定并验证结果。 |
-| [tdd](skills/tdd/SKILL.md) | 通过 red → green → refactor 推进测试驱动开发，优先验证可观察行为。 |
-| [code-review](skills/code-review/SKILL.md) | 从固定提交或分支基线审查变更，分别核对项目规范和需求规格。 |
-| [diagnosing-bugs](skills/diagnosing-bugs/SKILL.md) | 诊断难复现问题与性能回退，用复现、测量和证据定位原因。 |
-| [codegraph](skills/codegraph/SKILL.md) | 在已建立索引的仓库中导航符号、调用链和变更影响范围。 |
-| [codebase-design](skills/codebase-design/SKILL.md) | 分析模块边界与接口，寻找简化接口、封装复杂性和改善可测试性的机会。 |
-| [improve-codebase-architecture](skills/improve-codebase-architecture/SKILL.md) | 扫描架构改进机会，生成 HTML 报告，再围绕选定方向讨论方案。 |
-| [handoff](skills/handoff/SKILL.md) | 将当前会话的目标、决定、证据和未完成工作整理为交接文档。 |
-| [wait-what](skills/wait-what/SKILL.md) | 当上一条解释没有讲清楚时，暂停并换一种方式重新说明。 |
-| [setup-matt-pocock-skills](skills/setup-matt-pocock-skills/SKILL.md) | 单独使用上游工程技能时，配置项目的任务跟踪、标签和领域文档布局。workloop 使用自己的运行目录，无需先执行此技能。 |
+| [paseo-workloop](skills/paseo-workloop/SKILL.md) | The workflow entry point. Coordinates Paseo executors and reviewers, task dependencies, isolated worktrees, review, rework, and serial integration. |
+| [grill-me](skills/grill-me/SKILL.md) | Clarifies requirements, boundaries, and design choices through questions until the user and agent share an understanding. |
+| [grill-with-docs](skills/grill-with-docs/SKILL.md) | Combines requirements questions with domain vocabulary and architectural decisions. In workloop, decisions are first recorded in the spec or ticket. |
+| [grilling](skills/grilling/SKILL.md) | The underlying interview method: asks questions in rounds according to decision dependencies and resolves open choices progressively. |
+| [domain-modeling](skills/domain-modeling/SKILL.md) | Establishes shared domain terminology and maintains glossaries and architecture decision records (ADRs). |
+| [to-spec](skills/to-spec/SKILL.md) | Turns an existing discussion into an actionable spec covering the solution, implementation decisions, and testing approach. |
+| [to-tickets](skills/to-tickets/SKILL.md) | Splits a spec into verifiable vertical slices and declares blocking dependencies between tickets. |
+| [implement](skills/implement/SKILL.md) | Implements a spec or ticket while following project conventions and verifying the result. |
+| [tdd](skills/tdd/SKILL.md) | Guides red → green → refactor development, prioritizing tests of observable behavior. |
+| [code-review](skills/code-review/SKILL.md) | Reviews changes against a fixed commit or branch baseline, checking repository standards and the originating requirements separately. |
+| [diagnosing-bugs](skills/diagnosing-bugs/SKILL.md) | Investigates difficult bugs and performance regressions through reproduction, measurement, and evidence. |
+| [codegraph](skills/codegraph/SKILL.md) | Navigates symbols, call paths, and change impact in repositories that already have a CodeGraph index. |
+| [codebase-design](skills/codebase-design/SKILL.md) | Examines module boundaries and interfaces to simplify APIs, encapsulate complexity, and improve testability. |
+| [improve-codebase-architecture](skills/improve-codebase-architecture/SKILL.md) | Finds architecture improvement opportunities, presents an HTML report, and explores the selected direction. |
+| [handoff](skills/handoff/SKILL.md) | Captures the current conversation's goal, decisions, evidence, and unfinished work for another agent. |
+| [wait-what](skills/wait-what/SKILL.md) | Pauses and explains the previous message again when it did not communicate the point clearly. |
+| [setup-matt-pocock-skills](skills/setup-matt-pocock-skills/SKILL.md) | Configures issue tracking, labels, and domain documentation when using the upstream engineering skills independently. Workloop uses its own run directory and does not require this setup. |
 
-上游技能保持原样，workloop 的执行差异集中在本地技能及 executor/reviewer briefs 中。来源版本见 [upstream.json](skills/tools/upstream.json)。
+Upstream skills remain unchanged. Workloop-specific behavior lives in the local skill and executor/reviewer briefs. Source versions are recorded in [upstream.json](skills/tools/upstream.json).
 
-## 2. 工作流程图与描述
+## 2. Workflow diagram and explanation
 
-![Paseo workloop：需求共识、Direct 或 Full 路线、执行、独立审查、串行集成与交付](docs/assets/workloop.svg)
+![Paseo workloop: shared requirements, Direct or Full route, execution, independent review, serial integration, and delivery](docs/assets/workloop.en.svg)
 
-流程图采用 Excalidraw 手绘风格；可下载 [可编辑源文件](docs/assets/workloop.excalidraw)，在 [Excalidraw](https://excalidraw.com) 中打开。
+The diagram uses Excalidraw's hand-drawn style. Download the [editable source](docs/assets/workloop.en.excalidraw) and open it in [Excalidraw](https://excalidraw.com).
 
-1. **澄清并确认需求。** 编排者与用户明确目标、范围和验收方式，再共同选择 Direct 或 Full 路线。
-2. **准备任务并确认。** Direct 用一张带 `Scope` 和验收命令的 ticket 处理边界明确的小改动；Full 先形成 spec，再拆分带依赖关系的 tickets。用户确认后才启动 run。
-3. **隔离执行。** 执行者在各自的 worktree 中实现任务、自检并提交。Full 可按依赖和并发预算启动多个执行者；编排者接收完成通知并协调问题。
-4. **冻结候选并独立审查。** 审查者检查固定 commit，核对需求、规范和验证证据。需要返工时回到执行者，新的候选提交再次审查。执行者报告完成，并不代表任务已经通过验收。
-5. **串行集成并验证。** 通过审查的候选依次合入本地 integration branch，并运行约定检查。冲突或检查失败时先修复，再审查和集成；检查失败会回滚本次合入。
-6. **复核并交付。** Full 由编排者检查跨任务行为、文档与整体回归；发现问题就新增 repair ticket，走同一套执行和审查流程。Direct 跳过整体终审。最后 `finish` 重新检查并清理资源，保留本地 `workloop/<feature>` 分支，由用户决定发布。
+1. **Clarify and agree on requirements.** The orchestrator and user establish the goal, scope, and acceptance checks, then choose the Direct or Full route together.
+2. **Prepare and approve tasks.** Direct handles a bounded change with one ticket containing a `Scope` and acceptance commands. Full starts with a spec and splits it into tickets with dependencies. The run starts after user approval.
+3. **Execute in isolation.** Executors implement, self-check, and commit in separate worktrees. Full can run multiple executors within dependency and concurrency limits. The orchestrator receives completion notifications and coordinates questions.
+4. **Freeze the candidate and review independently.** A reviewer checks a fixed commit against requirements, standards, and verification evidence. Required changes return to the executor, and the new candidate is reviewed again. An executor reporting completion does not mean the ticket has passed acceptance.
+5. **Integrate serially and verify.** Reviewed candidates merge into the local integration branch one at a time, followed by the configured checks. Conflicts or failed checks lead to a fix, another review, and another integration attempt. Failed checks roll back that merge.
+6. **Review the whole result and deliver.** For Full, the orchestrator checks cross-ticket behavior, documentation, and overall regression results. Defects become repair tickets that follow the same execution and review loop. Direct skips this final review. Finally, `finish` reruns checks and cleans up resources while retaining the local `workloop/<feature>` branch. The user decides whether to publish it.
 
-详细操作和恢复约定见 [paseo-workloop](skills/paseo-workloop/SKILL.md) 与 [中断恢复说明](skills/paseo-workloop/reference/recovery.md)。
+See [paseo-workloop](skills/paseo-workloop/SKILL.md) for the full procedure and [recovery notes](skills/paseo-workloop/reference/recovery.md) for interrupted runs.
 
-## 3. 安装
+## 3. Installation
 
-安装需要 **Node.js 20+、npm 和 Git**，支持 macOS、Linux 和 Windows。通过 GitHub 直接运行安装器，无需手动 clone、npm 全局安装或 npm 登录；请保留命令中的 `github:suntianc/` 前缀。
+Installation requires **Node.js 20+, npm, and Git** on macOS, Linux, or Windows. Run the installer directly from GitHub without manually cloning, installing an npm package globally, or signing in to npm. Keep the `github:suntianc/` prefix in each command.
 
-按 Agent 读取技能的位置分为两类：
+Choose one of two categories based on where your agent reads skills:
 
-| Agent 类型 | 安装位置 | 适用方式 |
+| Agent category | Installation directory | When to use it |
 | --- | --- | --- |
-| **Claude 类** | `~/.claude/skills` | Claude Code，以及读取 Claude 技能目录的兼容 Agent。 |
-| **通用 Agent 类** | `~/.agents/skills`（默认） | 读取通用 Agent Skills 目录的 Agent；使用其他技能目录时，通过 `--target` 指定实际目录。 |
+| **Claude-compatible agents** | `~/.claude/skills` | Claude Code and compatible agents that read Claude's skills directory. |
+| **General agents** | `~/.agents/skills` (default) | Agents that read the shared Agent Skills directory. If your agent uses another directory, provide its actual path with `--target`. |
 
-安装目录需要位于 **Paseo daemon 及执行者、审查者实际运行的机器** 上。连接远程 host 时，在远程机器安装；如果不同 Agent 使用不同技能目录，就分别安装和更新。安装器不会修改 Agent 的全局配置。
+Install on the **machine where the Paseo daemon, executors, and reviewers run**. For a remote host, install on that host. If agents use different skills directories, install and update each directory separately. The installer does not change global agent configuration.
 
-### Claude 类
+### Claude-compatible agents
 
-**macOS / Linux（sh、bash、zsh）：**
+**macOS / Linux (sh, bash, zsh):**
 
 ```sh
-# 安装
+# Install
 npx --yes github:suntianc/paseo-matt-workloop#main install --target "$HOME/.claude/skills"
 
-# 更新
+# Update
 npx --yes github:suntianc/paseo-matt-workloop#main update --target "$HOME/.claude/skills"
 ```
 
-**Windows（PowerShell）：**
+**Windows (PowerShell):**
 
 ```powershell
-# 安装
+# Install
 npx --yes github:suntianc/paseo-matt-workloop#main install --target "$HOME/.claude/skills"
 
-# 更新
+# Update
 npx --yes github:suntianc/paseo-matt-workloop#main update --target "$HOME/.claude/skills"
 ```
 
-### 通用 Agent 类
+### General agents
 
-**macOS / Linux（sh、bash、zsh）：**
+**macOS / Linux (sh, bash, zsh):**
 
 ```sh
-# 安装到默认的 ~/.agents/skills
+# Install into the default ~/.agents/skills
 npx --yes github:suntianc/paseo-matt-workloop#main install
 
-# 更新
+# Update
 npx --yes github:suntianc/paseo-matt-workloop#main update
 ```
 
-**Windows（PowerShell）：**
+**Windows (PowerShell):**
 
 ```powershell
-# 安装到默认的 $HOME/.agents/skills
+# Install into the default $HOME/.agents/skills
 npx --yes github:suntianc/paseo-matt-workloop#main install
 
-# 更新
+# Update
 npx --yes github:suntianc/paseo-matt-workloop#main update
 ```
 
-如果 Agent 不读取默认目录，请在两个命令后都添加 `--target "实际技能目录"`。不要只安装入口技能：整套技能、脚本和模板需要保留相邻目录结构。
+If your agent does not read the default directory, append `--target "actual skills directory"` to both commands. Install the whole collection: its skills, scripts, and templates rely on the sibling directory layout.
 
-### 更新与冲突处理
+### Updates and conflicts
 
-安装结果独立于 npx 缓存。`update` 每次拉取公开仓库的最新 `main`，完成后打印来源 commit；安装和更新后，重新启动或刷新 Agent 的技能列表。
+Installed files are independent of the npx cache. `update` fetches the current public `main` branch each time and prints the source commit. Restart your agent or refresh its skills after installation or an update.
 
-目标目录中的 `.paseo-matt-workloop.json` 记录安装器管理的内容。已有同名技能、托管目录内的本地修改、新增或缺失文件、符号链接都会触发检查并停止操作。请先备份本地定制，再恢复托管内容或换一个空目录安装。其他技能保持原样。
+The target's `.paseo-matt-workloop.json` records the managed content. Existing same-name skills, local modifications within managed entries, added or missing files, and symbolic links cause the operation to stop. Back up local customizations before restoring the managed content or choosing an empty directory. Unrelated skills remain in place.
 
-可先预览检查，或查看技能列表和参数；自定义目录需要照常传入 `--target`：
+Preview checks or inspect available skills and options with these commands. Include `--target` as usual for a custom directory:
 
 ```sh
 npx --yes github:suntianc/paseo-matt-workloop#main install --dry-run
@@ -119,20 +119,20 @@ npx --yes github:suntianc/paseo-matt-workloop#main list
 npx --yes github:suntianc/paseo-matt-workloop#main --help
 ```
 
-更新失败会尝试回滚。若进程被强制终止或断电，可从残留的 `.paseo-matt-workloop-stage-*/old/` 恢复旧文件；确认没有安装进程运行后，再移走 `.paseo-matt-workloop.lock`。
+A failed update attempts to roll back. After a forced termination or power loss, previous files may remain under `.paseo-matt-workloop-stage-*/old/`. Restore them as needed, and remove `.paseo-matt-workloop.lock` only after confirming that no installer is running.
 
-## 4. 运行条件与使用说明
+## 4. Runtime requirements and usage
 
-### 运行条件
+### Runtime requirements
 
-安装技能与运行 workloop 分开。实际编排还需要：
+Installing skills and running workloop are separate steps. Orchestration also requires:
 
-- **Paseo 环境：** Git、Paseo CLI 和运行中的 daemon；在 Paseo agent session 中运行，设置有 `PASEO_AGENT_ID`。
-- **编排工具：** 当前会话具备 agent-scoped `create_agent`、`send_agent_prompt` 及 heartbeat 支持，用于派发、消息、完成通知与兜底唤醒。
-- **角色配置：** 在 Paseo 中创建 `wl-executor`、`wl-reviewer` profiles，配置各自的 provider、model、mode；也可显式指定替代配置。模型和权限模式由用户选择，技能安装器不会代为创建或更改。
-- **项目基线：** 目标是 Git 仓库，启动时约定的检查在基线已经通过。`codegraph` 仅在目标仓库已有索引时使用，不要求所有项目安装 CodeGraph。
+- **Paseo environment:** Git, the Paseo CLI, and a running daemon. Run inside a Paseo agent session with `PASEO_AGENT_ID` set.
+- **Orchestration tools:** Agent-scoped `create_agent`, `send_agent_prompt`, and heartbeat support in the current session for dispatch, messaging, completion notifications, and fallback wake-ups.
+- **Role settings:** Create `wl-executor` and `wl-reviewer` profiles in Paseo with a provider, model, and mode, or explicitly select alternatives. The user chooses models and permission modes; the skill installer does not create or change these profiles.
+- **Project baseline:** A Git repository whose configured checks already pass on the base. `codegraph` is used only when the project already has an index; CodeGraph is not a requirement for every project.
 
-可先检查基础环境：
+Check the basic environment first:
 
 ```sh
 node --version
@@ -142,46 +142,47 @@ paseo agent ls -g --json
 paseo provider ls --json
 ```
 
-不同 Paseo 版本的行为与验证边界见 [兼容说明](skills/paseo-workloop/reference/paseo-compat.md)。缺少编排工具时，可以单独使用其他技能；完整 workloop 需要上述条件。
+See the [compatibility notes](skills/paseo-workloop/reference/paseo-compat.md) for version-specific behavior and verification limits. Other skills can be used individually without the orchestration tools; the complete workloop requires the conditions above.
 
-### 开始一次开发任务
+### Start a development task
 
-在 Paseo 中打开目标项目，启动已加载这套技能的 Agent，用自然语言指明技能、目标和验收要求，例如：
+Open your project in Paseo and start an agent that has loaded this collection. Name the skill, goal, and acceptance expectations in natural language, for example:
 
 ```text
-请使用 paseo-workloop，为这个项目增加 CSV 导出。
-先和我确认需求、范围和验收方式，再选择 Direct 或 Full 路线。
+Use paseo-workloop to add CSV export to this project.
+First agree with me on requirements, scope, and acceptance checks,
+then choose the Direct or Full route.
 ```
 
-Agent 会按第二章的流程组织需求、准备任务并请你确认。运行中由编排者与执行者、审查者沟通；涉及范围、产品决定或角色配置的问题再交给用户。
+The agent follows the workflow in section 2, prepares the tasks, and asks for your approval. During a run, the orchestrator communicates with executors and reviewers; scope changes, product decisions, and role configuration questions come back to the user.
 
-需要查询已有 run 时，可让编排者检查状态，也可以执行：
+To inspect an existing run, ask the orchestrator for its status or run:
 
 ```sh
-# 通用 Agent 类的默认安装位置；Claude 类改用 ~/.claude/skills
+# Default general-agent location; use ~/.claude/skills for Claude-compatible agents
 node ~/.agents/skills/paseo-workloop/scripts/workloop.mjs --run my-project/export-csv status --live
 ```
 
-`my-project/export-csv` 是示例，请换成实际 run 名称。Windows PowerShell 中，脚本路径使用 `"$HOME/.agents/skills/paseo-workloop/scripts/workloop.mjs"`。
+Replace the example `my-project/export-csv` with your actual run name. In Windows PowerShell, use `"$HOME/.agents/skills/paseo-workloop/scripts/workloop.mjs"` for the script path.
 
-### 状态、交付与 tidy-docs
+### State, delivery, and tidy-docs
 
-运行状态默认在 `~/.workloop/<project>/<feature>/`，可用 `WORKLOOP_ROOT` 调整。规格、任务、briefs、报告和审查记录留在 run 目录；不要手动编辑 `state.json`。更新技能不迁移运行状态，建议先结束正在使用旧脚本的 run。
+Run state defaults to `~/.workloop/<project>/<feature>/` and can be relocated with `WORKLOOP_ROOT`. Specs, tickets, briefs, reports, and reviews stay in the run directory. Do not edit `state.json` manually. Skill updates do not migrate run state; finish runs using older scripts before updating when possible.
 
-`finish` 保留本地 `workloop/<feature>` 分支，不自动合入主分支或推送。发布、PR 等远程操作按用户另行授权执行。异步监督与通知恢复见 [async supervision](skills/paseo-workloop/reference/async-supervision.md)。
+`finish` retains the local `workloop/<feature>` branch. It does not merge it into the main branch or push it. Publishing and PRs require separate user authorization. See [async supervision](skills/paseo-workloop/reference/async-supervision.md) for notification handling and recovery.
 
-如需在项目里使用 `/tidy-docs`，先在对应机器注册一次：
+To use `/tidy-docs` in a project, register it once on each machine:
 
 ```sh
-# 通用 Agent 类；Claude 类将脚本路径改为 ~/.claude/skills 下的相同路径
+# General agents; for Claude-compatible agents, use the same path under ~/.claude/skills
 node ~/.agents/skills/paseo-workloop/scripts/tidy-docs.mjs install --repo /path/to/repo
 ```
 
-Windows PowerShell 同样使用 `"$HOME/.agents/skills/paseo-workloop/scripts/tidy-docs.mjs"`，并将 `--repo` 替换为实际项目路径。注册文件包含本机路径，会排除在项目 Git 提交之外。详见 [tidy-docs 说明](skills/paseo-workloop/reference/tidy-docs.md)。
+In Windows PowerShell, use `"$HOME/.agents/skills/paseo-workloop/scripts/tidy-docs.mjs"` and replace `--repo` with the actual project path. Registration files contain machine-specific paths and are excluded from the project's Git commits. See the [tidy-docs procedure](skills/paseo-workloop/reference/tidy-docs.md).
 
-### 维护这套技能
+### Maintaining the collection
 
-本仓库只分发技能及安装工具。维护者可执行以下检查，上游同步方式见 [技能集维护说明](skills/README.md#updating-from-upstream)：
+This repository distributes skills and installation tools. Maintainers can run the following checks; upstream synchronization is documented in the [collection maintenance guide](skills/README.md#updating-from-upstream):
 
 ```sh
 npm test
@@ -189,11 +190,11 @@ npm run check:links
 npm pack --dry-run
 ```
 
-## 5. 致谢
+## 5. Acknowledgments
 
-感谢 **[Matt Pocock](https://github.com/mattpocock)** 和 **[Paseo](https://github.com/getpaseo)**：
+Thank you to **[Matt Pocock](https://github.com/mattpocock)** and **[Paseo](https://github.com/getpaseo)**:
 
-- **[mattpocock/skills](https://github.com/mattpocock/skills)**：提供本仓库使用的 15 个上游技能，涵盖需求追问、领域建模、规格、任务拆分、实现、测试与审查。
-- **[getpaseo/paseo](https://github.com/getpaseo/paseo)**：提供多 Agent 的运行与编排基础，让 workloop 可以通过独立执行者、审查者和 worktree 协作推进任务。
+- **[mattpocock/skills](https://github.com/mattpocock/skills)** supplies the 15 upstream skills used here, covering requirements interviews, domain modeling, specs, ticket breakdown, implementation, testing, and review.
+- **[getpaseo/paseo](https://github.com/getpaseo/paseo)** provides the multi-agent runtime and orchestration foundation that lets workloop coordinate independent executors, reviewers, and worktrees.
 
-本地代码采用 [MIT License](LICENSE)。Matt Pocock 的原始 MIT 声明保留在 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)，来源版本与本地扩展说明见 [NOTICE.md](NOTICE.md)。
+Local code is licensed under the [MIT License](LICENSE). Matt Pocock's original MIT notice is preserved in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES). Source versions and local additions are documented in [NOTICE.md](NOTICE.md).
