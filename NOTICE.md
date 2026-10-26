@@ -13,4 +13,4 @@ skill collection and its installer, without the configuration repository's
 plugins, themes, runtime state, or Git history.
 
 The installer and local additions are covered by [LICENSE](LICENSE).
-Installed copies retain both licenses under `.paseo-matt-skills-licenses/`.
+Installed copies retain both licenses under `.paseo-matt-workloop-licenses/`.

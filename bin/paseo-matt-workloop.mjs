@@ -8,8 +8,8 @@ import { parseArgs } from 'node:util';
 import { install } from '../lib/install.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repo = 'https://github.com/suntianc/paseo-matt-skills.git';
-const help = `Usage: paseo-matt-skills [install|update|list] [options]
+const repo = 'https://github.com/suntianc/paseo-matt-workloop.git';
+const help = `Usage: paseo-matt-workloop [install|update|list] [options]
 
   install          Install the complete bundled collection (default command)
   update           Fetch current GitHub main and update a managed installation
@@ -21,9 +21,9 @@ const help = `Usage: paseo-matt-skills [install|update|list] [options]
   --version        Show the installer version
 
 Examples:
-  npx --yes github:suntianc/paseo-matt-skills#main install
-  npx --yes github:suntianc/paseo-matt-skills#main update
-  npx --yes github:suntianc/paseo-matt-skills#main install --target ~/.claude/skills
+  npx --yes github:suntianc/paseo-matt-workloop#main install
+  npx --yes github:suntianc/paseo-matt-workloop#main update
+  npx --yes github:suntianc/paseo-matt-workloop#main install --target ~/.claude/skills
 
 Install/update refuse unmanaged entries, symlinks, and locally modified files.
 Update requires Git and network access; it fetches main even if npx cached the CLI.
@@ -55,7 +55,7 @@ try {
       let source = root;
       let revision = null;
       if (command === 'update') {
-        checkout = mkdtempSync(join(tmpdir(), 'paseo-matt-skills-update-'));
+        checkout = mkdtempSync(join(tmpdir(), 'paseo-matt-workloop-update-'));
         source = join(checkout, 'repo');
         git(['clone', '--depth', '1', '--single-branch', '--branch', 'main', repo, source]);
         revision = git(['-C', source, 'rev-parse', 'HEAD']);
@@ -70,6 +70,6 @@ try {
     }
   }
 } catch (error) {
-  console.error(`paseo-matt-skills: ${error.message}`);
+  console.error(`paseo-matt-workloop: ${error.message}`);
   process.exitCode = 1;
 }
