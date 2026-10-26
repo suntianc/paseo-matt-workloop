@@ -13,7 +13,7 @@
 - **新增：** Quick 在当前会话直接执行，无需强制开票、启动子代理或重复澄清；Direct/Full 的详细机制按需读取。
 - **新增：** 本地只输出建议的 `retro` 入口，以及上游 `writing-for-agents` 指南。上游 retro 原文作为未修改的参考保留，Agent 文档使用统一写作指南。
 - **调整：** 合入后保留会话和工作区；`finish` 验收交付，`retro` 记录发现或跳过理由，`archive` 保存活动记录并集中归档。取消或替换 attempt 中未合入的工作保留。
-- **修复：** 替换会话默认复用原 branch/worktree，保留交接上下文与审查历史。Worktree 查询使用 NUL 分隔的 Git 记录，兼容 Windows 换行；普通返修继续原执行者，合入后 repair 使用新票、新会话和新工作区。
+- **修复：** 替换会话默认复用原 branch/worktree，保留交接上下文与审查历史。Worktree 查询兼容 Windows 换行，比较恢复目录前会展开短路径别名；普通返修继续原执行者，合入后 repair 使用新票、新会话和新工作区。
 - **不兼容变更：** `finish` 不再执行清理，需完成 `retro` 判断后执行 `archive`；`retry` 默认保留工作区，确需新建时使用 `--new-worktree --reason <why>`。
 
 ### 升级说明

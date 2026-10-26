@@ -13,7 +13,7 @@ Choose Quick for small tasks, retain ticketed-run sessions through retrospective
 - **Added:** Quick execution in the current session, without mandatory tickets, workers or repeated clarification. Detailed Direct/Full mechanics are loaded only when needed.
 - **Added:** A local suggestion-only `retro` entry point and the upstream `writing-for-agents` guide. Upstream retro text remains an unmodified reference; agent-facing writing uses the shared guide.
 - **Changed:** Integration retains sessions and worktrees. `finish` checks delivery; `retro` records findings or a skip reason; `archive` saves activity transcripts and closes sessions together. Cancelled/replaced work is retained when it has not been integrated.
-- **Fixed:** Session replacement reuses the original branch/worktree and preserves handoff context and review history. Worktree lookup handles Windows line endings using NUL-separated Git records. Ordinary rework continues the original executor; post-integration repairs use a new ticket, session and worktree.
+- **Fixed:** Session replacement reuses the original branch/worktree and preserves handoff context and review history. Worktree lookup handles Windows line endings and resolves short-path aliases before comparing recovery directories. Ordinary rework continues the original executor; post-integration repairs use a new ticket, session and worktree.
 - **Breaking:** `finish` no longer cleans up. Complete `retro` assessment and run `archive`. `retry` now preserves the worktree by default; use `--new-worktree --reason <why>` for an intentional fresh attempt.
 
 ### Upgrade

@@ -140,7 +140,8 @@ function listAgents(labels, { all = false } = {}) {
 function normPath(p) {
   if (!p) return "";
   let q = untilde(p);
-  try { q = realpathSync(q); } catch { q = resolve(q); }
+  // Native Windows resolution expands 8.3 aliases such as RUNNER~1.
+  try { q = WIN ? realpathSync.native(q) : realpathSync(q); } catch { q = resolve(q); }
   q = q.replace(/\\/g, "/").replace(/\/+$/, "");
   return WIN ? q.toLowerCase() : q;
 }
@@ -903,6 +904,7 @@ function cmdDispatch(dir, s, id, opts) {
   // 1. worktree — adopt one left by an interrupted dispatch, else create it.
   let wt = worktreeFor(s.repo, branch);
   if (t.reuseWorktree && (!wt || normPath(wt) !== normPath(t.worktree))) fail(`recovery worktree is missing or moved (branch=${branch}, registered=${JSON.stringify(wt)}, expected=${JSON.stringify(t.worktree)}, normalized=${JSON.stringify([normPath(wt), normPath(t.worktree)])}); reconcile it, or explicitly retry --new-worktree --reason <why>`);
+  if (t.reuseWorktree) wt = t.worktree; // Preserve the recorded spelling after verifying directory identity.
   if (!wt) {
     const res = paseo(opts.prepare
       ? ["workspace", "create", "--isolation", "worktree", "--mode", "branch-off", "--new-branch", branch, "--base", s.integration.branch, "--path", pathArg(s.repo), "--json"]
