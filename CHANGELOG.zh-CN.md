@@ -13,7 +13,7 @@
 - **新增：** Quick 在当前会话直接执行，无需强制开票、启动子代理或重复澄清；Direct/Full 的详细机制按需读取。
 - **新增：** 本地只输出建议的 `retro` 入口，以及上游 `writing-for-agents` 指南。上游 retro 原文作为未修改的参考保留，Agent 文档使用统一写作指南。
 - **调整：** 合入后保留会话和工作区；`finish` 验收交付，`retro` 记录发现或跳过理由，`archive` 保存活动记录并集中归档。取消或替换 attempt 中未合入的工作保留。
-- **修复：** 替换会话默认复用原 branch/worktree，保留交接上下文与审查历史；普通返修继续原执行者，合入后 repair 使用新票、新会话和新工作区。
+- **修复：** 替换会话默认复用原 branch/worktree，保留交接上下文与审查历史。Worktree 查询使用 NUL 分隔的 Git 记录，兼容 Windows 换行；普通返修继续原执行者，合入后 repair 使用新票、新会话和新工作区。
 - **不兼容变更：** `finish` 不再执行清理，需完成 `retro` 判断后执行 `archive`；`retry` 默认保留工作区，确需新建时使用 `--new-worktree --reason <why>`。
 
 ### 升级说明
@@ -28,7 +28,7 @@ npx --yes github:suntianc/paseo-matt-workloop#v2.0.0 install
 
 ### 验证
 
-- 本地 121 项测试全部通过，覆盖安装、真实 Git/模拟 Paseo 生命周期、恢复、repair 隔离和文档处理；追加的针对性检查覆盖归档后的证据读取。
+- 本地 122 项测试全部通过，覆盖安装、真实 Git/模拟 Paseo 生命周期、恢复、repair 隔离和文档处理；追加的针对性检查覆盖归档后的证据读取。
 - 本机 macOS Paseo 0.13.0 的隔离 run 验证了 prepared MCP 派发/审查、原会话续做、合入、finish 保留会话、heartbeat 清理和延后归档。归档前记录仍可读；归档后的 Antigravity CLI 日志报 `agy ENOENT`，后续复盘使用保存的证据。验证范围见兼容说明。
 - Skill 校验、上游来源比对及相对链接检查通过；两版流程图均已渲染检查。
 - v2.0.0 tarball 通过 npx 在含空格的临时路径安装了 19 个技能，安装后链接检查与 CLI help 通过；本地 `Agent.md`、`AGENTS.md` 未进入制品。

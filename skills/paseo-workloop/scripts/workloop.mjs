@@ -349,10 +349,12 @@ function notesFrom(opts) {
 
 const branchExists = (repo, b) => gitTry(repo, "show-ref", "--verify", "--quiet", `refs/heads/${b}`).code === 0;
 function worktreeFor(repo, branch) {
-  const out = git(repo, "worktree", "list", "--porcelain");
+  // NUL records avoid platform line endings and Git's quoted path format.
+  const out = gitRaw(repo, "worktree", "list", "--porcelain", "-z");
   const line = `branch refs/heads/${branch}`;
-  for (const block of out.split(/\n\s*\n/)) {
-    if (block.split("\n").includes(line)) return block.match(/^worktree (.+)$/m)[1];
+  for (const block of out.split("\0\0")) {
+    const fields = block.split("\0");
+    if (fields.includes(line)) return fields.find((field) => field.startsWith("worktree "))?.slice(9) ?? null;
   }
   return null;
 }

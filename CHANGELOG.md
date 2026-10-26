@@ -13,7 +13,7 @@ Choose Quick for small tasks, retain ticketed-run sessions through retrospective
 - **Added:** Quick execution in the current session, without mandatory tickets, workers or repeated clarification. Detailed Direct/Full mechanics are loaded only when needed.
 - **Added:** A local suggestion-only `retro` entry point and the upstream `writing-for-agents` guide. Upstream retro text remains an unmodified reference; agent-facing writing uses the shared guide.
 - **Changed:** Integration retains sessions and worktrees. `finish` checks delivery; `retro` records findings or a skip reason; `archive` saves activity transcripts and closes sessions together. Cancelled/replaced work is retained when it has not been integrated.
-- **Fixed:** Session replacement reuses the original branch/worktree and preserves handoff context and review history. Ordinary rework continues the original executor; post-integration repairs use a new ticket, session and worktree.
+- **Fixed:** Session replacement reuses the original branch/worktree and preserves handoff context and review history. Worktree lookup handles Windows line endings using NUL-separated Git records. Ordinary rework continues the original executor; post-integration repairs use a new ticket, session and worktree.
 - **Breaking:** `finish` no longer cleans up. Complete `retro` assessment and run `archive`. `retry` now preserves the worktree by default; use `--new-worktree --reason <why>` for an intentional fresh attempt.
 
 ### Upgrade
@@ -28,7 +28,7 @@ For an existing managed installation, run `npx --yes github:suntianc/paseo-matt-
 
 ### Verification
 
-- All 121 local tests pass, covering installation, real-Git/fake-Paseo lifecycle behavior, recovery, repair isolation and document handling. Focused follow-up checks cover archived evidence reads.
+- All 122 local tests pass, covering installation, real-Git/fake-Paseo lifecycle behavior, recovery, repair isolation and document handling. Focused follow-up checks cover archived evidence reads.
 - On local macOS Paseo 0.13.0, an isolated run verified prepared MCP dispatch/review, same-session continuation, integration, retained sessions at finish, heartbeat cleanup and deferred archival. Pre-archive transcripts remain readable; archived Antigravity CLI logs failed with `agy ENOENT`, so later retro uses saved evidence. See the compatibility notes for scope.
 - Skill validation, upstream source comparison and relative-link checks pass. Both workflow diagrams were rendered and inspected.
 - The v2.0.0 tarball installs 19 skills through npx into a temporary path containing spaces; installed links and CLI help pass. Local `Agent.md` and `AGENTS.md` are excluded from the package.

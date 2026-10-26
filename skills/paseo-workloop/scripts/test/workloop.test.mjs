@@ -1425,6 +1425,36 @@ test("a stale lock left by a dead process is taken over", () => {
   assert.equal(existsSync(join(sb.runDir, ".lock")), false);
 });
 
+test("session recovery handles Git worktree output with CRLF line endings", () => {
+  const sb = sandbox();
+  sb.ok("dispatch", "01");
+  const old = sb.state().tasks["01"];
+  writeFileSync(join(old.worktree, "uncommitted.txt"), "keep this recovery work\n");
+  sb.setAgent(old.agentId, "error");
+  sb.ok("retry", "01", "--reason", "provider session cannot be resumed");
+  const preload = join(sb.root, "git-worktree-crlf.cjs");
+  writeFileSync(preload, `
+    const cp = require('node:child_process');
+    const original = cp.spawnSync;
+    cp.spawnSync = (command, args, options) => {
+      const result = original(command, args, options);
+      if (command === 'git' && args.includes('worktree') && args.includes('list') && !args.includes('-z')) {
+        result.stdout = result.stdout.replace(/\\r?\\n/g, '\\r\\n');
+      }
+      return result;
+    };
+    require('node:module').syncBuiltinESMExports();
+  `);
+  sb.nodeArgs.push("--require", preload);
+  sb.ok("dispatch", "01");
+  const fresh = sb.state().tasks["01"];
+  assert.equal(fresh.worktree, old.worktree);
+  assert.equal(fresh.branch, old.branch);
+  assert.notEqual(fresh.agentId, old.agentId);
+  assert.equal(readFileSync(join(fresh.worktree, "uncommitted.txt"), "utf8"), "keep this recovery work\n");
+  assert.equal(sb.db().workspaces.length, 1);
+});
+
 test("session replacement reuses committed and dirty work and retains review history", () => {
   const sb = sandbox();
   sb.ok("dispatch", "01");
