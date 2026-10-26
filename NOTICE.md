@@ -17,4 +17,4 @@ Installed copies retain both licenses under `.paseo-matt-workloop-licenses/`.
 
 The workflow diagrams are exported from Excalidraw scenes. Their SVG exports
 embed a subset of the Virgil font by Ellinor Rapp, licensed under the SIL Open
-Font License 1.1, preserved in [docs/assets/LICENSE.Virgil.txt](docs/assets/LICENSE.Virgil.txt).
+Font License 1.1, preserved in [Virgil license](https://github.com/suntianc/paseo-matt-workloop/blob/main/docs/assets/LICENSE.Virgil.txt).
