@@ -1,0 +1,22 @@
+{
+  "repo": "https://github.com/mattpocock/skills",
+  "commit": "49dd158d1076134a641b33efb035946536778336",
+  "skills": {
+    "code-review": "engineering",
+    "codebase-design": "engineering",
+    "diagnosing-bugs": "engineering",
+    "domain-modeling": "engineering",
+    "grill-with-docs": "engineering",
+    "implement": "engineering",
+    "improve-codebase-architecture": "engineering",
+    "setup-matt-pocock-skills": "engineering",
+    "tdd": "engineering",
+    "to-spec": "engineering",
+    "to-tickets": "engineering",
+    "grill-me": "productivity",
+    "grilling": "productivity",
+    "handoff": "productivity",
+    "wait-what": "productivity"
+  },
+  "local": ["codegraph", "paseo-workloop", "tools"]
+}

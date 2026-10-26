@@ -1,0 +1,17 @@
+{
+  "name": "paseo-matt-skills",
+  "version": "1.0.0",
+  "description": "Paseo workloop and Matt Pocock agent skills, with a safe npx installer",
+  "type": "module",
+  "bin": { "paseo-matt-skills": "bin/paseo-matt-skills.mjs" },
+  "files": ["bin/", "lib/", "skills/", "LICENSE", "THIRD_PARTY_LICENSES", "NOTICE.md"],
+  "engines": { "node": ">=20" },
+  "repository": { "type": "git", "url": "git+https://github.com/suntianc/paseo-matt-skills.git" },
+  "homepage": "https://github.com/suntianc/paseo-matt-skills#readme",
+  "bugs": { "url": "https://github.com/suntianc/paseo-matt-skills/issues" },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/install.test.mjs skills/paseo-workloop/scripts/test/workloop.test.mjs skills/paseo-workloop/scripts/test/tidy-docs.test.mjs",
+    "check:links": "node skills/tools/link-check.mjs"
+  }
+}
