@@ -121,6 +121,6 @@ test('CLI rejects unknown arguments and can install into a path containing space
   const target = join(f.root, 'path with spaces');
   const good = spawnSync(process.execPath, [cli, 'install', '--target', target], { encoding: 'utf8' });
   assert.equal(good.status, 0, good.stderr);
-  assert.match(good.stdout, /17 skills/);
+  assert.match(good.stdout, /19 skills/);
   assert.equal(existsSync(join(target, 'paseo-workloop/scripts/workloop.mjs')), true);
 });

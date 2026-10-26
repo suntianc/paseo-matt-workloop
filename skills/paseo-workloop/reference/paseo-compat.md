@@ -9,6 +9,17 @@ Observations were made on two setups:
 
 All were recorded on 2026-10-16.
 
+## Deferred archival and session continuation (2026-10-26)
+
+Verified on local macOS Paseo **0.13.0**, using an isolated repository with the configured `wl-executor` (Antigravity) and `wl-reviewer` (Codex) profiles:
+
+- Prepared MCP send continued the original executor ID and worktree after review. The executor retained the initial session context and committed the follow-up in the same branch; a fresh reviewer checked the new candidate.
+- `integrate` and `finish` retained the executor and both reviewer sessions, all idle and unarchived. Finish removed the tracked heartbeat.
+- After retro assessment, `archive` captured three CLI transcripts, archived the workspace/sessions and removed the integrated worktrees. The branch and run evidence remained.
+- **Archived CLI logs are provider/environment dependent.** Reading the archived Antigravity session failed with `spawn /Users/suntc/.local/bin/agy ENOENT`. The archived Codex reviewers remained readable through the CLI. The Antigravity pre-archive transcript remained readable and contained both turns. Use the saved `evidence/index.json` and transcript files for later retro; these are CLI activity transcripts, not a promise of complete provider-native tool payloads.
+
+These observations cover this machine and small lifecycle fixture. Unrecoverable-session replacement, dirty-work preservation and post-integration repair isolation are covered by the real-Git/fake-Paseo tests, not by this live fixture.
+
 ## Notification-based workloop (2026-10-20)
 
 The default skill now uses prepared agent-scoped MCP requests and acknowledged receipts; see [async-supervision.md](async-supervision.md). These observations were checked against the locally installed Paseo 0.12.0 bundle and current official [MCP](https://paseo.sh/docs/mcp.md) and [orchestration](https://paseo.sh/docs/orchestration-workflows.md) documentation. They do not establish the version or behavior of another host.
@@ -61,6 +72,6 @@ paseo provider ls --json
 
 To check where profiles are kept, create a profile in the app, then look for it under `daemon.agentProfiles` in `$PASEO_HOME/config.json`. `workloop status` on any run shows which profile each role resolves to.
 
-The lifecycle facts, such as what `workspace archive` removes, need a throwaway repository, and the check creates a real worktree and agent. Start a run with one trivial ticket, take it through `dispatch → review → integrate → finish`, and compare what you see with the table.
+The lifecycle facts, such as what `workspace archive` removes, need a throwaway repository, and the check creates a real worktree and agent. Start a run with one trivial ticket, take it through `dispatch → review → send → review → integrate → finish → retro → archive`, and compare what you see with the table.
 
 The script's own tests run against a fake CLI (`scripts/test/fake-paseo.mjs`) that mimics the shapes above. If you find a difference, update the fake too.

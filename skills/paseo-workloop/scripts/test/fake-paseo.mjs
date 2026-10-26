@@ -93,6 +93,12 @@ switch (sub) {
     out({ agentId: a.id, archived: true });
     break;
   }
+  case "agent logs": {
+    const a = agent(pos[0]);
+    save();
+    process.stdout.write(a.prompts.join("\n\n"));
+    break;
+  }
   case "schedule ls":
     // Paseo 0.12 lists new-agent schedules here, not agent-target heartbeats.
     out(db.schedules || []);

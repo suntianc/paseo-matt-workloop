@@ -7,7 +7,7 @@
 //                   ignored, so a CRLF checkout on Windows still passes.
 // The clone is only read: nothing in it is executed.
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,13 +52,31 @@ if (!commit) console.error(`warning: ${clone} is not a git checkout; cannot tell
 else if (check && commit !== cfg.commit) console.error(`warning: clone is at ${commit.slice(0, 7)} but upstream.json records ${cfg.commit.slice(0, 7)}; differences may be upstream changes`);
 
 let problems = 0;
-for (const [name, category] of Object.entries(cfg.skills)) {
+for (const [name, entry] of Object.entries(cfg.skills)) {
+  const category = typeof entry === "string" ? entry : entry.category;
   const src = join(clone, "skills", category, name);
   const dst = join(ROOT, name);
   if (!existsSync(join(src, "SKILL.md"))) {
     const moved = findMoved(name);
     console.error(`${name}: not in upstream skills/${category}/${moved ? `; it is now in skills/${moved}/, update upstream.json` : "; removed upstream?"}`);
     problems++;
+    continue;
+  }
+  // A local wrapper may keep the upstream SKILL.md as plain reference text,
+  // avoiding a second discoverable skill with the same name.
+  if (entry.reference) {
+    const target = join(ROOT, entry.reference);
+    const sourceText = readFileSync(join(src, "SKILL.md"), "utf8");
+    if (check) {
+      if (!existsSync(target) || readFileSync(target, "utf8").replace(/\r\n/g, "\n") !== sourceText.replace(/\r\n/g, "\n")) {
+        console.error(`${name}: reference differs at ${entry.reference}`);
+        problems++;
+      }
+    } else {
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, sourceText);
+      console.log(`${name}: copied as reference ${entry.reference}`);
+    }
     continue;
   }
   if (!check) {

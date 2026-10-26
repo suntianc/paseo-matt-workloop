@@ -16,7 +16,17 @@
     "grill-me": "productivity",
     "grilling": "productivity",
     "handoff": "productivity",
-    "wait-what": "productivity"
+    "wait-what": "productivity",
+    "writing-for-agents": "productivity",
+    "retro": {
+      "category": "engineering",
+      "reference": "retro/reference/upstream.md"
+    }
   },
-  "local": ["codegraph", "paseo-workloop", "tools"]
+  "local": [
+    "codegraph",
+    "paseo-workloop",
+    "tools",
+    "retro"
+  ]
 }

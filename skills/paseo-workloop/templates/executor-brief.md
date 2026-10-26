@@ -13,7 +13,7 @@ You are the executor for one ticket in a Paseo workloop run. This brief is your 
 - Branch: `{{branch}}`
 - Base: `{{baseSha}}`, the tip of `{{integrationBranch}}` when you were dispatched
 - Work only inside this worktree. Leave other worktrees, other branches and the main checkout alone.
-- If `git rev-parse HEAD` isn't `{{baseSha}}` when you start, stop and report `blocked`.
+- Expected starting HEAD: `{{startSha}}`. If HEAD differs, reconcile with the orchestrator before editing. A recovery handoff may include uncommitted work to continue.
 {{setup}}
 
 ## How to work
@@ -23,6 +23,7 @@ Read the `implement` skill at `{{implementSkill}}` and follow it, with these ove
 - The ticket is the one above. Don't fetch anything from an issue tracker.
 - Build with the `tdd` skill (`{{tddSkill}}`) at the agreed seams.
 - **Skip implement's final code-review step.** A separate reviewer agent reviews your work.
+- For agent-facing documents, skills, specs and instructions, read `{{skillsRoot}}/writing-for-agents/SKILL.md`. Keep human-facing documentation appropriate to its readers.
 - Where a skill says "call the Skill tool with X", read `{{skillsRoot}}/X/SKILL.md` and follow it instead, so you use the same skill versions as the rest of the run. Don't invoke skills through a tool.
 
 After integration the orchestrator runs these checks: {{checks}}. Make sure they pass in your worktree before you report `done`.

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Retro"
+  short_description: "Find recurring pitfalls and suggest improvements without applying them."

@@ -4,12 +4,13 @@ This directory contains the skill collection. Run the commands below from `skill
 
 This collection holds a set of agent skills for taking a feature from idea to integrated code. It has two layers:
 
-- **Upstream skills, unmodified.** Fifteen skills come from [mattpocock/skills](https://github.com/mattpocock/skills), at the commit recorded in [tools/upstream.json](tools/upstream.json). They are kept byte-for-byte identical to upstream.
+- **Upstream skills, unmodified.** Seventeen skill sources come from [mattpocock/skills](https://github.com/mattpocock/skills), at the commit recorded in [tools/upstream.json](tools/upstream.json). They are kept byte-for-byte identical to upstream.
 - **Local skills.**
-  - [paseo-workloop](paseo-workloop/SKILL.md) takes a change to integrated code with Paseo agents: a single scoped ticket (a direct run) or a multi-ticket feature with parallel executors. It is the main entry point.
+  - [paseo-workloop](paseo-workloop/SKILL.md) routes Quick work to the current session and Direct/Full runs to Paseo. It is the main entry point.
+  - [retro](retro/SKILL.md) provides a suggestion-only entry point; its unmodified upstream source is retained under `retro/reference/upstream.md`.
   - [codegraph](codegraph/SKILL.md) covers the CodeGraph code index.
 
-Upstream skills are never edited here. Whatever the workloop needs done differently goes into its own briefs: [executor](paseo-workloop/templates/executor-brief.md) and [reviewer](paseo-workloop/templates/reviewer-brief.md). These tell each agent which steps of the upstream skill to skip or replace. Because upstream stays untouched, updating is a copy.
+Upstream source copies are never edited here. The retro wrapper narrows its upstream reference to findings and suggestions. Whatever the workloop needs done differently goes into its own briefs: [executor](paseo-workloop/templates/executor-brief.md) and [reviewer](paseo-workloop/templates/reviewer-brief.md). These tell each agent which steps of the upstream skill to skip or replace. Because upstream stays untouched, updating is a copy.
 
 ## Skills
 
@@ -20,6 +21,8 @@ Upstream skills are never edited here. Whatever the workloop needs done differen
 | implement, tdd | upstream | executors |
 | code-review | upstream | reviewers |
 | diagnosing-bugs | upstream | escalations |
+| writing-for-agents | upstream | agent-facing documents and skills |
+| retro | local entry point, upstream reference | whole-run findings and suggestions; no automatic implementation |
 | codebase-design, improve-codebase-architecture, handoff, wait-what | upstream | not used directly |
 | setup-matt-pocock-skills | upstream | not needed by the workloop, whose runs keep their own tracker; run it only to use upstream skills on their own |
 | paseo-workloop | local | orchestration |
@@ -46,7 +49,7 @@ The workloop doesn't need `setup-matt-pocock-skills`, because a run keeps its sp
 
 To use `/tidy-docs` in a repo, register it once per machine with `node paseo-workloop/scripts/tidy-docs.mjs install --repo <repo>`. It installs an Agent Skills project skill, so it works in Claude Code as `/tidy-docs` and in pi or other Agent Skills agents as `/skill:tidy-docs`. The installed files hold this machine's paths, so they're excluded from git rather than committed. See [tidy docs](paseo-workloop/reference/tidy-docs.md).
 
-paseo-workloop also needs:
+Direct and Full runs also need (Quick does not):
 
 - Node.js 18.3 or later;
 - git;
@@ -85,7 +88,7 @@ git diff                                       # read what changed upstream
 node tools/link-check.mjs
 ```
 
-To add another upstream skill, list it under `skills` in `tools/upstream.json` with its upstream category, then sync. Local skills are listed under `local`.
+To add another upstream skill, list it under `skills` in `tools/upstream.json` with its upstream category, then sync. An entry may use `{ "category": "engineering", "reference": "retro/reference/upstream.md" }` to preserve upstream as a reference beneath a local entry point. Local skills are listed under `local`.
 
 ## Checks
 

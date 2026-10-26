@@ -19,7 +19,7 @@ It compares the run state with Paseo and with git, and warns about three things.
 
 **A running or in-review task whose worktree has gone.**
 
-- *Fix:* `WL retry <NN> --reason "worktree lost"`.
+- *Fix:* Reconcile the path first. If the tree cannot be recovered, use `WL retry <NN> --new-worktree --reason "<evidence>"`; the old attempt remains recorded.
 
 **The integration worktree isn't at the recorded tip.**
 
@@ -33,18 +33,17 @@ Run `paseo agent inspect <agentId>` and act on what it shows:
 
 - **Running:** arm `WL watch` and end the turn; use the completion notification. Use a bounded patrol only for diagnosis.
 - **Idle:** handle it as patrol would; the report tells you what happened.
-- **Missing or archived:** `WL retry`.
+- **Error:** inspect the actual cause and recover the original session where possible, then `WL send`. A temporary error is not a reason to create a new tree.
+- **Unrecoverable session:** after old workers are stopped, `WL retry <NN> --reason "<why>"` replaces the executor but keeps its branch/worktree, including uncommitted changes. Add `--file <handoff>` for context the reports do not carry. Then dispatch the new attempt.
+- **Unusable worktree:** add `--new-worktree` to retry, with the reason. Inspect the preserved old work before carrying it forward.
 
-### 3. Finish interrupted cleanups
+Ordinary review rework uses `send` to the same executor. A defect found after integration is a new repair ticket, new session and new worktree; the completed executor stays as evidence.
 
-A done task that has no cleanup time recorded was interrupted during cleanup. `WL cleanup <NN>` finishes whatever is left: archiving the workspace, removing the worktree, deleting the branch. It's idempotent and repeats the guards each time:
+### 3. Finish and archive
 
-- the candidate is on the integration branch;
-- no agent of the task is running;
-- the worktree is clean;
-- `git branch -d` refuses unmerged work.
+A done ticket with no cleanup time is normally waiting for the whole run's retrospective, not an interrupted cleanup. `finish` validates delivery and retains sessions. Record retro findings or a brief skip reason, then `archive` captures transcripts and cleans up together.
 
-If a guard fails, look at the cause. Don't force the cleanup.
+If archive was interrupted, rerun `WL archive`. It reuses the saved evidence and resumes cleanup. Existing guards protect dirty and unmerged work; cancelled/replaced worktrees are retained for a separate decision while their sessions are archived. Read the retained-path list before deleting anything manually.
 
 ### 4. Leftover `.lock` files
 
@@ -62,5 +61,7 @@ The run directory is `$WORKLOOP_ROOT/<project>/<feature>/`:
 | `reports/` | What each executor reported. |
 | `reviews/` | The reviewers' reports. |
 | `messages/` | Every message you sent to an executor. |
-| `integration/` | The integration worktree. `finish` removes it. |
+| `integration/` | The integration worktree. `archive` removes it. |
 | `final-review.md` | Your final review. |
+
+Session transcripts and the agent/attempt index live under `evidence/`; retrospective outputs live under `retros/`. They remain after archival.

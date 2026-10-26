@@ -8,10 +8,12 @@
 
 ## 1. 技能清单
 
-以 **`paseo-workloop`** 为编排入口，也可单独使用配套技能。整套包含 15 个上游技能，以及 `paseo-workloop`、`codegraph` 两个本地技能。
+以 **`paseo-workloop`** 为编排入口，也可单独使用配套技能。整套收录 17 个上游技能来源，并提供本地 `paseo-workloop`、`codegraph` 和只输出建议的 `retro` 入口。
 
 | 技能 | 用途 |
 | --- | --- |
+| [retro](skills/retro/SKILL.md) | 复盘重复问题并建议落地方式，由用户决定是否实施。 |
+| [writing-for-agents](skills/writing-for-agents/SKILL.md) | 编写清晰、按需读取的 Agent 指令和参考资料。 |
 | [paseo-workloop](skills/paseo-workloop/SKILL.md) | 通过 Paseo 协调任务、独立 worktree、独立审查、返工与串行集成。 |
 | [grill-me](skills/grill-me/SKILL.md) | 与用户澄清需求目标、边界和设计选择。 |
 | [grill-with-docs](skills/grill-with-docs/SKILL.md) | 在澄清需求时记录领域术语和架构决策。 |
@@ -32,26 +34,31 @@
 
 ## 2. 工作流程
 
-![需求共识、Direct 或 Full 路线、执行、独立审查、串行集成与交付](docs/assets/workloop.svg)
+![Quick、Direct、Full 路线，以及合入、验收、复盘判断和集中归档](docs/assets/workloop.svg)
 
-澄清需求后，与用户共同选择路线：
+按任务需要选择流程。已有授权继续有效，澄清实质性问题，不在每个阶段重复确认。
 
-| 路线 | 适用条件 | 待用户确认的材料 |
+| 路线 | 适用情况 | 执行方式 |
 | --- | --- | --- |
-| **Direct** | 目标、范围和验收检查明确，改动不涉及公共行为或共享接口。 | 一张带 `Scope` 的 ticket，每项验收标准都有对应验证命令。 |
-| **Full** | 需要设计决策、更大范围，或可并行执行的多个任务。 | spec、带依赖关系的 tickets，以及测试方案。 |
+| **Quick** | 目标明确、改动局部可逆、验证直接。 | 当前会话执行、验证、交付，无需开票或 Paseo daemon。 |
+| **Direct** | 范围明确，值得委派执行并独立审查。 | 一张有范围的 ticket；合入后可追加 repair ticket。 |
+| **Full** | 存在设计取舍、任务依赖或并行协作需要。 | spec、带依赖的 tickets，以及整体复核。 |
 
-两条路线都经过以下关口：
+Direct 和 Full 使用以下生命周期：
 
-| 阶段 | 完成条件 |
+| 阶段 | 结果 |
 | --- | --- |
-| **确认** | 用户已确认范围、任务和验收检查。 |
-| **执行** | 执行者已提交任务改动，worktree 干净，并提供包含验收检查结果的本轮 `done` 报告。 |
-| **审查** | 冻结的候选 commit 已通过基于任务和验证证据的独立审查。需要返工时，提交新的候选再次审查。 |
-| **集成** | 通过审查的候选已合入本地集成分支，约定检查全部通过。冲突交回执行者处理；检查失败则回滚本次合入。 |
-| **收尾** | 所有任务均已关闭，`finish` 检查通过并完成清理。Full 还要求编排者对当前集成提交完成文档与整体复核；缺陷通过 repair ticket 修复。 |
+| **执行与审查** | 执行者提交改动与证据，独立 reviewer 审查冻结候选。返修继续使用原执行者会话和 worktree。 |
+| **合入** | 候选合入并通过检查，解除后续任务依赖；保留子代理会话与工作区。合入冲突或检查失败交回原执行者。 |
+| **验收完成** | `finish` 检查当前集成提交；Full 还需要整体复核。会话保留供复盘。 |
+| **Retro** | 以整个 run 为单位，检查重复三方故障、业务坑、错误行为与重复摸索。输出发现和落地建议，或记录简短的无需复盘理由。建议不自动实施。 |
+| **集中归档** | 保存 CLI 活动记录和 Agent/attempt 索引，再统一归档会话。已合入的工作区清理；取消或替换 attempt 中未合入、未提交的工作保留。用户是否采纳建议不阻塞归档。 |
 
-交付物是本地 `workloop/<feature>` 分支。是否发布、创建 PR 或合入主分支，由用户决定。
+可恢复错误继续原会话。会话丢失时，`retry` 默认替换执行者并复用工作区；确需新建工作区时显式使用 `--new-worktree`。**合入后**发现缺陷，使用新的 repair ticket、会话和工作区，从最新集成提交开始修复。
+
+可以在执行中或归档后主动调用 `retro`。中途复盘不停止执行，也不替代 `finish` 后的收尾判断。Agent 文档使用 `writing-for-agents` 编写；`tidy-docs` 负责分类和存放。
+
+票据流程交付本地 `workloop/<feature>` 分支。是否发布、创建 PR 或合入主分支，由用户决定。
 
 ## 3. 安装
 
@@ -93,7 +100,7 @@ npx --yes github:suntianc/paseo-matt-workloop#main update
 
 ### 准备运行环境
 
-启动 run 前，确认以下条件：
+启动 Direct 或 Full run 前，确认以下条件（Quick 不需要 Paseo）：
 
 | 条件 | 就绪标准 |
 | --- | --- |
@@ -113,9 +120,9 @@ npx --yes github:suntianc/paseo-matt-workloop#main update
 启动 run 前，先和我确认范围及验收检查。
 ```
 
-**编排 run 时**，读取并遵循 [paseo-workloop](skills/paseo-workloop/SKILL.md)。其中定义了命令、确认关口、角色 briefs 和集成步骤。Workloop 在运行目录中维护自己的任务跟踪，可直接使用配套技能启动。
+**编排 run 时**，读取并遵循 [paseo-workloop](skills/paseo-workloop/SKILL.md)。其中选择执行路线，并链接相应的执行、恢复和归档步骤。Workloop 在运行目录中维护自己的任务跟踪，可直接使用配套技能启动。
 
-规格、任务、briefs、报告和状态默认保存在 `~/.workloop/<project>/<feature>/`，可通过 `WORKLOOP_ROOT` 调整根目录。更新脚本前，先结束使用旧脚本的活动 run。
+规格、任务、briefs、报告、复盘结果、活动记录和状态默认保存在 `~/.workloop/<project>/<feature>/`，可通过 `WORKLOOP_ROOT` 调整根目录。更新脚本前，先结束使用旧脚本的活动 run。
 
 按当前情况查阅对应说明：
 
@@ -126,7 +133,7 @@ npx --yes github:suntianc/paseo-matt-workloop#main update
 
 ## 5. 致谢
 
-- **[Matt Pocock / skills](https://github.com/mattpocock/skills)**：为这套工作流提供上游工程与效率技能。上游内容保持原样，workloop 的适配集中在本地技能和角色 briefs 中。
+- **[Matt Pocock / skills](https://github.com/mattpocock/skills)**：为这套工作流提供上游工程与效率技能。上游来源保持原样，适配集中在本地技能和角色 briefs 中。本地 retro 入口将上游原文保留在 `retro/reference/upstream.md` 作为参考。
 - **[Paseo](https://github.com/getpaseo/paseo)**：提供独立编程 Agent、工作区与完成通知的编排基础。
 
 本地代码采用 [MIT License](LICENSE)。上游声明保留在 [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)，来源版本与流程图归属记录见 [NOTICE.md](NOTICE.md)。

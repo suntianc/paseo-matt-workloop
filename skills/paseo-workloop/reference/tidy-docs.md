@@ -16,9 +16,9 @@ It registers `/tidy-docs` on this machine, for any agent that reads Agent Skills
 
 Run `install` again and it says the files are already there; if either differs, it refuses and touches neither rather than overwrite changes someone made. It doesn't commit anything.
 
-The user then runs it as `/tidy-docs` in Claude Code, or as `/skill:tidy-docs` in pi. Because the tidying is a full run, the session that runs it must meet the workloop's prerequisites: read "Before you start" in [SKILL.md](../SKILL.md) and satisfy it first. A session that can't dispatch agents can't tidy a repo.
+The user then runs it as `/tidy-docs` in Claude Code, or as `/skill:tidy-docs` in pi. Because the tidying is a full run, the session that runs it must meet the workloop's prerequisites: read "Before you start" in [run procedure](run.md) and satisfy it first. A session that can't dispatch agents can't tidy a repo.
 
-Installing the command isn't what makes the end-of-run check work, though, and a repo can have a registry without it: once a repo has a registry, every full run there also checks the documents it added before `finish` ([SKILL.md](../SKILL.md), step 4). That check is why tidying once keeps working: the next run that adds a `PROGRESS.md` notices it without anyone remembering to look.
+Installing the command isn't what makes the end-of-run check work, though, and a repo can have a registry without it: once a repo has a registry, every full run there also checks the documents it added before `finish` ([run procedure](run.md), step 4). That check is why tidying once keeps working: the next run that adds a `PROGRESS.md` notices it without anyone remembering to look.
 
 ## 2. Target state
 
@@ -104,13 +104,13 @@ The default actions apply without asking. Ask the user, in one message, only abo
 
 ## 6. Carry it out as one full run
 
-From here it's an ordinary full run, so [SKILL.md](../SKILL.md) applies:
+From here it's an ordinary full run, so [run procedure](run.md) applies:
 
 1. `WL scratch --feature <slug> --repo <repo>` for the run directory.
 2. Write the spec's Implementation Decisions from the classifications, and one ticket per kind of change: ADRs from the rationale documents, the glossary merge, `AGENTS.md` consolidation, the registry itself, and the removals. Removals and the registry both touch `AGENTS.md` and `docs/adr-history.md`, so give them a blocking edge or make one ticket own both files.
 3. `WL init` with the run's checks. `WL config --check` replaces the whole check list rather than adding to it, so pass every check the run keeps.
-4. ADRs settled during grilling go in through `WL decisions` before the first dispatch, in the integration worktree. See "Record decisions" in [SKILL.md](../SKILL.md).
-5. Run the loop, then the final review and `finish`.
+4. ADRs settled during grilling go in through `WL decisions` before the first dispatch, in the integration worktree. See "Record decisions" in [run procedure](run.md).
+5. Run the loop, then the final review, `finish`, retro assessment and `archive`.
 
 Each removed document gets a row in the "Removed documents" table of `docs/adr-history.md`. The `Original` column holds `git show <sha>:<path>`, where `<sha>` is the commit the change is based on, so the command works from any later checkout. Say in "What it was" what the document was, in one line, and where its still-open items went. Put the deletion and its row in the same commit, so `git log` never shows a document gone with no trace of what it said.
 

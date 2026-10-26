@@ -79,7 +79,7 @@ const shellArg = (s) => WIN ? winQuote(s) : `'${String(s).replace(/'/g, "'\\''")
 
 // The single Paseo backend. PASEO_CLI may be a command on PATH, a path to the
 // CLI binary/.cmd shim, or a path to the CLI's JS entry (run with this node).
-function paseo(args, { timeout = Number(process.env.PASEO_TIMEOUT_MS || 30000) } = {}) {
+function paseo(args, { timeout = Number(process.env.PASEO_TIMEOUT_MS || 30000), raw = false } = {}) {
   if (!Number.isFinite(timeout) || timeout <= 0) fail("Paseo timeout must be a positive number of milliseconds");
   const cli = process.env.PASEO_CLI || "paseo";
   const opts = { encoding: "utf8", maxBuffer: 64 << 20, timeout: Math.ceil(timeout), killSignal: "SIGKILL" };
@@ -91,6 +91,10 @@ function paseo(args, { timeout = Number(process.env.PASEO_TIMEOUT_MS || 30000) }
   if (r.error?.code === "ETIMEDOUT") fail(`${what} timed out after ${Math.ceil(timeout)}ms. Reconcile live state before retrying a write; it may have reached the daemon.`);
   if (r.error) fail(`${what}: ${r.error.message} (set PASEO_CLI if paseo is not on PATH)`);
   const text = r.stdout || "";
+  if (raw) {
+    if (r.status !== 0) fail(`${what} failed: ${(r.stderr || text).trim()}`);
+    return text;
+  }
   if (r.status === 0 && !text.trim()) return null;
   const start = text.search(/[[{]/);
   let data;
@@ -169,6 +173,9 @@ function saveState(dir, state) { writeAtomic(statePath(dir), `${JSON.stringify(s
 // The log is an audit trail. State is saved first, so a crash can lose a log
 // line but never leaves the log ahead of the state.
 function record(dir, state, kind, fields = {}) {
+  if (["import", "config", "decisions", "worktree", "prepare", "dispatch", "send", "freeze", "review", "integrate", "retry", "cancel"].includes(kind)) {
+    state.completion = null;
+  }
   state.seq = (state.seq || 0) + 1;
   saveState(dir, state);
   appendFileSync(join(dir, "events.jsonl"), `${JSON.stringify({ seq: state.seq, ts: now(), kind, ...fields })}\n`);
@@ -523,6 +530,10 @@ function tidyDocsReminder(s) {
 }
 
 function nextSteps(dir, s) {
+  if (s.finishedAt) return ["archived; retrospective evidence remains in the run directory"];
+  if (s.completion) return [s.retro?.completion === s.completion.at
+    ? "archive — retrospective assessed; archive the retained sessions together"
+    : "assess the whole run: retro --file <report> or retro --skip --reason <why>, then archive"];
   const out = [];
   const tasks = tasksOf(s);
   // Suggesting a review the budget can't start only earns a refusal, so say what it waits for.
@@ -845,7 +856,14 @@ function cmdConfig(dir, s, opts) {
 
 function cmdImport(dir, s) {
   const { tickets, warnings } = readTickets(s.tickets);
-  if (isDirect(s) && tickets.length > 1) fail(`a direct run holds one ticket, but ${s.tickets} has ${tickets.length}. To grow the work, cancel the ticket, finish this run, and start a full run.`);
+  if (isDirect(s)) {
+    const added = tickets.filter((k) => !s.tasks[k.id]);
+    if (added.length && (added.length !== 1 || tasksOf(s).some((t) => t.status !== "done")
+      || !added[0].blockedBy.some((id) => s.tasks[id]?.status === "done"))) {
+      fail("a direct run holds one ticket at a time; after integration it can import one repair blocked by an integrated ticket. Broader work belongs in a full run.");
+    }
+    for (const k of added) if (!ticketScope(k.file, readFileSync(k.file, "utf8"))) fail(`direct repair #${k.id} needs a "Scope:" line`);
+  }
   const changes = mergeTickets(s, tickets);
   const missing = Object.values(s.tasks).filter((t) => !tickets.some((k) => Number(k.id) === Number(t.id)));
   record(dir, s, "import", { changes });
@@ -862,16 +880,16 @@ function cmdDispatch(dir, s, id, opts) {
   if (open.length) fail(`#${t.id} is blocked by ${open.map((b) => `#${b} (${s.tasks[b]?.status})`).join(", ")}`);
   if (t.status === "ready" && executorsBusy(s) >= s.config.maxExecutors) fail(`executor budget full (${s.config.maxExecutors} running); wait for one to reach review, or raise it with \`config --max-executors\``);
   checkIntegration(s);
-  const tip = s.integration.tip;
-  const branch = `wl-${s.feature}-${t.id}-${t.attempt}`;
+  const tip = t.reuseWorktree ? t.baseSha : s.integration.tip;
+  const branch = t.reuseWorktree ? t.branch : `wl-${s.feature}-${t.id}-${t.attempt}`;
 
   const vars = {
-    task: t.id, title: t.title, attempt: t.attempt, ticketPath: pathArg(t.file), specPath: pathArg(s.spec),
-    branch, baseSha: tip, worktree: "(set at dispatch)", reportPath: pathArg(reportPath(dir, t)),
+    task: t.id, title: t.title, attempt: t.attempt, ticketPath: pathArg(t.file), specPath: pathArg(isDirect(s) ? t.file : s.spec),
+    branch, baseSha: tip, startSha: tip, worktree: "(set at dispatch)", reportPath: pathArg(reportPath(dir, t)),
     skillsRoot: pathArg(SKILLS_ROOT), implementSkill: skillPath("implement"), tddSkill: skillPath("tdd"),
     integrationBranch: s.integration.branch, checks: list(s.config.checks),
-    setup: s.config.setup.length ? `- Before anything else, set up the worktree: ${list(s.config.setup)}.` : "",
-    notes: notesFrom(opts),
+    setup: !t.reuseWorktree && s.config.setup.length ? `- Before anything else, set up the worktree: ${list(s.config.setup)}.` : "",
+    notes: [t.handoff || "", notesFrom(opts)].filter(Boolean).join("\n\n"),
   };
   const launch = launchSettings(s.config, "executor", opts);
   if (opts["dry-run"]) {
@@ -882,6 +900,7 @@ function cmdDispatch(dir, s, id, opts) {
 
   // 1. worktree — adopt one left by an interrupted dispatch, else create it.
   let wt = worktreeFor(s.repo, branch);
+  if (t.reuseWorktree && (!wt || normPath(wt) !== normPath(t.worktree))) fail("recovery worktree is missing or moved; reconcile it, or explicitly retry --new-worktree --reason <why>");
   if (!wt) {
     const res = paseo(opts.prepare
       ? ["workspace", "create", "--isolation", "worktree", "--mode", "branch-off", "--new-branch", branch, "--base", s.integration.branch, "--path", pathArg(s.repo), "--json"]
@@ -893,10 +912,11 @@ function cmdDispatch(dir, s, id, opts) {
   }
   wt = pathArg(wt); // paseo answers with backslashes on Windows; state, brief and --cwd must all spell it one way
   const h = head(wt);
-  if (h !== tip) fail(`worktree ${wt} is at ${short(h)}, expected the integration tip ${short(tip)}. Not starting the agent; inspect it (or \`retry ${t.id}\`).`);
+  if (!t.reuseWorktree && h !== tip) fail(`worktree ${wt} is at ${short(h)}, expected the integration tip ${short(tip)}. Not starting the agent; inspect it before continuing.`);
   if (git(wt, "branch", "--show-current") !== branch) fail(`worktree ${wt} is not on expected branch ${branch}; reconcile before dispatch`);
   Object.assign(t, { status: "running", branch, worktree: wt, baseSha: tip, promptedAt: now() });
   vars.worktree = pathArg(wt);
+  vars.startSha = h;
   writeFileSync(briefPath(dir, t), render("executor-brief.md", vars));
   record(dir, s, "worktree", { task: t.id, attempt: t.attempt, branch, worktree: wt, sha: tip });
 
@@ -924,8 +944,12 @@ function cmdDispatch(dir, s, id, opts) {
   say(`brief ${briefPath(dir, t)}`);
 }
 
-function requireIdle(id, role) {
-  const a = inspectAgent(id);
+function requireIdle(id, role, allowMissing = false) {
+  let a;
+  try { a = inspectAgent(id); } catch (e) {
+    if (!allowMissing || !["NOT_FOUND", "AGENT_NOT_FOUND"].includes(e.paseoCode)) throw e;
+    return { id, status: "missing", archived: true, missing: true };
+  }
   if (BUSY.has(a.status)) fail(`${role} ${id} is ${a.status}. Wait for it (patrol), or interrupt it with \`paseo agent stop ${id}\` first`);
   return a;
 }
@@ -969,7 +993,7 @@ function cmdReview(dir, s, id, opts) {
   const path = join(dir, "reviews", `${t.id}-${short(t.candidateSha)}${opts.again ? `-${Date.now()}` : ""}.md`);
   const vars = {
     task: t.id, title: t.title, worktree: pathArg(t.worktree), candidateSha: t.candidateSha, candidateShort: short(t.candidateSha),
-    fixedPoint: t.fixedPoint, ticketPath: pathArg(t.file), specPath: pathArg(s.spec), executorReport: pathArg(reportPath(dir, t)),
+    fixedPoint: t.fixedPoint, ticketPath: pathArg(t.file), specPath: pathArg(isDirect(s) ? t.file : s.spec), executorReport: pathArg(reportPath(dir, t)),
     reviewPath: pathArg(path), skillsRoot: pathArg(SKILLS_ROOT), codeReviewSkill: skillPath("code-review"), notes: notesFrom(opts),
     direct: isDirect(s) ? `\n${render("reviewer-direct.md", {})}` : "",
   };
@@ -1005,6 +1029,8 @@ function cmdSend(dir, s, id, opts) {
   requireIdle(t.agentId, "executor");
 
   const n = (t.messages || 0) + 1;
+  // Reports are overwritten by the executor; keep each previous round for retro.
+  if (existsSync(reportPath(dir, t))) writeAtomic(join(dir, "reports", `${t.id}-${t.attempt}-before-${n}.md`), readFileSync(reportPath(dir, t), "utf8"));
   const file = join(dir, "messages", `${t.id}-${t.attempt}-${n}.md`);
   const footer = `\n\n---\nThis continues task #${t.id} (brief: ${pathArg(briefPath(dir, t))}). When you stop, overwrite ${pathArg(reportPath(dir, t))} as the brief describes (first line \`Status: done | question | blocked\`). End with exactly three lines: Result: <done | question | blocked>, Report: ${pathArg(reportPath(dir, t))}, Summary: <one sentence>. Then end your turn.\n`;
   writeFileSync(file, body + footer);
@@ -1053,12 +1079,14 @@ function cmdIntegrate(dir, s, id, opts) {
   s.lastIntegratedAt = t.integratedAt;
   record(dir, s, "integrate", { task: t.id, attempt: t.attempt, sha: t.candidateSha, tip: s.integration.tip, override: t.override || undefined });
   say(`#${t.id} integrated: ${s.integration.branch} ${short(prev)} -> ${short(s.integration.tip)}`);
-  if (!opts.keep) cleanupTask(dir, s, t);
+  say("Sessions and worktree retained for the run retrospective; archive after finish and retro.");
   const unlocked = frontier(s).filter((x) => x.blockedBy.includes(t.id));
   if (unlocked.length) say(`unblocked: ${unlocked.map((x) => `#${x.id}`).join(", ")}`);
 }
 
 function cleanupTask(dir, s, t) {
+  requireArchiveReady(s);
+  if (!s.evidence || s.evidence.completion !== s.completion.at) fail("capture evidence before cleanup: run archive");
   if (t.status !== "done") fail(`#${t.id} is ${t.status}; only integrated tasks are cleaned up automatically`);
   if (t.cleanedAt) return say(`#${t.id} already cleaned up`);
   const integ = s.integration.worktree;
@@ -1073,7 +1101,7 @@ function cleanupTask(dir, s, t) {
   }
   gitTry(s.repo, "worktree", "prune");
   for (const id of [t.agentId, ...(t.reviewers || [])].filter(Boolean)) {
-    try { if (!inspectAgent(id).archived) paseo(["agent", "archive", id, "--json"]); } catch (e) { say(`note: could not archive agent ${id}: ${e.message.split("\n")[0]}`); }
+    if (!requireIdle(id, "run agent", true).archived) paseo(["agent", "archive", id, "--json"]);
   }
   if (t.branch && branchExists(s.repo, t.branch)) git(integ, "branch", "-d", t.branch); // -d refuses unmerged work
   t.cleanedAt = now();
@@ -1083,16 +1111,22 @@ function cleanupTask(dir, s, t) {
 
 function cmdRetry(dir, s, id, opts) {
   const t = task(s, id);
-  if (!["running", "in_review"].includes(t.status)) fail(`#${t.id} is ${t.status}; retry is for a running or in-review task whose executor can't continue`);
+  if (!["running", "in_review"].includes(t.status) && !(t.status === "ready" && t.reuseWorktree)) fail(`#${t.id} is ${t.status}; retry is for a task whose executor can't continue`);
   if (!opts.reason) fail("retry needs --reason");
-  if (t.agentId) requireIdle(t.agentId, "executor");
-  t.history.push({ attempt: t.attempt, agentId: t.agentId ?? null, launch: t.launch ?? null, branch: t.branch ?? null, worktree: t.worktree ?? null, candidateSha: t.candidateSha ?? null, reason: opts.reason, at: now() });
+  if (t.agentId) requireIdle(t.agentId, "executor", true);
+  if (t.review?.agentId) requireIdle(t.review.agentId, "reviewer", true);
+  const reuse = !opts["new-worktree"];
+  if (reuse && (!t.worktree || !existsSync(t.worktree) || git(t.worktree, "branch", "--show-current") !== t.branch)) fail("worktree unavailable or on another branch; reconcile it, or use retry --new-worktree --reason <why>");
+  const previous = { attempt: t.attempt, agentId: t.agentId ?? null, launch: t.launch ?? null, branch: t.branch ?? null, worktree: t.worktree ?? null, baseSha: t.baseSha, candidateSha: t.candidateSha ?? null, reviewers: t.reviewers || [], review: t.review, reason: opts.reason, at: now() };
+  t.history.push(previous);
   const old = { branch: t.branch, worktree: t.worktree };
+  const handoff = `## Recovery handoff\n\nPrevious executor: ${t.agentId || "not launched"}; attempt: ${t.attempt}. Reason: ${opts.reason}\n\nRead the previous brief ${pathArg(briefPath(dir, t))} for context (the current brief supersedes its starting-HEAD and reporting instructions), report ${pathArg(reportPath(dir, t))} if present, and this task's messages/reviews under ${pathArg(dir)}. ${reuse ? "Continue the existing work, including uncommitted changes; inspect git status and diff before editing." : "This is a fresh worktree. Inspect the preserved previous attempt before deciding which work to carry forward."}\nPrevious worktree: ${old.worktree || "none"}; branch: ${old.branch || "none"}.\n${opts.file ? readFileSync(resolve(opts.file), "utf8") : ""}`;
+  const baseSha = t.baseSha;
   const next = `a${Number(t.attempt.slice(1)) + 1}`;
-  Object.assign(t, { status: "ready", attempt: next, agentId: null, launch: null, branch: null, worktree: null, baseSha: null, candidateSha: null, fixedPoint: null, review: null, reviewers: [], rounds: 0, messages: 0, promptedAt: null });
-  record(dir, s, "retry", { task: t.id, attempt: next, reason: opts.reason });
+  Object.assign(t, { status: "ready", attempt: next, agentId: null, launch: null, branch: reuse ? old.branch : null, worktree: reuse ? old.worktree : null, baseSha: reuse ? baseSha : null, candidateSha: null, fixedPoint: null, review: null, reviewers: [], messages: 0, promptedAt: null, reuseWorktree: reuse, handoff });
+  record(dir, s, "retry", { task: t.id, attempt: next, reason: opts.reason, reuseWorktree: reuse });
   say(`#${t.id} reset to ready as attempt ${next}.`);
-  if (old.worktree) say(`the old attempt is kept: worktree ${old.worktree}, branch ${old.branch}. Archive it in Paseo and delete the branch once nothing in it is needed.`);
+  if (old.worktree) say(`${reuse ? "reusing" : "the old attempt is kept:"} worktree ${old.worktree}, branch ${old.branch}. Sessions remain available for retro.`);
 }
 
 function cmdHold(dir, s, id, opts, on) {
@@ -1146,17 +1180,111 @@ function cmdFinish(dir, s) {
   }
   const checks = runAll(s.config.checks, s.integration.worktree);
   if (!checks.ok) fail(`\`${checks.cmd}\` fails on the integration tip:\n${checks.output}`);
-  for (const t of tasksOf(s)) if (t.status === "done" && !t.cleanedAt) cleanupTask(dir, s, t);
-  git(s.repo, "worktree", "remove", s.integration.worktree);
-  s.finishedAt = now();
+  for (const a of runAgents(s)) requireIdle(a.id, "run agent", true);
+  s.completion ||= { at: now(), tip: s.integration.tip };
   record(dir, s, "finish", { tip: s.integration.tip });
   if ((s.heartbeat || s.heartbeatLedger?.ids?.length || s.heartbeatLedger?.pendingCreate) && process.env.PASEO_AGENT_ID === s.orchestratorId) cmdWatch(dir, s);
   const commits = git(s.repo, "log", "--oneline", "--first-parent", `${s.baseSha}..${s.integration.tip}`);
-  say(`finished. ${s.integration.branch} is at ${short(s.integration.tip)} (base ${s.baseRef} ${short(s.baseSha)}):\n${commits}`);
+  say(`delivery checked. ${s.integration.branch} is at ${short(s.integration.tip)} (base ${s.baseRef} ${short(s.baseSha)}):\n${commits}`);
   say("Nothing was pushed or merged into the base; that is the user's call.");
-  const left = tasksOf(s).flatMap((t) => t.history.filter((h) => h.branch && branchExists(s.repo, h.branch)).map((h) => `${h.branch} (#${t.id} ${h.attempt}: ${h.reason ?? "superseded"})`));
-  const cancelled = tasksOf(s).filter((t) => t.status === "cancelled" && t.branch && branchExists(s.repo, t.branch)).map((t) => `${t.branch} (#${t.id} cancelled)`);
-  if (left.length || cancelled.length) say(`left for you to decide on:\n  ${[...left, ...cancelled].join("\n  ")}`);
+  say("Sessions retained. Read the run evidence, assess retro, then archive. Use `evidence` to save CLI transcripts.");
+}
+
+// Session inventory includes replaced attempts and superseded reviewers. Live
+// labels recover workers created before a lost receipt; state covers old runs.
+function runAgents(s) {
+  const agents = new Map();
+  const worktrees = new Set(tasksOf(s).flatMap((t) => [...t.history, t]).map((a) => a.worktree && normPath(a.worktree)).filter(Boolean));
+  for (const t of tasksOf(s)) {
+    for (const a of [...t.history, t]) {
+      for (const id of [a.agentId, ...(a.reviewers || []), a.review?.agentId].filter(Boolean)) {
+        const entry = agents.get(id) || { id, tasks: [], cwd: a.worktree || t.worktree };
+        entry.tasks.push({ task: t.id, attempt: a.attempt, role: id === a.agentId ? "executor" : "reviewer" });
+        agents.set(id, entry);
+      }
+    }
+  }
+  for (const a of listAgents({ workloop: s.runKey }, { all: true })) {
+    if (!agents.has(a.id) && worktrees.has(normPath(a.cwd))) agents.set(a.id, { id: a.id, cwd: a.cwd, tasks: [] });
+  }
+  return [...agents.values()];
+}
+
+function cmdEvidence(dir, s) {
+  const folder = join(dir, "evidence");
+  if (s.finishedAt && existsSync(join(folder, "index.json"))) return say(`archived run: use the preserved evidence at ${folder}`);
+  mkdirSync(folder, { recursive: true });
+  const agents = runAgents(s);
+  for (const a of agents) {
+    const file = `${encodeURIComponent(a.id)}.txt`;
+    // An already deleted session is a disclosed evidence gap, not an infinite
+    // archive blocker. Connectivity errors still abort before any cleanup.
+    let missing = false;
+    try { inspectAgent(a.id); } catch (e) {
+      if (!["NOT_FOUND", "AGENT_NOT_FOUND"].includes(e.paseoCode)) throw e;
+      missing = true;
+    }
+    const transcript = missing
+      ? (existsSync(join(folder, file)) ? readFileSync(join(folder, file), "utf8") : `Session ${a.id} is missing in Paseo. No transcript could be recovered; use the retained briefs, reports, messages and events.\n`)
+      : paseo(["agent", "logs", a.id], { raw: true });
+    writeAtomic(join(folder, file), transcript);
+    Object.assign(a, { file, capturedAt: now(), missing });
+    if (missing) say(`evidence gap: session ${a.id} is missing; recorded in the index`);
+  }
+  const index = { capturedAt: now(), completion: s.completion?.at || null, format: "Paseo CLI activity transcripts; tool output may be curated. Original agent IDs retained for deeper inspection.", agents };
+  writeAtomic(join(folder, "index.json"), `${JSON.stringify(index, null, 2)}\n`);
+  s.evidence = { completion: index.completion, capturedAt: index.capturedAt, path: join(folder, "index.json") };
+  record(dir, s, "evidence", { agents: agents.length });
+  say(`saved ${agents.length} session transcripts: ${folder}`);
+}
+
+function cmdRetro(dir, s, opts) {
+  if (Boolean(opts.skip) === Boolean(opts.file)) fail("retro needs --file <findings.md> or --skip --reason <why>");
+  if (opts.skip && !opts.reason?.trim()) fail("retro --skip needs --reason");
+  const text = opts.skip ? `No retrospective needed: ${opts.reason}\n` : readFileSync(resolve(opts.file), "utf8");
+  if (!text.trim()) fail("retro report is empty");
+  const folder = join(dir, "retros");
+  mkdirSync(folder, { recursive: true });
+  const path = join(folder, `${Date.now()}-${randomUUID().slice(0, 8)}.md`);
+  writeAtomic(path, text);
+  s.retro = { status: opts.skip ? "skipped" : "done", path, at: now(), completion: s.completion?.at || null };
+  record(dir, s, "retro", s.retro);
+  say(`retro ${s.retro.status}: ${path}. Suggestions only; no changes applied.${s.finishedAt ? " Run remains archived." : s.completion ? " Ready to archive." : " This is an interim retro; assess again after finish."}`);
+}
+
+function requireArchiveReady(s) {
+  if (!s.completion || s.completion.tip !== s.integration.tip) fail("run finish before archive; delivery has not been checked");
+  if (s.retro?.completion !== s.completion.at) fail("assess retro before archive: retro --file <report> or --skip --reason <why>");
+}
+
+function cmdArchive(dir, s) {
+  if (s.finishedAt) return say("already archived; run evidence is retained");
+  requireArchiveReady(s);
+  const agents = runAgents(s);
+  for (const a of agents) requireIdle(a.id, "run agent", true);
+  if (existsSync(s.integration.worktree)) checkIntegration(s);
+  // Snapshot every session before the first destructive cleanup. On an
+  // interrupted archive reuse that snapshot, even if Paseo no longer serves it.
+  if (!s.archiveStartedAt) {
+    cmdEvidence(dir, s);
+    s.archiveStartedAt = now();
+    record(dir, s, "archive-start");
+  }
+  if ((s.heartbeat || s.heartbeatLedger?.ids?.length || s.heartbeatLedger?.pendingCreate) && process.env.PASEO_AGENT_ID === s.orchestratorId) cmdWatch(dir, s);
+  for (const t of tasksOf(s)) if (t.status === "done" && !t.cleanedAt) cleanupTask(dir, s, t);
+  for (const a of agents) if (!requireIdle(a.id, "run agent", true).archived) paseo(["agent", "archive", a.id, "--json"]);
+  // Cancelled/replaced workspaces can contain unmerged or uncommitted work.
+  // Archive their sessions but retain those trees for a separate user decision.
+  const retained = new Map();
+  for (const t of tasksOf(s)) for (const a of [...t.history, t]) {
+    if (a.worktree && existsSync(a.worktree)) retained.set(a.worktree, { worktree: a.worktree, branch: a.branch });
+  }
+  if (existsSync(s.integration.worktree)) git(s.repo, "worktree", "remove", s.integration.worktree);
+  s.finishedAt = now();
+  s.retainedWorktrees = [...retained.values()];
+  record(dir, s, "archive", { retainedWorktrees: s.retainedWorktrees });
+  say(`archived. ${s.integration.branch} stays at ${short(s.integration.tip)}; evidence and retro remain in ${dir}`);
+  if (retained.size) say(`unmerged/cancelled work retained for your decision:\n${[...retained.values()].map((a) => `  ${a.worktree} (${a.branch})`).join("\n")}`);
 }
 
 // ------------------------------------------------------- status and patrol
@@ -1222,7 +1350,7 @@ function printStatus(dir, s, live, asJson = false) {
       blockers: t.blockedBy.filter((b) => s.tasks[b]?.status !== "done"),
     };
   });
-  if (asJson) return say(JSON.stringify({ run: dir, mode: s.mode || "full", integration: s.integration, config: s.config, launch: launchTable(s.config), tasks: rows, next: nextSteps(dir, s) }, null, 2));
+  if (asJson) return say(JSON.stringify({ run: dir, mode: s.mode || "full", integration: s.integration, completion: s.completion, retro: s.retro, archivedAt: s.finishedAt, config: s.config, launch: launchTable(s.config), tasks: rows, next: nextSteps(dir, s) }, null, 2));
   say(`run ${s.project}/${s.feature}${isDirect(s) ? " (direct)" : ""} · base ${s.baseRef}@${short(s.baseSha)} · ${s.integration.branch}@${short(s.integration.tip)}${s.finishedAt ? " · FINISHED" : ""}`);
   const reviewing = tasksOf(s).filter((t) => t.review && !reviewReport(t)).length;
   say(`executors ${executorsBusy(s)}/${s.config.maxExecutors} · reviews pending ${reviewing} (max ${s.config.maxReviewers})`);
@@ -1329,13 +1457,17 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
   freeze <NN>                          record the executor's commit as the candidate
   review <NN> [--prepare] [--again]     freeze if needed, prepare/start a reviewer
   send <NN> [--prepare] --text t | --file f | --merge-tip   message an idle executor
-  integrate <NN> [--override reason] [--keep]   merge, run checks, clean up
-  cleanup <NN>                         finish an interrupted cleanup
-  retry <NN> --reason r                new attempt when the executor can't continue
+  integrate <NN> [--override reason]   merge and check; retain sessions/worktree
+  cleanup <NN>                         resume cleanup after finish, retro and evidence
+  retry <NN> --reason r [--file handoff] [--new-worktree]
+                                       replace a lost executor; reuse its worktree by default
   hold <NN> --reason r | unhold <NN>   park a task (waiting on the user, etc.)
   cancel <NN> --reason r
   note [<NN>] --text t
-  finish                               after final-review.md passes: checks, cleanup
+  finish                               check delivery; retain sessions for retro
+  evidence                             save CLI transcripts and agent/attempt index
+  retro --file <report> | --skip --reason <why>   record findings or no-retro decision
+  archive                              after finish and retro: snapshot, archive, clean up
 
 env: WORKLOOP_ROOT (default ~/.workloop) · WORKLOOP_RUN · PASEO_CLI (default "paseo")
      PASEO_HOME (default ~/.paseo; its config.json holds the profiles)
@@ -1348,7 +1480,7 @@ const OPTIONS = Object.fromEntries([
     "review-profile", "review-provider", "review-model", "review-mode", "review-thinking", "note", "note-file", "text", "file", "override", "reason",
     "window", "interval", "receipt"].map((k) => [k, { type: "string" }]),
   ...["check", "setup", "heartbeat-id"].map((k) => [k, { type: "string", multiple: true }]),
-  ...["json", "live", "keep", "again", "merge-tip", "dry-run", "help", "prepare", "clear-heartbeat-create", "direct"].map((k) => [k, { type: "boolean" }]),
+  ...["json", "live", "keep", "again", "merge-tip", "dry-run", "help", "prepare", "clear-heartbeat-create", "direct", "new-worktree", "skip"].map((k) => [k, { type: "boolean" }]),
 ]);
 
 export function main(argv) {
@@ -1381,11 +1513,15 @@ export function main(argv) {
     cancel: (s) => cmdCancel(dir, s, id, opts),
     note: (s) => cmdNote(dir, s, id, opts),
     finish: (s) => cmdFinish(dir, s),
+    evidence: (s) => cmdEvidence(dir, s),
+    retro: (s) => cmdRetro(dir, s, opts),
+    archive: (s) => cmdArchive(dir, s),
   };
   if (!handlers[cmd]) fail(`unknown command "${cmd}"; see \`help\``);
   return withLock(dir, () => {
     const s = loadState(dir);
-    if (s.finishedAt && !["note", "watch"].includes(cmd)) fail("this run is finished");
+    if (s.finishedAt && !["note", "watch", "retro", "archive", "evidence"].includes(cmd)) fail("this run is finished");
+    if (s.archiveStartedAt && !["note", "watch", "retro", "archive", "cleanup", "evidence"].includes(cmd)) fail("archive is in progress; resume archive before starting other work");
     if (opts.prepare && (!process.env.PASEO_AGENT_ID || (s.orchestratorId && s.orchestratorId !== process.env.PASEO_AGENT_ID))) fail("MCP preparation needs PASEO_AGENT_ID matching the owning orchestrator");
     if (opts.prepare) s.orchestratorId = process.env.PASEO_AGENT_ID;
     const t = needId.includes(cmd) ? task(s, id) : null;

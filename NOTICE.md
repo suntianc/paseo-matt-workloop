@@ -1,10 +1,10 @@
 # Sources and attribution
 
-The 15 upstream skills listed in `skills/tools/upstream.json` are copied from
+The 17 upstream skill sources listed in `skills/tools/upstream.json` are copied from
 [mattpocock/skills](https://github.com/mattpocock/skills) at commit
 `49dd158d1076134a641b33efb035946536778336`. Their original MIT license and
 copyright notice are preserved in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
-Their contents have not been modified.
+Their contents have not been modified. The local retro entry point keeps its upstream source in `skills/retro/reference/upstream.md` and limits execution to findings and suggestions.
 
 The local `paseo-workloop`, `codegraph`, and maintenance tools were extracted
 from suntianc's personal configuration at commit
@@ -15,6 +15,4 @@ plugins, themes, runtime state, or Git history.
 The installer and local additions are covered by [LICENSE](LICENSE).
 Installed copies retain both licenses under `.paseo-matt-workloop-licenses/`.
 
-The workflow diagrams are exported from Excalidraw scenes. Their SVG exports
-embed a subset of the Virgil font by Ellinor Rapp, licensed under the SIL Open
-Font License 1.1, preserved in [Virgil license](https://github.com/suntianc/paseo-matt-workloop/blob/main/docs/assets/LICENSE.Virgil.txt).
+The workflow diagrams include editable Excalidraw scenes and SVG exports using system fonts. The previously used Virgil font license is retained in [Virgil license](https://github.com/suntianc/paseo-matt-workloop/blob/main/docs/assets/LICENSE.Virgil.txt).

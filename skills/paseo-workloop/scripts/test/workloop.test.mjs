@@ -792,7 +792,7 @@ test("changes requested: integrate refuses, send waits for idle agents and opens
   sb.no(/no report written since the last prompt/, "review", "01");
 });
 
-test("integrate merges with --no-ff, runs checks, cleans up, and unblocks dependents", () => {
+test("integrate merges with --no-ff, retains sessions, and unblocks dependents", () => {
   const sb = sandbox();
   const before = sb.state().integration.tip;
   const out = sb.complete("01");
@@ -803,11 +803,11 @@ test("integrate merges with --no-ff, runs checks, cleans up, and unblocks depend
   assert.notEqual(s.integration.tip, before);
   assert.equal(sb.g(s.integration.worktree, "rev-parse", "HEAD^1"), before);
   assert.equal(sb.g(s.integration.worktree, "rev-parse", "HEAD^2"), t.candidateSha);
-  assert.equal(existsSync(t.worktree), false);
-  assert.equal(spawnSync("git", ["-C", sb.repo, "show-ref", "--verify", "--quiet", `refs/heads/${t.branch}`]).status, 1);
-  assert.ok(sb.db().workspaces.every((w) => w.archived));
-  assert.ok(sb.agent(t.agentId).archived && sb.agent(t.review.agentId).archived);
-  assert.ok(t.cleanedAt);
+  assert.equal(existsSync(t.worktree), true);
+  assert.equal(sb.g(sb.repo, "rev-parse", t.branch), t.candidateSha);
+  assert.ok(sb.db().workspaces.every((w) => !w.archived));
+  assert.ok(!sb.agent(t.agentId).archived && !sb.agent(t.review.agentId).archived);
+  assert.equal(t.cleanedAt, undefined);
   assert.match(sb.ok("status"), /next: dispatch 02/);
 });
 
@@ -868,6 +868,10 @@ test("finish needs every ticket closed and a passing final review of the current
   writeFileSync(join(sb.runDir, "final-review.md"), `Verdict: pass\nIntegration tip: ${tip}\n`);
   const out = sb.ok("finish");
   assert.match(out, /Nothing was pushed/);
+  assert.ok(existsSync(sb.state().integration.worktree));
+  sb.no(/assess retro/, "archive");
+  sb.ok("retro", "--skip", "--reason", "No recurring problem in this fixture");
+  sb.ok("archive");
   assert.equal(existsSync(sb.state().integration.worktree), false);
   assert.equal(sb.g(sb.repo, "rev-parse", "workloop/feat"), tip);
   sb.no(/finished/, "dispatch", "02");
@@ -1266,7 +1270,7 @@ test("a repo with no registry is never blocked; with /tidy-docs installed it is 
       },
     });
     assert.match(sb.ok("finish"), reminder);
-    assert.equal(sb.state().finishedAt !== undefined, true);
+    assert.ok(sb.state().completion);
   }
 
   // An older unregistered document does not block a registry-less repo either.
@@ -1386,14 +1390,14 @@ test("retry starts a new attempt on a new branch and keeps the old one", () => {
   sb.no(/needs --reason/, "retry", "01");
   sb.no(/is running/, "retry", "01", "--reason", "session lost");
   sb.setAgent(old.agentId, "closed");
-  assert.match(sb.ok("retry", "01", "--reason", "session lost"), /old attempt is kept/);
+  assert.match(sb.ok("retry", "01", "--new-worktree", "--reason", "session and worktree unusable"), /old attempt is kept/);
   sb.ok("dispatch", "01");
   const t = sb.state().tasks["01"];
   assert.equal(t.attempt, "a2");
   assert.equal(t.branch, "wl-feat-01-a2");
   assert.notEqual(t.agentId, old.agentId);
   assert.ok(existsSync(old.worktree));
-  assert.equal(t.history[0].reason, "session lost");
+  assert.equal(t.history[0].reason, "session and worktree unusable");
 });
 
 test("patrol returns as soon as an agent needs attention", () => {
@@ -1419,4 +1423,150 @@ test("a stale lock left by a dead process is taken over", () => {
   writeFileSync(join(sb.runDir, ".lock"), "999999");
   sb.ok("note", "--text", "still works");
   assert.equal(existsSync(join(sb.runDir, ".lock")), false);
+});
+
+test("session replacement reuses committed and dirty work and retains review history", () => {
+  const sb = sandbox();
+  sb.ok("dispatch", "01");
+  sb.work("01");
+  sb.ok("review", "01");
+  sb.reviewed("01", "changes_requested");
+  const old = sb.state().tasks["01"];
+  sb.ok("send", "01", "--text", "Fix S1 using the existing implementation");
+  const rework = sb.state().tasks["01"];
+  assert.equal(rework.agentId, old.agentId);
+  assert.equal(rework.worktree, old.worktree);
+  assert.equal(rework.branch, old.branch);
+  writeFileSync(join(old.worktree, "uncommitted.txt"), "keep this recovery work\n");
+  sb.setAgent(old.agentId, "error");
+  sb.ok("retry", "01", "--reason", "provider session cannot be resumed");
+  sb.ok("dispatch", "01");
+  const fresh = sb.state().tasks["01"];
+  assert.notEqual(fresh.agentId, old.agentId);
+  assert.equal(fresh.worktree, old.worktree);
+  assert.equal(fresh.branch, old.branch);
+  assert.equal(sb.g(fresh.worktree, "rev-parse", "HEAD"), old.candidateSha);
+  assert.equal(readFileSync(join(fresh.worktree, "uncommitted.txt"), "utf8"), "keep this recovery work\n");
+  assert.equal(fresh.rounds, 1);
+  assert.ok(fresh.history.some((h) => h.reviewers?.includes(old.review.agentId)));
+  const brief = readFileSync(join(sb.runDir, "briefs", "01-a2.md"), "utf8");
+  assert.ok(brief.includes(old.agentId));
+  assert.ok(brief.includes(old.candidateSha));
+  assert.ok(existsSync(join(sb.runDir, "reports", "01-a1-before-1.md")));
+  assert.equal(sb.db().workspaces.length, 1);
+});
+
+test("whole-run retro precedes archival, preserves evidence, and never applies suggestions", () => {
+  const sb = sandbox({ tickets: { "01-a.md": "# A\n\nBlocked by: None\nScope: f01.txt\n" }, init: ["--direct"] });
+  sb.complete("01");
+  const t = sb.state().tasks["01"];
+  sb.no(/run finish/, "archive");
+  const report = join(sb.root, "retro.md");
+  writeFileSync(report, "Repeated behavior: suggest an AGENTS.md rule and a hook. User decides.\n");
+  sb.ok("retro", "--file", report);
+  sb.ok("finish");
+  sb.no(/assess retro/, "archive"); // interim report is not a close assessment
+  assert.ok(!sb.agent(t.agentId).archived);
+  sb.ok("retro", "--file", report);
+  const retroPath = sb.state().retro.path;
+  assert.equal(existsSync(join(sb.repo, "AGENTS.md")), false);
+  sb.editDb((d) => { d.failOnce = "agent logs"; });
+  sb.no(/injected failure/, "archive");
+  assert.ok(sb.db().agents.every((a) => !a.archived));
+  assert.ok(existsSync(t.worktree));
+  sb.editDb((d) => { d.failOnce = "workspace archive"; });
+  sb.no(/injected failure/, "archive");
+  assert.ok(existsSync(join(sb.runDir, "evidence", "index.json")));
+  const logCalls = sb.db().calls.filter((a) => a[0] === "agent" && a[1] === "logs").length;
+  sb.ok("archive");
+  assert.equal(sb.db().calls.filter((a) => a[0] === "agent" && a[1] === "logs").length, logCalls);
+  assert.ok(sb.db().agents.every((a) => a.archived));
+  assert.equal(existsSync(t.worktree), false);
+  assert.equal(existsSync(sb.state().integration.worktree), false);
+  const index = JSON.parse(readFileSync(join(sb.runDir, "evidence", "index.json")));
+  assert.equal(index.agents.length, 2);
+  for (const a of index.agents) assert.ok(readFileSync(join(sb.runDir, "evidence", a.file), "utf8").length);
+  assert.equal(readFileSync(retroPath, "utf8"), readFileSync(report, "utf8"));
+  assert.equal(existsSync(join(sb.repo, "AGENTS.md")), false);
+  assert.match(sb.ok("archive"), /already archived/);
+  sb.editDb((d) => { d.failOnce = "agent logs"; });
+  assert.match(sb.ok("evidence"), /preserved evidence/);
+  assert.equal(sb.db().failOnce, "agent logs"); // archived reads never need the provider
+  sb.ok("retro", "--file", report); // explicit retro also works after archival
+  assert.ok(existsSync(retroPath)); // prior output retained
+});
+
+test("post-integration repair gets a new session and tree; stale retro cannot close new work", () => {
+  const sb = sandbox({ tickets: { "01-a.md": "# A\n\nBlocked by: None\nScope: f01.txt\n" }, init: ["--direct"] });
+  sb.complete("01");
+  sb.ok("finish");
+  sb.ok("retro", "--skip", "--reason", "No repeat issues so far");
+  const old = sb.state().tasks["01"];
+  const tip = sb.state().integration.tip;
+  writeFileSync(join(sb.runDir, "issues", "02-repair.md"), "# Repair\n\nBlocked by: 01\nScope: f02.txt\n");
+  sb.ok("import");
+  sb.no(/run finish/, "archive");
+  sb.no(/is done/, "send", "01", "--text", "reuse the integrated executor");
+  sb.ok("dispatch", "02");
+  const repair = sb.state().tasks["02"];
+  assert.notEqual(repair.agentId, old.agentId);
+  assert.notEqual(repair.worktree, old.worktree);
+  assert.equal(repair.baseSha, tip);
+  assert.ok(existsSync(old.worktree));
+  sb.work("02"); sb.ok("review", "02"); sb.reviewed("02"); sb.ok("integrate", "02");
+  sb.ok("finish");
+  sb.no(/assess retro/, "archive");
+  sb.ok("retro", "--skip", "--reason", "Reviewed the repair evidence; no recurring process issue");
+  sb.ok("archive");
+  assert.ok(sb.db().agents.every((a) => a.archived));
+});
+
+test("archival retains cancelled dirty work but archives its sessions with all attempts", () => {
+  const sb = sandbox({ tickets: { "01-a.md": "# A\n\nBlocked by: None\nScope: f01.txt\n" }, init: ["--direct"] });
+  sb.ok("dispatch", "01");
+  const old = sb.state().tasks["01"];
+  writeFileSync(join(old.worktree, "valuable.txt"), "not integrated\n");
+  sb.setAgent(old.agentId, "error");
+  sb.ok("retry", "01", "--new-worktree", "--reason", "need a separate clean attempt");
+  sb.ok("dispatch", "01");
+  const next = sb.state().tasks["01"];
+  sb.setAgent(next.agentId, "idle");
+  sb.ok("cancel", "01", "--reason", "user changed scope");
+  sb.ok("finish");
+  sb.ok("retro", "--skip", "--reason", "No recurring issue in this synthetic fixture");
+  sb.ok("archive");
+  assert.ok(sb.db().agents.every((a) => a.archived));
+  assert.equal(readFileSync(join(old.worktree, "valuable.txt"), "utf8"), "not integrated\n");
+  assert.ok(existsSync(next.worktree));
+  assert.equal(sb.state().retainedWorktrees.length, 2);
+  const evidence = JSON.parse(readFileSync(join(sb.runDir, "evidence/index.json")));
+  assert.equal(evidence.agents.length, 2);
+});
+
+test("a missing provider session can be replaced without losing its tree; evidence discloses the gap", () => {
+  const sb = sandbox({ tickets: { "01-a.md": "# A\n\nBlocked by: None\nScope: f01.txt\n" }, init: ["--direct"] });
+  sb.ok("dispatch", "01");
+  const old = sb.state().tasks["01"];
+  sb.editDb((d) => { d.agents = d.agents.filter((a) => a.id !== old.agentId); });
+  sb.ok("retry", "01", "--reason", "provider session has been deleted");
+  sb.ok("dispatch", "01");
+  assert.equal(sb.state().tasks["01"].worktree, old.worktree);
+  sb.work("01"); sb.ok("review", "01"); sb.reviewed("01"); sb.ok("integrate", "01");
+  sb.ok("finish");
+  const report = join(sb.root, "retro.md");
+  writeFileSync(report, "Session was deleted; original transcript unavailable. Suggest investigating provider retention.\n");
+  sb.ok("retro", "--file", report);
+  assert.match(sb.ok("archive"), /evidence gap/);
+  const index = JSON.parse(readFileSync(join(sb.runDir, "evidence/index.json")));
+  assert.equal(index.agents.find((a) => a.id === old.agentId).missing, true);
+});
+
+test("archival does not sweep agents in another checkout with colliding run labels", () => {
+  const sb = sandbox({ tickets: { "01-a.md": "# A\n\nBlocked by: None\nScope: f01.txt\n" }, init: ["--direct"] });
+  sb.complete("01");
+  sb.editDb((d) => d.agents.push({ id: "foreign", cwd: "/other/repo", status: "idle", archived: false, labels: { workloop: sb.state().runKey, task: "01" }, prompts: ["unrelated work"] }));
+  sb.ok("finish"); sb.ok("retro", "--skip", "--reason", "No recurring issue"); sb.ok("archive");
+  assert.equal(sb.agent("foreign").archived, false);
+  const index = JSON.parse(readFileSync(join(sb.runDir, "evidence/index.json")));
+  assert.equal(index.agents.some((a) => a.id === "foreign"), false);
 });
