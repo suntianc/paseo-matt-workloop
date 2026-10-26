@@ -4,6 +4,8 @@
 
 Turn a development request into reviewed code on a local integration branch. Matt Pocock skills guide the work; Paseo runs the executors and reviewers.
 
+For release history and upgrade notes, see the [changelog](CHANGELOG.md).
+
 ## 1. Skills
 
 Start with **`paseo-workloop`** for orchestration, or use a supporting skill on its own. The collection includes 15 upstream skills and two local skills: `paseo-workloop` and `codegraph`.

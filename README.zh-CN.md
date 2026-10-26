@@ -4,6 +4,8 @@
 
 将开发需求推进为本地集成分支上经过审查的代码。Matt Pocock skills 提供工作方法，Paseo 运行执行者和审查者。
 
+查看版本变更和升级说明时，参阅 [更新日志](CHANGELOG.zh-CN.md)。
+
 ## 1. 技能清单
 
 以 **`paseo-workloop`** 为编排入口，也可单独使用配套技能。整套包含 15 个上游技能，以及 `paseo-workloop`、`codegraph` 两个本地技能。
