@@ -36,6 +36,8 @@
 
 ![Quick、Direct、Full 路线，以及合入、验收、复盘判断和集中归档](docs/assets/workloop.svg)
 
+[可编辑的 Excalidraw 源文件](docs/assets/workloop.excalidraw) — 下载后可在 Excalidraw 中打开。
+
 按任务需要选择流程。已有授权继续有效，澄清实质性问题，不在每个阶段重复确认。
 
 | 路线 | 适用情况 | 执行方式 |

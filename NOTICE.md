@@ -15,4 +15,4 @@ plugins, themes, runtime state, or Git history.
 The installer and local additions are covered by [LICENSE](LICENSE).
 Installed copies retain both licenses under `.paseo-matt-workloop-licenses/`.
 
-The workflow diagrams include editable Excalidraw scenes and SVG exports using system fonts. The previously used Virgil font license is retained in [Virgil license](https://github.com/suntianc/paseo-matt-workloop/blob/main/docs/assets/LICENSE.Virgil.txt).
+The workflow diagrams include editable Excalidraw scenes and Excalidraw SVG exports with the Virgil font embedded. Chinese glyphs use the viewer’s system font fallback. See the [Virgil license](https://github.com/suntianc/paseo-matt-workloop/blob/main/docs/assets/LICENSE.Virgil.txt).

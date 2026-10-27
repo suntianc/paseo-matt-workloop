@@ -36,6 +36,8 @@ Start with **`paseo-workloop`** for orchestration, or use a supporting skill on 
 
 ![Quick, Direct and Full routes; integrate, finish, retro assessment and archive](docs/assets/workloop.en.svg)
 
+[Editable Excalidraw source](docs/assets/workloop.en.excalidraw) — download and open it in Excalidraw.
+
 Choose enough process for the task. Existing authorization carries forward; clarify material gaps rather than asking the same questions at each stage.
 
 | Route | Choose it when… | Work |

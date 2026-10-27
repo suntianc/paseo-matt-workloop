@@ -2,6 +2,24 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+### Summary
+
+The README workflow diagrams are editable Excalidraw scenes with matching SVG exports.
+
+### Changes
+
+- **Changed:** Export both diagrams from Excalidraw with the original Virgil handwriting font, group each node for editing, and link the source scenes from the READMEs.
+
+### Upgrade
+
+No migration is required.
+
+### Verification
+
+- Checked both Excalidraw scenes and their SVG exports in the browser; relative-link checks pass.
+
 ## [2.0.0] - 2026-10-26
 
 ### Summary
