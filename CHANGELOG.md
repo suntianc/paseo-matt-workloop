@@ -2,25 +2,39 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
-## Unreleased
+## [3.1.0] - 2026-10-28
 
 ### Summary
 
-Both READMEs and both workflow diagrams now show the 3.0.0 delivery gates: in Direct and Full the user confirms the tickets and their numbered criteria before the run starts, and a full run's verdict comes from an independent final reviewer before `finish`.
+Retro findings that are traps in a project can now be kept in that project as short pitfall entries under `docs/pitfalls/`: proposed after a retro, written only with the user's agreement, and read by executors whose ticket meets the same trigger. Tickets can state which existing behaviour must stay and which additions are excluded, and the integration worktree of a new run is no longer named in a way that makes pytest skip a repository's tests. The READMEs and workflow diagrams now show the 3.0.0 delivery gates.
 
 ### Changes
 
-- **Changed:** Both READMEs describe the gates briefly and leave their detail to the run reference, and both diagrams add a step where the user confirms the tickets and their numbered criteria before execution, plus an independent final review between integration and `finish` for full runs. The diagrams remain editable Excalidraw scenes exported by Excalidraw with the Virgil font embedded.
+- **Added:** `paseo-workloop` turns retro findings that name a concrete trigger into proposed entries under `docs/pitfalls/`, using `templates/pitfall-entry.md`: trigger, what happens, a check that confirms the trap still exists, how to avoid it, and sources. One entry covers one trigger and one way out, and the run's story stays in the retro. The Confirm check must give a different result once the trap is fixed. Advice about how agents work stays a retro suggestion, and an agent overstepping its authority becomes a brief rule. The cited `retro.md` and small cited excerpts are copied to `docs/pitfalls/evidence/<run>/`, so sources open on any machine. Nothing is written until the user agrees, and `retro` itself is unchanged.
+- **Added:** Executors read the entries in `docs/pitfalls/README.md` whose trigger matches their ticket, and `tidy-docs` registers `docs/pitfalls/` with a new `pitfalls` type.
+- **Added:** Tickets can state `Keep as is` and `Not in this change`, written from the user's words. Executors keep the listed behaviour and add nothing excluded, a reviewer treats a changed kept behaviour as a `Regression`, and when presenting tickets the orchestrator points out any boundary it chose itself.
+- **Changed:** New runs create the integration worktree at `<run dir>/tip` instead of `<run dir>/integration`. pytest turns each directory on a test's path into a keyword, so a repository whose conftest skipped tests by `"integration" in item.keywords` skipped every test in `integrate` and `finish` while still exiting 0.
+- **Changed:** A request with a clear goal, scope and acceptance skips further discussion but not ticket confirmation: Direct and Full tickets and their criteria are still confirmed before the run starts.
+- **Changed:** Executors stop only processes they started, by recorded PID or their tool's cancel, never by name or pattern such as `killall node`.
+- **Changed:** Both READMEs describe the 3.0.0 gates briefly and leave their detail to the run reference. Both diagrams add a step where the user confirms the tickets and their numbered criteria before execution, plus an independent final review between integration and `finish` for full runs. The diagrams remain editable Excalidraw scenes exported with the Virgil font embedded.
 
 ### Upgrade
 
-No migration is needed: this release changes the READMEs, the changelogs and the exported diagram assets only. Runs in progress behave as described by the version that started them.
+No migration is needed. Projects without `docs/pitfalls/` behave as before; an existing notes directory can be registered as `pitfalls` and rewritten into entries when the user chooses. `Keep as is` and `Not in this change` are optional ticket lines. Runs in progress behave as described by the version that started them and keep their `integration/` worktree recorded in `state.json`; only runs started after updating use `tip/`. Requires Node.js 20+, npm and Git.
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.1.0 install
+```
+
+For an existing managed installation, run `npx --yes github:suntianc/paseo-matt-workloop#v3.1.0 update` with the same target. `update` fetches current `main`; pinning the installer tag does not pin the update payload. For a project installation, append `--target <project skills directory>`.
 
 ### Verification
 
-- All 211 local tests pass (`npm test`).
-- `npm run check:links` resolves every relative link and `skill://` reference across 52 markdown files.
-- Both SVGs were exported from their updated scenes and opened in a browser; every node and label renders legibly, and each scene keeps its node grouping.
+- All 212 local tests pass (`npm test`), including a new `tidy-docs` inventory test that registers a `docs/pitfalls/` directory and its copied evidence as `pitfalls`, and an `init` test that requires the integration worktree to be named `tip`.
+- `npm run check:links` resolves every relative link and `skill://` reference across 54 markdown files.
+- The v3.1.0 tarball (98 files) installed 19 skills through npx into a temporary path containing spaces and reached through the macOS `/tmp` symlink; the installed link check (55 markdown files) and the help of both workloop scripts passed, and the local `Agent.md` and `AGENTS.md` are not in the artifact.
+- The pitfall rules were exercised on a real project: four retros were rewritten into three entries whose Confirm checks were run, and in a checkout under a directory named `integration`, a conftest that read keywords skipped 2968 tests while one that reads markers ran them.
+- Both SVGs were exported from their updated scenes and opened in a browser; every node and label renders legibly. Windows and Linux were not run locally for this change.
 
 ## [3.0.0] - 2026-10-27
 
@@ -132,3 +146,5 @@ A fixed installer tag pins `install`; `update` always fetches current `main`. Ru
 [2.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v2.0.0
 
 [3.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.0.0
+
+[3.1.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.1.0

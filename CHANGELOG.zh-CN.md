@@ -2,25 +2,39 @@
 
 [English](CHANGELOG.md) · **简体中文**
 
-## 未发布
+## [3.1.0] - 2026-10-28
 
 ### 摘要
 
-两版 README 和两张工作流程图现在展示 3.0.0 的交付闸门：Direct 和 Full 在 run 启动前由用户确认 tickets 及其编号验收标准，Full run 的结论在 `finish` 之前由独立终审 reviewer 给出。
+属于项目踩坑的复盘发现，现在可以作为简短的踩坑条目保存在该项目的 `docs/pitfalls/` 中：复盘后提出，经用户同意才写入，ticket 碰到相同触发场景的执行者会读取它。Ticket 可以写明哪些既有行为必须保留、哪些新增明确不做；新 run 的集成 worktree 也不再使用会让 pytest 跳过仓库测试的目录名。两版 README 和工作流程图现在展示 3.0.0 的交付闸门。
 
 ### 变更
 
-- **调整：** 两版 README 简要说明这些闸门，细节交给 run 参考文档；两张流程图新增执行前的用户确认步骤（确认 tickets 及其编号验收标准），Full run 还新增合入与 `finish` 之间的独立终审。流程图仍是可编辑的 Excalidraw 场景，并由 Excalidraw 导出、内嵌 Virgil 字体。
+- **新增：** `paseo-workloop` 将写得出具体触发场景的复盘发现整理为 `docs/pitfalls/` 下的条目提案，使用 `templates/pitfall-entry.md`：触发场景、现象、确认陷阱仍然存在的检查、避开方法和来源。一条只对应一个触发场景和一种应对，run 的经过留在复盘中。"怎么确认"检查在坑修复后必须得到不同结果。关于 Agent 工作方式的建议仍作为复盘建议，Agent 越权行为写进简报规则。被引用的 `retro.md` 和少量被引用的摘录复制到 `docs/pitfalls/evidence/<run>/`，换台主机也能打开来源。用户同意前不写入任何内容，`retro` 本身不变。
+- **新增：** 执行者读取 `docs/pitfalls/README.md` 中触发场景与本 ticket 匹配的条目；`tidy-docs` 新增 `pitfalls` 类型，用于登记 `docs/pitfalls/`。
+- **新增：** Ticket 可以写明 `Keep as is`（需保留的既有行为）和 `Not in this change`（明确不做的新增），按用户原话填写。执行者保持所列行为、不添加被排除的内容；reviewer 将改变保留行为视为 `Regression`；编排者呈现 tickets 时指出哪些边界是自己决定的。
+- **调整：** 新 run 的集成 worktree 改为 `<run dir>/tip`，不再使用 `<run dir>/integration`。pytest 会把测试路径上的每一级目录名都变成关键字，conftest 按 `"integration" in item.keywords` 跳过测试的仓库，在 `integrate` 和 `finish` 中会跳过全部测试，退出码却仍为 0。
+- **调整：** 目标、范围和验收都清楚的请求可以跳过进一步讨论，但不能跳过 ticket 确认：Direct 和 Full 的 tickets 及其验收标准仍须在 run 启动前确认。
+- **调整：** 执行者只结束自己启动的进程，通过记录的 PID 或工具自带的取消功能，不按名称或模式结束进程（如 `killall node`）。
+- **调整：** 两版 README 简要说明 3.0.0 的闸门，细节交给 run 参考文档。两张流程图新增执行前的用户确认步骤（确认 tickets 及其编号验收标准），Full run 还新增合入与 `finish` 之间的独立终审。流程图仍是可编辑的 Excalidraw 场景，导出时内嵌 Virgil 字体。
 
 ### 升级说明
 
-无需迁移：本次发布只改动两版 README、更新日志和导出的流程图资源。进行中的 run 仍按启动它的版本所描述的方式运行。
+无需迁移。没有 `docs/pitfalls/` 的项目行为不变；已有的笔记目录可以登记为 `pitfalls`，由用户决定何时改写为条目。`Keep as is` 和 `Not in this change` 是可选的 ticket 字段。进行中的 run 仍按启动它的版本所描述的方式运行，继续使用 `state.json` 中记录的 `integration/` worktree；只有更新后启动的 run 使用 `tip/`。需要 Node.js 20+、npm 和 Git。
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.1.0 install
+```
+
+已有托管安装使用同一目标目录执行 `npx --yes github:suntianc/paseo-matt-workloop#v3.1.0 update`；`update` 拉取当前 `main`，固定安装器 tag 不会固定更新内容。项目安装在命令末尾添加 `--target <项目 skills 目录>`。
 
 ### 验证
 
-- 本地 211 项测试全部通过（`npm test`）。
-- `npm run check:links` 检查 52 个 markdown 文件的全部相对链接和 `skill://` 引用，均通过。
-- 两张 SVG 均由更新后的场景导出，并在浏览器中打开检查：所有节点和标签清晰可读，节点编组保持不变。
+- 本地 212 项测试全部通过（`npm test`），其中新增的 `tidy-docs` 清点测试将 `docs/pitfalls/` 目录及复制的证据登记为 `pitfalls`，`init` 测试要求集成 worktree 命名为 `tip`。
+- `npm run check:links` 检查 54 个 markdown 文件的全部相对链接和 `skill://` 引用，均通过。
+- v3.1.0 tarball（98 个文件）通过 npx 安装到含空格、且经 macOS `/tmp` 符号链接访问的临时路径，共 19 个技能；安装后的链接检查（55 个 markdown 文件）与两个 workloop 脚本的 help 均通过；本地 `Agent.md`、`AGENTS.md` 未进入制品。
+- 踩坑规则在真实项目上试用：4 份复盘改写为 3 个条目，各条"怎么确认"检查均实际运行；在名为 `integration` 的目录下的检出中，按关键字判断的 conftest 跳过了 2968 个测试，改为按 marker 判断后这些测试正常运行。
+- 两张 SVG 均由更新后的场景导出，并在浏览器中打开检查，所有节点和标签清晰可读。本次改动未在本机验证 Windows 和 Linux。
 
 ## [3.0.0] - 2026-10-27
 
@@ -132,3 +146,5 @@ npx --yes github:suntianc/paseo-matt-workloop#main update
 [2.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v2.0.0
 
 [3.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.0.0
+
+[3.1.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.1.0

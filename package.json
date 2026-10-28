@@ -1,14 +1,34 @@
 {
   "name": "paseo-matt-workloop",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Paseo workloop and Matt Pocock agent skills, with a safe npx installer",
   "type": "module",
-  "bin": { "paseo-matt-workloop": "bin/paseo-matt-workloop.mjs" },
-  "files": ["bin/", "lib/", "skills/", "docs/", "README.zh-CN.md", "CHANGELOG.md", "CHANGELOG.zh-CN.md", "LICENSE", "THIRD_PARTY_LICENSES", "NOTICE.md"],
-  "engines": { "node": ">=20" },
-  "repository": { "type": "git", "url": "git+https://github.com/suntianc/paseo-matt-workloop.git" },
+  "bin": {
+    "paseo-matt-workloop": "bin/paseo-matt-workloop.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "skills/",
+    "docs/",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "CHANGELOG.zh-CN.md",
+    "LICENSE",
+    "THIRD_PARTY_LICENSES",
+    "NOTICE.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/suntianc/paseo-matt-workloop.git"
+  },
   "homepage": "https://github.com/suntianc/paseo-matt-workloop#readme",
-  "bugs": { "url": "https://github.com/suntianc/paseo-matt-workloop/issues" },
+  "bugs": {
+    "url": "https://github.com/suntianc/paseo-matt-workloop/issues"
+  },
   "license": "MIT",
   "scripts": {
     "test": "node --test test/install.test.mjs skills/paseo-workloop/scripts/test/workloop.test.mjs skills/paseo-workloop/scripts/test/tidy-docs.test.mjs",
