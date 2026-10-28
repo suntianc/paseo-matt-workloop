@@ -2,7 +2,7 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
-## Unreleased
+## [3.0.0] - 2026-10-27
 
 ### Summary
 
@@ -19,16 +19,24 @@ Checks now have a time limit, and `integrate` and `finish` run theirs as a backg
 - **Added:** `config --clear-launch executor|reviewer` drops a role's run-level launch overrides, so agents started afterwards follow its edited Paseo profile again.
 - **Changed:** The ticket templates and the run reference ask for bounded acceptance criteria: an unbounded "all", "every" or "never" names the scope it covers, and a known limit is written into the criterion.
 - **Changed:** Export both diagrams from Excalidraw with the original Virgil handwriting font, group each node for editing, and link the source scenes from the READMEs.
+- **Fixed:** `workloop.mjs` and `tidy-docs.mjs` ran nothing and exited 0 when reached through a symlinked directory, such as macOS `/tmp` or a linked skills folder. They now compare real paths and run.
 - **Breaking:** A full run needs an independent final review before `finish`, started with `final-review --prepare`: a pass for the current tip, or a `changes_requested` whose in-boundary blocking findings are all waived. `final-review.md` no longer carries the verdict. A rework `send` must name or `--waive` each in-boundary blocking finding. Acceptance commands run again on every later integration, so they must be repeatable. Tickets in new runs need numbered criteria (`AC1: …`), frozen once the user confirms them, and findings outside the criteria and floor classes no longer block. Rework is capped at two rounds by default (`--max-rework-rounds`), and going past the configured cap needs the user's agreement (`send --extra-round --reason`).
 
 ### Upgrade
 
-Finish runs that are in progress with the script they started with before updating. Runs created earlier read their tickets and reviews as before and keep the 30-minute default time limit per command; the numbered criteria and the rework-round cap apply to runs created with this version. The time limit and the cap can be changed with `config --check-timeout` and `config --max-rework-rounds`.
+Finish runs that are in progress with the script they started with before updating. Runs created earlier read their tickets and reviews as before and keep the 30-minute default time limit per command; the numbered criteria and the rework-round cap apply to runs created with this version. The time limit and the cap can be changed with `config --check-timeout` and `config --max-rework-rounds`. Requires Node.js 20+, npm and Git.
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.0.0 install
+```
+
+For an existing managed installation, run `npx --yes github:suntianc/paseo-matt-workloop#v3.0.0 update` with the same target. `update` fetches current `main`; pinning the installer tag does not pin the update payload. For a project installation, append `--target <project skills directory>`.
 
 ### Verification
 
-- All 210 local tests pass (`npm test`), covering the check phase and its time limit, the acceptance regression set, the waiver ledger, numbered criteria and the review boundary, the independent final review, receipts from stdin and cleared launch overrides, and the existing installer and document workflow. Workloop tests use real Git repositories and the fake Paseo CLI.
+- All 211 local tests pass (`npm test`), covering the check phase and its time limit, the acceptance regression set, the waiver ledger, numbered criteria and the review boundary, the independent final review, receipts from stdin, cleared launch overrides, scripts reached through a symlinked directory, and the existing installer and document workflow. Workloop tests use real Git repositories and the fake Paseo CLI.
 - `npm run check:links` resolves every relative link and `skill://` reference across 52 markdown files.
+- The v3.0.0 tarball installed 19 skills through npx into a temporary path containing spaces and reached through the macOS `/tmp` symlink; the installed link check (53 markdown files) and the help of both workloop scripts passed, and the local `Agent.md` and `AGENTS.md` are not in the artifact.
 - Not run locally for this change: Windows and Linux. On POSIX the time limit and recovery stop the check's process group, so a process that deliberately leaves that group is outside the contract.
 
 ## [2.0.0] - 2026-10-26
@@ -102,3 +110,5 @@ A fixed installer tag pins `install`; `update` always fetches current `main`. Ru
 [1.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v1.0.0
 
 [2.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v2.0.0
+
+[3.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.0.0

@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md) · **简体中文**
 
-## 未发布
+## [3.0.0] - 2026-10-27
 
 ### 摘要
 
@@ -19,16 +19,24 @@
 - **新增：** `config --clear-launch executor|reviewer` 清除某个角色在 run 级的启动覆盖，之后启动的 agent 重新跟随修改后的 Paseo profile。
 - **调整：** ticket 模板和 run 参考文档要求验收标准写明边界：“所有”“每个”“绝不”这类表述要写明适用范围，已知限制写进标准本身。
 - **调整：** 两版流程图从 Excalidraw 导出，恢复第一版的 Virgil 手写字体，为每个节点编组，并在 README 中链接图源。
+- **修复：** 通过符号链接目录（如 macOS 的 `/tmp` 或软链接的 skills 目录）调用 `workloop.mjs` 和 `tidy-docs.mjs` 时，脚本不执行任何操作却以 0 退出；现在比较真实路径，能正常运行。
 - **不兼容变更：** Full run 在 `finish` 前必须有独立终审（用 `final-review --prepare` 启动）：对当前提交的通过结论，或一份边界内阻塞性发现全部豁免的 `changes_requested`；`final-review.md` 不再给出结论。返修 `send` 必须点名或 `--waive` 每条边界内的阻塞性发现。验收命令在之后每次合入时重跑，因此必须可重复执行。新 run 的 ticket 需要编号标准（`AC1: …`），用户确认后冻结；标准与底线问题之外的发现不再阻塞。返修默认上限为两轮（`--max-rework-rounds`），超过所配置的上限需要用户同意（`send --extra-round --reason`）。
 
 ### 升级说明
 
-更新前，用 run 启动时的脚本把进行中的 run 跑到 finish。之前创建的 run 仍按原方式读取 ticket 和审查，并继续使用每条命令 30 分钟的默认时限；编号标准和返修轮数上限适用于本版本创建的 run。时限和轮数上限可分别用 `config --check-timeout` 和 `config --max-rework-rounds` 调整。
+更新前，用 run 启动时的脚本把进行中的 run 跑到 finish。之前创建的 run 仍按原方式读取 ticket 和审查，并继续使用每条命令 30 分钟的默认时限；编号标准和返修轮数上限适用于本版本创建的 run。时限和轮数上限可分别用 `config --check-timeout` 和 `config --max-rework-rounds` 调整。需要 Node.js 20+、npm 和 Git。
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.0.0 install
+```
+
+已有托管安装使用同一目标目录执行 `npx --yes github:suntianc/paseo-matt-workloop#v3.0.0 update`；`update` 拉取当前 `main`，固定安装器 tag 不会固定更新内容。项目安装在命令末尾添加 `--target <项目 skills 目录>`。
 
 ### 验证
 
-- 本地 210 项测试全部通过（`npm test`），覆盖检查阶段及时限、验收回归集、豁免记录、编号标准与审查边界、独立终审、从标准输入确认回执和清除启动覆盖，以及既有的安装器和文档工作流。Workloop 测试使用真实 Git 仓库和模拟 Paseo CLI。
+- 本地 211 项测试全部通过（`npm test`），覆盖检查阶段及时限、验收回归集、豁免记录、编号标准与审查边界、独立终审、从标准输入确认回执、清除启动覆盖、经符号链接目录调用脚本，以及既有的安装器和文档工作流。Workloop 测试使用真实 Git 仓库和模拟 Paseo CLI。
 - `npm run check:links` 检查 52 个 markdown 文件的全部相对链接和 `skill://` 引用，均通过。
+- v3.0.0 tarball 通过 npx 安装到含空格、且经 macOS `/tmp` 符号链接访问的临时路径，共 19 个技能；安装后的链接检查（53 个 markdown 文件）与两个 workloop 脚本的 help 均通过；本地 `Agent.md`、`AGENTS.md` 未进入制品。
 - 本次改动未在本机验证 Windows 和 Linux。在 POSIX 上，时限和恢复会停止检查的进程组，主动脱离该组的进程不在约束范围内。
 
 ## [2.0.0] - 2026-10-26
@@ -102,3 +110,5 @@ npx --yes github:suntianc/paseo-matt-workloop#main update
 [1.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v1.0.0
 
 [2.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v2.0.0
+
+[3.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.0.0
