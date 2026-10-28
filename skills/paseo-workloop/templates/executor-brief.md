@@ -26,7 +26,7 @@ Read the `implement` skill at `{{implementSkill}}` and follow it, with these ove
 - For agent-facing documents, skills, specs and instructions, read `{{skillsRoot}}/writing-for-agents/SKILL.md`. Keep human-facing documentation appropriate to its readers.
 - Where a skill says "call the Skill tool with X", read `{{skillsRoot}}/X/SKILL.md` and follow it instead, so you use the same skill versions as the rest of the run. Don't invoke skills through a tool.
 
-After integration the orchestrator runs these checks: {{checks}}. Make sure they pass in your worktree before you report `done`.
+After integration the orchestrator runs these checks: {{checks}}. It then runs the acceptance commands this ticket names (each criterion ending in `— check: \`<command>\``) and those of every ticket already integrated, from the root of the integrated tree and within the run's check time limit. Make sure they all pass in your worktree before you report `done`.
 
 ## Rules
 

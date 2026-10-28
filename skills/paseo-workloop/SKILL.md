@@ -15,7 +15,7 @@ Discussion and read-only investigation can stay in the conversation. For impleme
 | --- | --- | --- |
 | **Quick** | Clear goal, local reversible change, straightforward verification | Work in this session; no ticket or Paseo workers required. |
 | **Direct** | A bounded change benefits from a delegated executor and independent review | One scoped ticket, reviewed and integrated through Paseo. |
-| **Full** | Design choices, dependencies or parallel work need coordination | A spec and tickets, independent reviews, serial integration and overall review. |
+| **Full** | Design choices, dependencies or parallel work need coordination | A spec and tickets, independent reviews, serial integration, and an independent final review of the whole run. |
 
 Judge uncertainty and impact, not line count. A wording fix usually fits Quick; a one-line authorization change may deserve independent review. These are defaults, not a scoring system.
 
@@ -39,7 +39,7 @@ For interrupted operations or an unrecoverable session, read [recovery](referenc
 
 ## Finish, retro and archive
 
-`finish` verifies delivery and retains sessions. Assess the whole run for recurring problems or repeated wasted effort using [retro](../retro/SKILL.md). Record findings with `retro --file <report>`, or a brief no-retro decision with `retro --skip --reason <why>`. Then `archive` preserves activity transcripts and archives the sessions together. The user's decision on suggestions does not hold archival open.
+`finish` verifies delivery and retains sessions. In a full run it accepts only the independent final reviewer's report for the current integration tip: a pass, or a `changes_requested` whose blocking findings the user let through. Assess the whole run for recurring problems or repeated wasted effort using [retro](../retro/SKILL.md). Record findings with `retro --file <report>`, or a brief no-retro decision with `retro --skip --reason <why>`. Then `archive` preserves activity transcripts and archives the sessions together. The user's decision on suggestions does not hold archival open.
 
 Users can request retro at any point, including during Quick or after archival. A mid-run retro covers evidence so far and does not stop execution. Retro produces findings and suggestions only; adopting them is a separate user decision.
 

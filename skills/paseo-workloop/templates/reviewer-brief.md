@@ -16,16 +16,16 @@ These are given here. Don't ask for them.
 Read the `code-review` skill at `{{codeReviewSkill}}` and follow it, using the inputs above:
 
 - The fixed point and the spec are given above. Skip the skill's steps that look for them, and its issue-tracker prerequisite.
+- **Acceptance commands.** Re-run every command the ticket's criteria name (a criterion line ending in `— check: \`<command>\``) on this candidate, in this worktree. Under `## Spec`, give each command and what it printed; output the executor pasted is a claim, not evidence. A criterion with no command is manual: check it by reading the tree.
 - If you can't spawn sub-agents, run the Standards axis and then the Spec axis yourself, and keep them separate.
 - Where a skill says "call the Skill tool with X", read `{{skillsRoot}}/X/SKILL.md` and follow it instead. Don't invoke skills through a tool.
-{{direct}}
+{{reReview}}{{boundary}}{{direct}}
 ## Rules
 
 - **Read-only.** Don't edit, commit, check out, stash or reset anything. Running tests or builds is fine as long as `git status` stays clean afterwards.
 - Never ask the user anything and never wait for input.
 - Review against this ticket and spec only. Older specs, plans or notes in the repo are history, not requirements.
-- ADRs in `docs/adr/` are constraints: a change that contradicts one is a blocking finding unless the ticket says that ADR is superseded.
-
+{{adrRule}}
 ## Report
 
 Write `{{reviewPath}}` in this shape:
@@ -43,11 +43,10 @@ Candidate: {{candidateSha}}
 ## Findings
 | ID | Axis | Location | Basis | Blocking | Fix acceptance |
 |----|------|----------|-------|----------|----------------|
-| S1 | Standards | src/x.ts:12 | the standard or smell, quoted | yes | what proves it fixed |
-| P1 | Spec | ... | the ticket/spec line, quoted | no | ... |
+{{findingsExample}}{{outOfScopeExample}}
 ```
 
-- The verdict is `Verdict: changes_requested` if any finding is blocking, and `Verdict: pass` otherwise.
+{{verdictRule}}
 - A finding is blocking if the work shouldn't be integrated until it's fixed.
 - Number Standards findings `S1`, `S2`, … and Spec findings `P1`, `P2`, ….
 

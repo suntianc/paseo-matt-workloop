@@ -1,30 +1,17 @@
-Verdict: pass
-Integration tip: <sha of the integration branch you reviewed>
+Integration tip: <sha of the integration branch this mapping is for>
 
-<!-- Written by the orchestrator itself, not a dispatched agent, once every ticket is integrated.
-     Scope: `git diff <baseSha>..<integration tip>` (both shown by `workloop status`).
-     Verdict is changes_requested if anything below fails. In that case write repair tickets, `import`, dispatch them,
-     and redo this review on the new tip. `finish` only accepts a pass for the current tip. -->
+<!-- Written by the orchestrator once every ticket is closed. It is the acceptance
+     mapping an independent final reviewer verifies, not a verdict: `final-review --prepare`
+     starts that reviewer on this tip, and `finish` accepts only its report.
+     Number every row M1, M2, …: a blocking finding may cite one. -->
 
 ## Acceptance
 
-| Spec item | Evidence on the integrated tree |
-|-----------|---------------------------------|
-| ... | test / command / file that shows it works |
+| Row | Spec item | Evidence on the integrated tree |
+|-----|-----------|---------------------------------|
+| M1 | ... | test / command / file that shows it works |
 
-## Cross-ticket review
+## Notes for the final reviewer
 
-Look for problems that per-ticket reviews can't see:
-
-- interface drift between tickets built in parallel
-- duplicated or contradictory logic
-- leftover scaffolding
-- dead code created by combining the tickets
-
-## Regression
-
-Record the commands you ran on the integration worktree and their results: the full test suite, the build or typecheck, and a real run of the changed surface. Note anything you skipped and why.
-
-## Repair tickets
-
-None, or the ticket files you created for repairs.
+Anything the reviewer should know: what changed since the previous round, which
+checks are slow, where the run is most likely to have drifted.

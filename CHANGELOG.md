@@ -6,19 +6,30 @@
 
 ### Summary
 
-The README workflow diagrams are editable Excalidraw scenes with matching SVG exports.
+Checks now have a time limit, and `integrate` and `finish` run theirs as a background check phase; acceptance commands re-run on every integration as a regression set, every let-through finding is recorded in a waiver ledger, a full run's verdict comes from an independent final reviewer, and reviews stay inside the user-confirmed numbered criteria and four floor classes. Acknowledging an MCP response no longer needs a hand-written receipt file. The README workflow diagrams remain editable Excalidraw scenes with matching SVG exports.
 
 ### Changes
 
+- **Added:** A time limit for every check the script runs: 30 minutes per command by default, at most 1440, set with `init --check-timeout <minutes>` or `config --check-timeout <minutes>`. `integrate` and `finish` run their checks and acceptance commands as a background check phase outside the run lock, so `status` and `watch` keep working, and a command that runs out of time is stopped with the processes it started — its process group on POSIX or its process tree on Windows; on POSIX a process that deliberately leaves the group is not stopped, and a stop that fails or cannot be confirmed keeps the check phase recorded for recovery.
+- **Added:** Numbered acceptance criteria (`AC1: <criterion>`), each optionally naming the command that proves it, frozen once the user confirms them, with `criteria <NN> --reason "<the user's decision>"` recording an agreed change. `integrate` runs the checks, then the ticket's acceptance commands, then those of every integrated ticket — the regression set; `finish` runs the checks and the whole regression set again.
+- **Added:** A waiver ledger. A rework `send` must name or `--waive <IDs> --reason "<why>"` every in-boundary blocking finding, `integrate --override "<why>"` records the findings it lets through, and `finish` prints every entry for the user. `status` shows how many findings were waived.
+- **Added:** An independent final review for full runs. `final-review --prepare` creates the reviewer's worktree at the integration tip and prepares its `create_agent` request, which the orchestrator executes before acknowledging its response with `ack final --receipt -`; `finish` accepts only that reviewer's pass for the current tip, or a `changes_requested` once every in-boundary blocking finding is waived with `final-review --waive <IDs> --reason "<why>"`.
+- **Added:** A review boundary. A blocking finding must cite one of the ticket's confirmed criteria or a floor class — `Regression`, `Data loss`, `Security`, `ADR`; anything else is a suggestion for the user. A re-review confirms the previous in-boundary blocking findings, re-runs the acceptance commands and looks for floor-class problems in the change since the previous candidate, and raises nothing else. A run caps rework at two rounds by default (`--max-rework-rounds`); going past the configured cap needs the user's agreement, recorded with `send --extra-round --reason`.
+- **Added:** `ack <NN>|final --receipt -` reads the MCP response from stdin, bare or as `{action, result}`, and keeps a copy under the run's `messages/`; a bare response is taken for the action pending now. `status` says how long a prepared action has waited for its acknowledgement.
+- **Added:** `config --clear-launch executor|reviewer` drops a role's run-level launch overrides, so agents started afterwards follow its edited Paseo profile again.
+- **Changed:** The ticket templates and the run reference ask for bounded acceptance criteria: an unbounded "all", "every" or "never" names the scope it covers, and a known limit is written into the criterion.
 - **Changed:** Export both diagrams from Excalidraw with the original Virgil handwriting font, group each node for editing, and link the source scenes from the READMEs.
+- **Breaking:** A full run needs an independent final review before `finish`, started with `final-review --prepare`: a pass for the current tip, or a `changes_requested` whose in-boundary blocking findings are all waived. `final-review.md` no longer carries the verdict. A rework `send` must name or `--waive` each in-boundary blocking finding. Acceptance commands run again on every later integration, so they must be repeatable. Tickets in new runs need numbered criteria (`AC1: …`), frozen once the user confirms them, and findings outside the criteria and floor classes no longer block. Rework is capped at two rounds by default (`--max-rework-rounds`), and going past the configured cap needs the user's agreement (`send --extra-round --reason`).
 
 ### Upgrade
 
-No migration is required.
+Finish runs that are in progress with the script they started with before updating. Runs created earlier read their tickets and reviews as before and keep the 30-minute default time limit per command; the numbered criteria and the rework-round cap apply to runs created with this version. The time limit and the cap can be changed with `config --check-timeout` and `config --max-rework-rounds`.
 
 ### Verification
 
-- Checked both Excalidraw scenes and their SVG exports in the browser; relative-link checks pass.
+- All 210 local tests pass (`npm test`), covering the check phase and its time limit, the acceptance regression set, the waiver ledger, numbered criteria and the review boundary, the independent final review, receipts from stdin and cleared launch overrides, and the existing installer and document workflow. Workloop tests use real Git repositories and the fake Paseo CLI.
+- `npm run check:links` resolves every relative link and `skill://` reference across 52 markdown files.
+- Not run locally for this change: Windows and Linux. On POSIX the time limit and recovery stop the check's process group, so a process that deliberately leaves that group is outside the contract.
 
 ## [2.0.0] - 2026-10-26
 
