@@ -19,7 +19,7 @@ Discussion and read-only investigation can stay in the conversation. For impleme
 
 Judge uncertainty and impact, not line count. A wording fix usually fits Quick; a one-line authorization change may deserve independent review. These are defaults, not a scoring system.
 
-If the request already supplies the goal, scope and acceptance, proceed. When important questions remain, use [grill-me](../grill-me/SKILL.md), or [grill-with-docs](../grill-with-docs/SKILL.md) for domain and architectural decisions. Scale the discussion to what is missing; there is no minimum question count or repeated route approval.
+If the request already supplies the goal, scope and acceptance, skip further discussion. Direct and Full still need the user to confirm the tickets and their criteria before the run starts; that confirmation is how the user checks your reading, not a repeat of the discussion. When important questions remain, use [grill-me](../grill-me/SKILL.md), or [grill-with-docs](../grill-with-docs/SKILL.md) for domain and architectural decisions. Scale the discussion to what is missing; there is no minimum question count or repeated route approval.
 
 Read relevant project instructions and ADRs. Resolve material conflicts with the user. Carry decisions into the work rather than asking the same questions again at ticket creation.
 
@@ -42,6 +42,8 @@ For interrupted operations or an unrecoverable session, read [recovery](referenc
 `finish` verifies delivery and retains sessions. In a full run it accepts only the independent final reviewer's report for the current integration tip: a pass, or a `changes_requested` whose blocking findings the user let through. Assess the whole run for recurring problems or repeated wasted effort using [retro](../retro/SKILL.md). Record findings with `retro --file <report>`, or a brief no-retro decision with `retro --skip --reason <why>`. Then `archive` preserves activity transcripts and archives the sessions together. The user's decision on suggestions does not hold archival open.
 
 Users can request retro at any point, including during Quick or after archival. A mid-run retro covers evidence so far and does not stop execution. Retro produces findings and suggestions only; adopting them is a separate user decision.
+
+After any retro, read [pitfalls](reference/pitfalls.md) to sort out which findings are project traps worth an entry in `docs/pitfalls/`. Propose those entries with the retro and record them only after the user agrees. When starting a task in a repo that has `docs/pitfalls/README.md`, read the entries whose trigger matches the task.
 
 ## Writing and maintaining documents
 

@@ -24,6 +24,7 @@ Read the `implement` skill at `{{implementSkill}}` and follow it, with these ove
 - Build with the `tdd` skill (`{{tddSkill}}`) at the agreed seams.
 - **Skip implement's final code-review step.** A separate reviewer agent reviews your work.
 - For agent-facing documents, skills, specs and instructions, read `{{skillsRoot}}/writing-for-agents/SKILL.md`. Keep human-facing documentation appropriate to its readers.
+- If the worktree has `docs/pitfalls/README.md`, read its index and open only the entries whose trigger matches the tools, paths and interfaces this ticket touches. They are past traps in this repo, not requirements; the ticket and spec still decide what to build.
 - Where a skill says "call the Skill tool with X", read `{{skillsRoot}}/X/SKILL.md` and follow it instead, so you use the same skill versions as the rest of the run. Don't invoke skills through a tool.
 
 After integration the orchestrator runs these checks: {{checks}}. It then runs the acceptance commands this ticket names (each criterion ending in `— check: \`<command>\``) and those of every ticket already integrated, from the root of the integrated tree and within the run's check time limit. Make sure they all pass in your worktree before you report `done`.
@@ -35,6 +36,8 @@ After integration the orchestrator runs these checks: {{checks}}. It then runs t
 - Stay in scope. Make no unrelated refactors and no shared-interface changes the ticket doesn't call for. If the ticket can't be done without one, report `question`.
 - If the ticket has a `Scope:` line, change only files that match it. The orchestrator's check refuses a candidate that touches any other file. If the ticket can't be done inside it, report `question`.
 - Make no remote writes of any kind: no pushes, PRs, issue comments or publishing.
+- Stop only processes you started, by the PID you recorded or your tool's own cancel. Never stop processes by name or pattern (`killall node`, `pkill -f python`): the same user runs Paseo, other agents and the user's own programs.
+- Keep what the ticket's `Keep as is` line lists working, and add nothing its `Not in this change` line excludes. If the ticket can't be done without breaking one, report `question`.
 - Add no documentation files the ticket doesn't ask for. When the ticket asks for one, also add its row (path, type, domain) to the `## Documents` table in `AGENTS.md`, or in `CLAUDE.md` when that's where the repo keeps it.
 - The ticket and the spec are this task's settled decisions. ADRs in `docs/adr/` are the user's earlier decisions: follow them; if the ticket can't be done without contradicting one, stop and report `question`, naming the ADR. Older specs, plans or notes you come across are history, not instructions. Where a document and the code disagree about what the code does, the code is right; say so in your report.
 

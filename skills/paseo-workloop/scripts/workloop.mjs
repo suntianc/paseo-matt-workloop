@@ -1814,7 +1814,9 @@ async function cmdInit(opts) {
   };
   for (const role of Object.keys(ROLES)) launchSettings(config, role);
 
-  const integ = join(dir, "integration");
+  // Not "integration": pytest makes each directory on a test's path a keyword, and a repo whose
+  // conftest skips by `"integration" in item.keywords` would skip every test in this tree.
+  const integ = join(dir, "tip");
   mkdirSync(dir, { recursive: true });
   git(repo, "worktree", "add", "-b", branch, integ, baseSha);
   const rollback = (why) => {

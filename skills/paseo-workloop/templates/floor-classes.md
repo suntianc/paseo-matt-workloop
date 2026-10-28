@@ -1,4 +1,4 @@
-  - `Regression: <evidence>` — an existing test fails, or existing behaviour the change does not ask to change is changed.
+  - `Regression: <evidence>` — an existing test fails, or existing behaviour the change does not ask to change is changed. Behaviour the ticket lists under `Keep as is` is always such behaviour.
   - `Data loss: <evidence>` — user work can be lost, or files, branches or processes outside the run's scope can be deleted, overwritten or killed.
   - `Security: <evidence>` — command injection, credential exposure, privilege escalation.
   - `ADR: <the ADR and the line it contradicts>` — the change contradicts an ADR that is valid on the candidate's base. Superseded ADRs (deleted, listed in `docs/adr-history.md`) are never grounds. When the ticket cannot be done without changing a valid ADR, the decision is the user's: report the contradiction under the ADR floor class, and never decide the change yourself.

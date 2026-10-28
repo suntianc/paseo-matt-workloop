@@ -193,6 +193,22 @@ test("registry comes from AGENTS.md, else CLAUDE.md, else there is none", () => 
   assert.equal(none.run("inventory").code, 0, "a repo without a registry is not an error");
 });
 
+test("a pitfalls directory registers as pitfalls, including its copied evidence", () => {
+  const sb = sandbox();
+  sb.write("AGENTS.md", "## Documents\n\n| Path | Type | Domain |\n|---|---|---|\n| docs/pitfalls | pitfalls | global |\n");
+  sb.write("docs/pitfalls/README.md", "# Pitfalls\n");
+  sb.write("docs/pitfalls/testing.md", "# Testing\n");
+  sb.write("docs/pitfalls/evidence/run-1/retro.md", "# Retro\n");
+  sb.commit();
+  const r = sb.json("inventory", "--json");
+  assert.deepEqual(r.unregistered, []);
+  assert.deepEqual(r.duplicates, []);
+  assert.deepEqual(
+    r.registered.filter((f) => f.type === "pitfalls").map((f) => f.path).sort(),
+    ["docs/pitfalls/README.md", "docs/pitfalls/evidence/run-1/retro.md", "docs/pitfalls/testing.md"],
+  );
+});
+
 test("a row with an unknown type, or a Documents heading without a table, fails and names the problem", () => {
   const bad = sandbox();
   bad.write("AGENTS.md", "## Documents\n\n| Path | Type | Domain |\n|---|---|---|\n| docs/guide | guide | global |\n");

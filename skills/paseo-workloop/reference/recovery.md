@@ -76,7 +76,7 @@ The run directory is `$WORKLOOP_ROOT/<project>/<feature>/`:
 | `reports/` | What each executor reported. |
 | `reviews/` | The reviewers' reports, including the final reviewer's `final-<round>-<tipShort>.md`. |
 | `messages/` | Every message you sent to an executor. |
-| `integration/` | The integration worktree. `archive` removes it. |
+| `tip/` | The integration worktree (older runs used `integration/`; `state.json` records the actual path). `archive` removes it. |
 | `final-review.md` | Your acceptance mapping: the claims the final reviewer verifies. |
 
 Session transcripts and the agent/attempt index live under `evidence/`; retrospective outputs live under `retros/`. They remain after archival.

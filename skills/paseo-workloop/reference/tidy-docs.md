@@ -31,6 +31,7 @@ When the run is finished, the repo keeps only these documents:
 | `GLOSSARY.md` | The domain's terms, and the context names the registry's Domain column uses. |
 | `docs/adr/` | Valid ADRs only. A superseded ADR is deleted, and the history table points at it. |
 | `docs/adr-history.md` | Superseded ADRs and removed documents, with a `git show` command for each original. Nothing here constrains an agent. |
+| `docs/pitfalls/` | Project traps recorded after retros, with the evidence they cite. See [pitfalls](pitfalls.md). |
 | Product documents | README, CHANGELOG, and user, API and operations docs for people. These are kept current; a stale one is a bug. |
 
 Everything else moves out of the repo:
@@ -63,6 +64,7 @@ The Type column does most of the work: it says who reads the document, and so wh
 | `glossary` | Terms | When naming things | Updated as terms are settled |
 | `adr` | Valid decisions | When the change touches their area | Superseded ones are deleted and indexed in history |
 | `history` | `docs/adr-history.md` | Not day to day; only when superseding an ADR or tracing one | Rows appended, never edited |
+| `pitfalls` | `docs/pitfalls/`: trap entries, their index and copied evidence | At the start of a task, the entries whose trigger matches it | Entries added, merged or removed with the user's agreement, per [pitfalls](pitfalls.md) |
 | `product` | README, user, API and ops docs for people | When the change touches their domain | Must match the code |
 | `generated` | Generated or vendored files | Never | Not edited by hand |
 
@@ -96,6 +98,7 @@ For each unregistered document, read it, decide its type and domain, then choose
 | Terms | Merge into `GLOSSARY.md` |
 | Instructions for agents (rules files, prompt notes) | Merge into `AGENTS.md` |
 | Process (plans, progress logs, summaries, handoffs, old `.scratch/`) | Remove; move open items to the backlog |
+| Recorded traps or lessons learned | Register `docs/pitfalls/` as `pitfalls`; ask the user before rewriting loose notes into entries |
 | Generated or vendored | Leave it alone, and register it as `generated` |
 
 A document whose type and domain already has one is merged into that document rather than registered beside it. Fix the stale rows (point them at the file's new path, or delete them) and the duplicate rows in the same pass.

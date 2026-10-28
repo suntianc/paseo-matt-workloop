@@ -29,7 +29,7 @@ const SKILL_FILES = [
 ];
 
 const ROOT_INSTRUCTIONS = ["AGENTS.md", "CLAUDE.md"];
-const TYPES = ["instructions", "standards", "glossary", "adr", "history", "product", "generated"];
+const TYPES = ["instructions", "standards", "glossary", "adr", "history", "pitfalls", "product", "generated"];
 const SINGLE = ["instructions", "standards", "glossary", "product"];
 const MD = /\.md$/i;
 

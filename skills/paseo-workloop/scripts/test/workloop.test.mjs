@@ -912,6 +912,8 @@ test("init creates the integration worktree on the base and imports the ticket g
   const out = sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
   const s = sb.state();
   assert.equal(s.integration.branch, "workloop/feat");
+  // pytest turns every directory name on a test's path into a keyword, so the tree must not be called `integration`.
+  assert.equal(s.integration.worktree.split(/[\\/]/).pop(), "tip");
   assert.equal(sb.g(s.integration.worktree, "rev-parse", "HEAD"), sb.g(sb.repo, "rev-parse", "main"));
   assert.deepEqual(Object.values(s.tasks).map((t) => [t.id, t.status, t.blockedBy]), [["01", "ready", []], ["02", "ready", ["01"]], ["03", "ready", ["01", "02"]]]);
   assert.match(out, /next: dispatch 01/);
@@ -2510,7 +2512,7 @@ test("check phase: init keeps its worktree and branch when a timed-out check can
   assert.match(out, /were kept, and no run was created/);
   assert.match(out, /worktree remove --force '[^']+'` and `git -C '[^']+' branch -D 'workloop\/feat'`/);
   assert.doesNotMatch(out, /every process it spawned were stopped/);
-  assert.ok(existsSync(join(sb.runDir, "integration")), "the worktree is kept");
+  assert.ok(existsSync(join(sb.runDir, "tip")), "the worktree is kept");
   assert.equal(spawnSync("git", ["-C", sb.repo, "rev-parse", "--verify", "workloop/feat"], { env: sb.env }).status, 0, "the branch is kept");
   assert.equal(existsSync(join(sb.runDir, "state.json")), false);
   process.kill(-pid, "SIGKILL");
