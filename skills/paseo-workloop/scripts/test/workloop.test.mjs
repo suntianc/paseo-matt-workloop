@@ -3474,7 +3474,7 @@ test("final review: prepare starts a round at the tip with its own branch, workt
   assert.equal(f.round, 1);
   assert.equal(f.branch, "wl-feat-final-1");
   assert.equal(f.tip, s.integration.tip);
-  assert.equal(f.path, join(sb.runDir, "reviews", `final-1-${s.integration.tip.slice(0, 8)}.md`));
+  assert.equal(slash(f.path), slash(join(sb.runDir, "reviews", `final-1-${s.integration.tip.slice(0, 8)}.md`)));
   assert.ok(existsSync(f.worktree));
   assert.notEqual(f.worktree, s.integration.worktree);
   assert.equal(sb.g(f.worktree, "rev-parse", "HEAD"), f.tip, "branched at the integration tip");
@@ -3838,7 +3838,8 @@ test("final review: an interrupted prepare adopts its worktree only when it is c
   // Clean again: the round adopts the worktree the interrupted prepare left.
   const resumed = JSON.parse(sb.ok("final-review", "--prepare"));
   assert.equal(resumed.tool, "create_agent");
-  assert.equal(sb.state().finalReview.worktree, wt);
+  // The same directory; Git may spell it differently from Paseo (a Windows 8.3 alias).
+  assert.equal(realpathSync.native(sb.state().finalReview.worktree), realpathSync.native(wt));
   assert.equal(sb.state().finalReview.pendingAction.action, resumed.action);
 });
 

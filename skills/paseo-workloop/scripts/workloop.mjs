@@ -180,7 +180,10 @@ export function processIdentity(pid, markers) {
 function runOneCheck(cmd, cwd, limitMs, onSpawn) {
   return new Promise((resolve) => {
     const token = `wl-check-${randomUUID()}`;
-    const child = spawn(process.execPath, [CHECK_RUNNER, token, cmd], { cwd, detached: !WIN, stdio: ["pipe", "pipe", "pipe"] });
+    // Detached on every platform: on POSIX the wrapper leads its own process group;
+    // on Windows it stays out of this process's job object, which would otherwise
+    // end the wrapper with an interrupted owner and strand its tree beyond recovery.
+    const child = spawn(process.execPath, [CHECK_RUNNER, token, cmd], { cwd, detached: true, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     let output = "";
     let settled = false;
     let ending = false; // the wrapper exited or the limit expired; cleanup decides the result
