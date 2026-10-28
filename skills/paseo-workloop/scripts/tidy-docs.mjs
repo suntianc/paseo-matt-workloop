@@ -12,7 +12,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { inScope } from "./workloop.mjs";
+import { inScope, isMain } from "./workloop.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = resolve(HERE, "..");
@@ -303,7 +303,7 @@ function main(argv) {
   return fail(`unknown command "${cmd}"\n\n${USAGE}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   try {
     main(process.argv.slice(2));
   } catch (e) {

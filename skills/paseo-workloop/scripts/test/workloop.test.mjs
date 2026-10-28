@@ -2,7 +2,7 @@
 // Run: node --test paseo-workloop/scripts/test/
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { test } from "node:test";
@@ -3972,4 +3972,19 @@ test("config: --clear-launch drops a role's run overrides, so it follows its edi
   assert.equal(launch("reviewer").thinking, "low");
   assert.deepEqual(sb.state().config.reviewer, { thinking: "low" });
   assert.ok(readFileSync(join(sb.runDir, "events.jsonl"), "utf8").includes('"clearedLaunch":["executor"]'));
+});
+
+test("cli: the scripts run when reached through a symlinked directory", () => {
+  // macOS /tmp and a linked skills folder both reach the scripts through a symlink;
+  // the entry check once compared spellings, so the command printed nothing and exited 0.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "workloop-link-")));
+  try {
+    const link = join(root, "linked scripts");
+    symlinkSync(join(HERE, ".."), link, process.platform === "win32" ? "junction" : "dir");
+    for (const [script, banner] of [["workloop.mjs", /workloop — run state/], ["tidy-docs.mjs", /usage: node tidy-docs\.mjs/]]) {
+      const r = spawnSync(process.execPath, [join(link, script), "help"], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, banner, `${script} printed nothing through the link`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

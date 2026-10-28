@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { HeartbeatError, maintainHeartbeat } from "./heartbeat.mjs";
 
@@ -3110,7 +3110,15 @@ export async function main(argv) {
   return result?.afterLock ? result.afterLock() : result;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// True when the module is the command being run, not one the tests import. Compare
+// real paths: reached through a symlinked directory (macOS /tmp, a linked skills
+// folder) the two spellings differ, and the command would silently do nothing.
+export function isMain(metaUrl) {
+  if (!process.argv[1]) return false;
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(metaUrl)); } catch { return false; }
+}
+
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2)).catch((e) => {
     if (!(e instanceof UserError) && !(e instanceof HeartbeatError) && e.code !== "ERR_PARSE_ARGS_UNKNOWN_OPTION") throw e;
     console.error(`workloop: ${e.message}`);
