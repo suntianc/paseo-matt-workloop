@@ -34,7 +34,7 @@ Start with **`paseo-workloop`** for orchestration, or use a supporting skill on 
 
 ## 2. Workflow
 
-![Quick, Direct and Full routes; integrate, finish, retro assessment and archive](docs/assets/workloop.en.svg)
+![Quick, Direct and Full routes; user confirmation, integrate, independent final review, finish, retro assessment and archive](docs/assets/workloop.en.svg)
 
 [Editable Excalidraw source](docs/assets/workloop.en.excalidraw) — download and open it in Excalidraw.
 
@@ -44,7 +44,7 @@ Choose enough process for the task. Existing authorization carries forward; clar
 | --- | --- | --- |
 | **Quick** | The goal is clear, the change is local and reversible, and verification is straightforward. | Execute in the current session, verify and deliver. No ticket or Paseo daemon required. |
 | **Direct** | A bounded task benefits from delegation and independent review. | One scoped ticket; follow-up repairs may be imported after integration. |
-| **Full** | Design choices, dependencies or parallel work need coordination. | A spec, dependent tickets and an overall review. |
+| **Full** | Design choices, dependencies or parallel work need coordination. | A spec, dependent tickets whose numbered criteria the user confirms, and an independent final review before `finish`. |
 
 Direct and Full use this lifecycle:
 
@@ -56,9 +56,7 @@ Direct and Full use this lifecycle:
 | **Retro** | Assess the whole run for recurring failures, business pitfalls, repeated wrong behavior or repeated exploration. Present findings and suggested destinations, or record a brief no-retro reason. Suggestions are not applied automatically. |
 | **Archive** | Save CLI activity transcripts and the agent/attempt index, then archive sessions together. Integrated trees are removed; unmerged or dirty cancelled/replaced work is retained. User decisions on retro suggestions do not delay archival. |
 
-`integrate` and `finish` run their checks and acceptance commands as a background check phase, outside the run lock, so `status` and `watch` keep working while they run. Each command has a time limit — 30 minutes by default, at most 1440, set with `--check-timeout` on `init` or `config`. A command that runs out of time is stopped with the processes it started — its process group on POSIX, its process tree on Windows; a process that deliberately leaves the group on POSIX is not stopped, and a stop that fails or cannot be confirmed keeps the check phase recorded for recovery. Acceptance commands run again at every later integration and at `finish`, so they must be repeatable.
-
-A ticket's criteria are frozen once the user confirms them; a later change is recorded with `criteria <NN> --reason "<the user's decision>"`, and `finish` lists every change. A re-review confirms each previous in-boundary blocking finding, re-runs the acceptance commands and looks for floor-class problems in the change since the previous candidate; it raises nothing else. A run caps rework at two rounds by default (`--max-rework-rounds`), and going past the configured cap needs the user's agreement, recorded with `send --extra-round --reason`. Findings the run lets through are recorded with their reason — waived at rework, let through by `integrate --override`, or waived after the final review — and `status` shows the count.
+Every check has a time limit — 30 minutes by default, at most 1440 — and `integrate` and `finish` run theirs as a background check phase outside the run lock. The user confirms each ticket's numbered criteria before the run starts, and from then on they are frozen; a re-review confirms the previous in-boundary blocking findings, re-runs the acceptance commands and looks for floor-class problems in the change since, and raises nothing else. Rework is capped at two rounds by default, and every finding the run lets through is recorded, with its reason, in a waiver ledger that `finish` prints; the [run reference](skills/paseo-workloop/reference/run.md) holds each gate's rules.
 
 Recoverable errors continue in the same session. If the executor session is lost, `retry` replaces it in the existing worktree; `--new-worktree` explicitly starts a fresh tree. A defect found **after integration** is a new repair ticket with a new session and worktree from the latest integration tip.
 

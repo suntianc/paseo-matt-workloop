@@ -34,7 +34,7 @@
 
 ## 2. 工作流程
 
-![Quick、Direct、Full 路线，以及合入、验收、复盘判断和集中归档](docs/assets/workloop.svg)
+![Quick、Direct、Full 路线，以及用户确认、合入、独立终审、验收、复盘判断和集中归档](docs/assets/workloop.svg)
 
 [可编辑的 Excalidraw 源文件](docs/assets/workloop.excalidraw) — 下载后可在 Excalidraw 中打开。
 
@@ -44,7 +44,7 @@
 | --- | --- | --- |
 | **Quick** | 目标明确、改动局部可逆、验证直接。 | 当前会话执行、验证、交付，无需开票或 Paseo daemon。 |
 | **Direct** | 范围明确，值得委派执行并独立审查。 | 一张有范围的 ticket；合入后可追加 repair ticket。 |
-| **Full** | 存在设计取舍、任务依赖或并行协作需要。 | spec、带依赖的 tickets，以及整体复核。 |
+| **Full** | 存在设计取舍、任务依赖或并行协作需要。 | spec、带依赖的 tickets（编号验收标准由用户确认），以及 `finish` 前的独立终审。 |
 
 Direct 和 Full 使用以下生命周期：
 
@@ -56,9 +56,7 @@ Direct 和 Full 使用以下生命周期：
 | **Retro** | 以整个 run 为单位，检查重复三方故障、业务坑、错误行为与重复摸索。输出发现和落地建议，或记录简短的无需复盘理由。建议不自动实施。 |
 | **集中归档** | 保存 CLI 活动记录和 Agent/attempt 索引，再统一归档会话。已合入的工作区清理；取消或替换 attempt 中未合入、未提交的工作保留。用户是否采纳建议不阻塞归档。 |
 
-`integrate` 和 `finish` 在后台的检查阶段运行检查和验收命令，不持有 run 锁，因此运行期间 `status`、`watch` 仍可用。每条命令都有时限：默认 30 分钟，最长 1440 分钟，可用 `init` 或 `config` 的 `--check-timeout` 调整。超时的命令会连同它启动的进程一起停止——在 POSIX 上是进程组，在 Windows 上是进程树；在 POSIX 上主动脱离该组的进程不在停止范围内；停止失败或无法确认时，检查阶段会保留下来等待恢复。验收命令在之后每次合入和 `finish` 时都会重跑，因此必须可重复执行。
-
-ticket 的验收标准在用户确认后冻结；之后如需变更，用 `criteria <NN> --reason "<the user's decision>"` 记录，`finish` 会列出每次变更。复审只确认上一轮的每条边界内阻塞性发现、重跑验收命令，并检查上一候选以来改动中的底线问题，不再提出其他发现。返修默认上限为两轮（`--max-rework-rounds`），超过所配置的上限需要用户同意，并用 `send --extra-round --reason` 记录。run 放过的每条发现都会连同理由记录在案——返修时豁免、`integrate --override` 放行，或终审后豁免——`status` 显示其数量。
+每条检查都有时限（默认 30 分钟，最长 1440 分钟），`integrate` 和 `finish` 在 run 锁之外的后台检查阶段运行这些检查和验收命令。用户在 run 启动前确认每个 ticket 的编号验收标准，确认后即冻结；复审只确认上一轮边界内的阻塞性发现、重跑验收命令，并检查上一候选以来改动中的底线问题。返修默认上限两轮，run 放过的每条发现都连同理由记入豁免记录并由 `finish` 列出，各道闸门的规则见[运行参考](skills/paseo-workloop/reference/run.md)。
 
 可恢复错误继续原会话。会话丢失时，`retry` 默认替换执行者并复用工作区；确需新建工作区时显式使用 `--new-worktree`。**合入后**发现缺陷，使用新的 repair ticket、会话和工作区，从最新集成提交开始修复。
 

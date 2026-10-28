@@ -2,6 +2,26 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+### Summary
+
+Both READMEs and both workflow diagrams now show the 3.0.0 delivery gates: in Direct and Full the user confirms the tickets and their numbered criteria before the run starts, and a full run's verdict comes from an independent final reviewer before `finish`.
+
+### Changes
+
+- **Changed:** Both READMEs describe the gates briefly and leave their detail to the run reference, and both diagrams add a step where the user confirms the tickets and their numbered criteria before execution, plus an independent final review between integration and `finish` for full runs. The diagrams remain editable Excalidraw scenes exported by Excalidraw with the Virgil font embedded.
+
+### Upgrade
+
+No migration is needed: this release changes the READMEs, the changelogs and the exported diagram assets only. Runs in progress behave as described by the version that started them.
+
+### Verification
+
+- All 211 local tests pass (`npm test`).
+- `npm run check:links` resolves every relative link and `skill://` reference across 52 markdown files.
+- Both SVGs were exported from their updated scenes and opened in a browser; every node and label renders legibly, and each scene keeps its node grouping.
+
 ## [3.0.0] - 2026-10-27
 
 ### Summary
