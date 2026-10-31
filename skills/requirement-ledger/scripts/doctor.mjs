@@ -1,22 +1,26 @@
-// `req doctor`: compare the ledger's records, its `_meta.json` and its audit log
-// and report what does not add up. Repairs run in the conservative direction only:
-// `lastIssued` may rise, never fall; `--repair-log` appends the missing audit line
-// and never touches prose, status or a delivery SHA.
+// `req doctor`: the ledger's single consistency pass. It compares the records
+// against each other, against `_meta.json`, against the runs they cite and against
+// the repository they belong to, and reports what does not add up. Repairs run in
+// the conservative direction only: `lastIssued` may rise, never fall; `--repair-log`
+// appends the missing audit line and never touches prose, status or a delivery SHA.
 //
 // Each check answers with findings instead of throwing, so one damaged file never
-// hides the rest. Cross-file checks — dangling run references, two primaries on one
-// run, dead `refs` — are their own ticket; they join here as further passes over
-// the same context.
-import { existsSync } from "node:fs";
+// hides the rest. Everything that is only a disagreement — a run that moved away, a
+// half-finished `link --correct`, a stale ADR reference — is reported and left for
+// the user to settle; `doctor` does not pick an owner, delete a relation or guess a
+// replacement.
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 
-import { bodyDigest, idFor, numberIn, recordProblems } from "./record.mjs";
+import { bodyDigest, idFor, numberIn, recordProblems, slugify } from "./record.mjs";
+import { ambiguousRuns, lastCorrection, runsOf } from "./relations.mjs";
 import {
   appendLog, highestNumber, ledgerDir, listRequirementFiles, nextSeq, readLog, readMeta, readRequirements,
-  writeMeta, withLock,
+  workloopRoot, writeMeta, withLock,
 } from "./store.mjs";
 import { nowIso } from "./time.mjs";
 
-export function runDoctor({ project, repairLog = false, now = nowIso(), io } = {}) {
+export function runDoctor({ project, repairLog = false, now = nowIso(), io, repo = null, remote = null } = {}) {
   const dir = ledgerDir(project);
   const findings = [];
   if (!existsSync(dir)) return { dir, findings, requirements: [], lastIssued: 0 };
@@ -48,11 +52,194 @@ export function runDoctor({ project, repairLog = false, now = nowIso(), io } = {
 
     let lastIssued = repairMeta({ dir, project, files: listRequirementFiles(dir), parsed, findings, now, io });
 
+    checkDanglingRuns({ parsed, findings });
+    checkDoublePrimaries({ dir, parsed, findings });
+    checkRepoBinding({ parsed, findings, repo, remote });
+    checkRefs({ parsed, findings });
     checkAudit({ dir, parsed, findings, repairLog, now });
 
     return { dir, findings, requirements, lastIssued };
   });
 }
+
+// ---------------------------------------------------------------- cross-file checks
+
+const isRun = (run) => typeof run?.project === "string" && Boolean(run.project) &&
+  typeof run?.feature === "string" && Boolean(run.feature);
+
+// A relation is a pointer to a run whose `state.json` is the authority. A pruned
+// run directory and a mistyped relation look the same from here, so a missing file
+// is reported with the path that was looked at — and the relation is not touched.
+function checkDanglingRuns({ parsed, findings }) {
+  for (const requirement of parsed) {
+    const id = requirement.frontmatter.id;
+    for (const run of runsOf(requirement.frontmatter)) {
+      if (!isRun(run)) continue;
+      const path = join(workloopRoot(), run.project, run.feature, "state.json");
+      if (existsSync(path)) continue;
+      findings.push({
+        code: "dangling-run",
+        id,
+        run: `${run.project}/${run.feature}`,
+        path,
+        message: `${id}: run ${run.project}/${run.feature} has no state.json at ${path}; the relation is reported, not removed`,
+      });
+    }
+  }
+}
+
+// §6.5 / E10: one run claimed as primary by two records is what an interrupted
+// `link --correct` leaves behind. It is never resolved by choosing: the report
+// names both holders and points at the correction intent in `_log.jsonl`, which is
+// the only way back to a single owner.
+function checkDoublePrimaries({ dir, parsed, findings }) {
+  const ambiguous = ambiguousRuns(parsed);
+  const log = ambiguous.size ? readLog(dir) : [];
+  for (const key of [...ambiguous.keys()].sort()) {
+    const holders = ambiguous.get(key);
+    const intent = lastCorrection(log, key);
+    const resumes = Boolean(intent) && holders.includes(intent.from) && holders.includes(intent.to);
+    const command = resumes
+      ? `req link ${key} ${intent.to} --correct --reason "${intent.reason}"`
+      : `req link ${key} <REQ> --correct --reason "<why>"`;
+    findings.push({
+      code: "double-primary",
+      run: key,
+      ids: holders,
+      message: `${key} is the primary of ${holders.join(" and ")}: a \`link --correct\` did not finish; ` +
+        `converge it with \`${command}\`${resumes ? " (the intent recorded in _log.jsonl)" : ""}`,
+    });
+  }
+}
+
+// The record says which repository it belongs to; the ledger is being read from
+// one repository. `repo_remote` is stored already sanitised, and only that form is
+// ever compared or printed — a credential never reaches a finding.
+function checkRepoBinding({ parsed, findings, repo, remote }) {
+  if (!repo) return;
+  for (const requirement of parsed) {
+    const { id, repo_path: recordedPath, repo_remote: recordedRemote } = requirement.frontmatter;
+    if (typeof recordedPath === "string" && recordedPath && !samePath(recordedPath, repo)) {
+      findings.push({
+        code: "repo-mismatch",
+        id,
+        field: "repo_path",
+        message: `${id}: repo_path ${recordedPath} is not the repository this ledger is read from (${repo}); reported, not rewritten`,
+      });
+    }
+    if (typeof remote === "string" && remote && typeof recordedRemote === "string" && recordedRemote && recordedRemote !== remote) {
+      findings.push({
+        code: "repo-mismatch",
+        id,
+        field: "repo_remote",
+        message: `${id}: repo_remote ${recordedRemote} differs from this repository's ${remote}; reported, not rewritten`,
+      });
+    }
+  }
+}
+
+// `repo_path` may name a symlinked or not-yet-created path: the comparison is on
+// the canonical form when both resolve, and on the normalised text otherwise.
+function samePath(a, b) {
+  const canonical = (path) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return resolve(path);
+    }
+  };
+  return canonical(a) === canonical(b);
+}
+
+// `refs` are citations, and a citation that no longer resolves is a fact about the
+// repository, not a reason to edit what the user wrote. An ADR is a file under
+// `docs/adr/`; a pitfall is an entry in a topic page under `docs/pitfalls/`, named
+// by the slug of its heading (or by a page of its own).
+const REF_DIRS = { adr: "docs/adr", pitfalls: "docs/pitfalls" };
+
+function checkRefs({ parsed, findings }) {
+  for (const requirement of parsed) {
+    const { id, repo_path: repoPath, refs } = requirement.frontmatter;
+    if (!isMapping(refs)) continue;
+    // A repository that is gone is the repo check's finding; resolving citations
+    // inside it would report every one of them as dangling for one cause.
+    if (typeof repoPath !== "string" || !repoPath || !existsSync(repoPath)) continue;
+    for (const [kind, where] of Object.entries(REF_DIRS)) {
+      const entries = refs[kind];
+      if (entries === undefined) continue;
+      if (!Array.isArray(entries)) {
+        findings.push({
+          code: "refs-format",
+          id,
+          ref: kind,
+          message: `${id}: refs.${kind} must be a list of names, found ${JSON.stringify(entries)}; reported, not rewritten`,
+        });
+        continue;
+      }
+      for (const entry of entries) {
+        if (typeof entry !== "string" || !entry.trim()) {
+          findings.push({
+            code: "refs-format",
+            id,
+            ref: kind,
+            message: `${id}: refs.${kind} holds ${JSON.stringify(entry)}, which is not a name; reported, not rewritten`,
+          });
+          continue;
+        }
+        const name = entry.trim();
+        if (resolvesRef(repoPath, kind, name)) continue;
+        findings.push({
+          code: "dangling-ref",
+          id,
+          ref: kind,
+          name,
+          message: `${id}: refs.${kind} cites "${name}", which no longer resolves in ${join(repoPath, where)}; ` +
+            "the reference is reported, not deleted or replaced",
+        });
+      }
+    }
+  }
+}
+
+function resolvesRef(repoPath, kind, name) {
+  const dir = join(repoPath, REF_DIRS[kind]);
+  if (!existsSync(dir)) return false;
+  const stem = name.replace(/\.md$/, "");
+  const files = markdownFiles(dir, 3);
+  if (files.some((file) => basename(file, ".md") === stem)) return true;
+  if (kind !== "pitfalls") return false;
+  // Copied retro evidence is not an entry, so its headings do not count.
+  return files.some((file) => headingsOf(readFileSync(file, "utf8")).some((heading) => slugify(heading) === stem));
+}
+
+function markdownFiles(dir, depth) {
+  if (depth < 0) return [];
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files = [];
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== "evidence") files.push(...markdownFiles(path, depth - 1));
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith(".md")) files.push(path);
+  }
+  return files;
+}
+
+function headingsOf(text) {
+  return text.split("\n")
+    .map((line) => /^#{1,6}\s+(.*?)\s*$/.exec(line)?.[1] ?? null)
+    .filter(Boolean)
+    .map((heading) => heading.replace(/\s+#+$/, ""));
+}
+
+const isMapping = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
 // A readable `lastIssued` is a floor: files and ids can only push it up. A missing
 // one is rebuilt from what is on disk; an unreadable one is replaced by the same
