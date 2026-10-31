@@ -3,7 +3,7 @@
 `context` assembles what an agent needs before designing work on an existing requirement: the requirement itself, and pointers to everything that delivered it. It returns pointers; reading them is the agent's job, at the moment it needs them.
 
 ```
-node scripts/req.mjs context <REQ> [--json]
+node scripts/req.mjs context <REQ> [--json] [--include <sections>]
 ```
 
 ## Reply order
@@ -14,6 +14,14 @@ node scripts/req.mjs context <REQ> [--json]
 4. For delivered runs: the final delivery SHA and the evidence directory.
 5. CodeGraph hints from `refs.codegraph` — `symbols` and `paths`. Whether to run a query is the agent's call.
 6. Retrospectives, pitfalls and superseded ADRs, when the question reaches back that far.
+
+## On-demand sections
+
+The reply stops at step 5 unless `--include` names what to add: `retro` appends each run's retrospective pointer, `pitfalls` the pitfalls the record cites, and `history` its prose changes, Quick outcomes and any delivery a reopened run superseded. Names are comma- or space-separated and may come in any order; an unknown name is refused rather than ignored, so a typo cannot silently drop a section.
+
+```
+node scripts/req.mjs context REQ-001 --include retro,history
+```
 
 ## Three delivery states
 

@@ -268,6 +268,9 @@ test("a changed repository is reported by its sanitised remote, never its creden
   const s = sandbox(t);
   s.git("remote", "add", "origin", `https://user:${PASSWORD}@github.com/owner/myapp.git`);
   s.ok(["new", "User login"]); // records github.com/owner/myapp
+  // Created while the remote still agrees: `new` itself now refuses a ledger from
+  // another repository, so this record has to exist before the remote moves.
+  s.ok(["new", "Checkout"]);
   assert.equal(s.run(["doctor"]).status, 0, "the remote it recorded is the one it sees");
 
   s.git("remote", "set-url", "origin", `https://someone:${PASSWORD}@github.com/owner/different.git`);
@@ -278,11 +281,27 @@ test("a changed repository is reported by its sanitised remote, never its creden
   assert.doesNotMatch(report.stdout, /someone/);
 
   // A record bound to another checkout is a separate mismatch, and also only a report.
-  s.ok(["new", "Checkout"]);
   s.editRecord(2, (frontmatter) => ({ ...frontmatter, repo_path: join(s.root, "elsewhere", "myapp") }));
   const moved = s.run(["doctor"]);
   assert.match(moved.stdout, /REQ-002: repo_path .*elsewhere\/myapp is not the repository this ledger is read from/);
   assert.match(moved.stdout, /reported, not rewritten/);
+});
+
+test("a hand-edited remote is compared and reported in its sanitised form", (t) => {
+  const s = sandbox(t);
+  s.git("remote", "add", "origin", "https://github.com/owner/myapp.git");
+  s.ok(["new", "User login"]);
+
+  // A credential a hand edit left in front of the same host and path is not a
+  // different repository.
+  s.editRecord(1, (frontmatter) => ({ ...frontmatter, repo_remote: `https://user:${PASSWORD}@github.com/owner/myapp` }));
+  assert.equal(s.run(["doctor"]).status, 0, "the sanitised form is the repository it records");
+
+  s.editRecord(1, (frontmatter) => ({ ...frontmatter, repo_remote: `https://user:${PASSWORD}@github.com/owner/other` }));
+  const report = s.run(["doctor"]);
+  assert.equal(report.status, 1, report.stdout + report.stderr);
+  assert.match(report.stdout, /REQ-001: repo_remote github\.com\/owner\/other differs from this repository's github\.com\/owner\/myapp/);
+  assert.ok(!`${report.stdout}${report.stderr}`.includes(PASSWORD), "the hand-edited credential is not echoed");
 });
 
 // -------------------------------------------------------------- refs (check 7)
