@@ -177,8 +177,10 @@ export function processIdentity(pid, markers) {
 // token)` records the check's identity; only then is the wrapper told to run
 // the command, so a check never works unrecorded. A process the check left
 // behind can hold its output pipes open, so the result never waits on them long.
-function runOneCheck(cmd, cwd, limitMs, onSpawn) {
+export function runOneCheck(cmd, cwd, limitMs, onSpawn, logPath) {
   return new Promise((resolve) => {
+    const logFd = logPath ? openSync(logPath, "wx", 0o600) : null;
+    let logError;
     const token = `wl-check-${randomUUID()}`;
     // Detached on every platform: on POSIX the wrapper leads its own process group;
     // on Windows it stays out of this process's job object, which would otherwise
@@ -190,7 +192,12 @@ function runOneCheck(cmd, cwd, limitMs, onSpawn) {
     let closed = false;
     let result = null;
     let grace;
-    const collect = (d) => { output = (output + d).slice(-(1 << 20)); };
+    const collect = (d) => {
+      output = (output + d).slice(-(1 << 20));
+      if (logFd !== null && !logError) {
+        try { writeFileSync(logFd, d); } catch (e) { logError = e.message; }
+      }
+    };
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
     child.stdin.on("error", () => { /* the wrapper exited; its exit is reported below */ });
@@ -202,7 +209,11 @@ function runOneCheck(cmd, cwd, limitMs, onSpawn) {
       child.stdout.destroy();
       child.stderr.destroy();
       child.unref(); // a check whose stop failed must not keep this process alive
-      resolve({ ...result, output: tail(output.trim(), 40) });
+      if (logFd !== null) {
+        try { closeSync(logFd); } catch (e) { logError ??= e.message; }
+      }
+      if (logError) { output += `\ncheck log failed: ${logError}`; result = { ...result, ok: false, logError }; }
+      resolve({ exitCode: null, signal: null, ...result, output: tail(output.trim(), 40) });
     };
     // Whether the limit expires or the wrapper exits (normally, crashed or
     // killed), the check is settled only once its group is confirmed gone,
@@ -219,11 +230,11 @@ function runOneCheck(cmd, cwd, limitMs, onSpawn) {
       finish(await cleanUp(true, false));
     }, limitMs);
     child.on("error", (e) => { output += `\n${e.message}`; if (!ending) finish({ ok: false }); });
-    child.on("exit", async (code) => {
+    child.on("exit", async (code, signal) => {
       if (ending) return;
       ending = true;
       clearTimeout(timer);
-      result = await cleanUp(false, code === 0);
+      result = { ...await cleanUp(false, code === 0), exitCode: code, signal };
       if (closed) return finish(result);
       grace = setTimeout(() => finish(result), 1000); // a pipe a stopped process held may close late
     });
@@ -2270,7 +2281,7 @@ function cmdReview(dir, s, id, opts) {
   const ids = bounded ? confirmedIds(t) : null;
   const parts = briefParts(bounded);
   const vars = {
-    task: t.id, title: t.title, worktree: pathArg(t.worktree), candidateSha: t.candidateSha, candidateShort: short(t.candidateSha),
+    task: t.id, title: t.title, worktree: pathArg(t.worktree), branch: t.branch, candidateSha: t.candidateSha, candidateShort: short(t.candidateSha),
     fixedPoint: t.fixedPoint, ticketPath: pathArg(t.file), specPath: pathArg(isDirect(s) ? t.file : s.spec), executorReport: pathArg(reportPath(dir, t)),
     reviewPath: pathArg(path), skillsRoot: pathArg(SKILLS_ROOT), codeReviewSkill: skillPath("code-review"), notes: notesFrom(opts),
     direct: isDirect(s) ? `\n${render("reviewer-direct.md", { boundaryFinding: parts.boundaryFinding, reReviewLimit: parts.reReviewLimit })}` : "",

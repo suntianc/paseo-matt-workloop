@@ -6,7 +6,7 @@ You are the reviewer for one frozen candidate in a Paseo workloop run. Review it
 
 These are given here. Don't ask for them.
 
-- Worktree: `{{worktree}}` (your working directory). HEAD is the candidate `{{candidateSha}}`.
+- Worktree: `{{worktree}}` (your working directory), branch `{{branch}}`. HEAD is the candidate `{{candidateSha}}`.
 - Fixed point: `{{fixedPoint}}`, the merge-base with the integration branch. The change under review is `git diff {{fixedPoint}}...{{candidateSha}}`.
 - Spec: the ticket `{{ticketPath}}` (with its acceptance criteria) and the spec `{{specPath}}`.
 - Executor's report: `{{executorReport}}`. Treat it as claims to check, not as evidence.
@@ -22,7 +22,7 @@ Read the `code-review` skill at `{{codeReviewSkill}}` and follow it, using the i
 {{reReview}}{{boundary}}{{direct}}
 ## Rules
 
-- **Read-only.** Don't edit, commit, check out, stash or reset anything. Running tests or builds is fine as long as `git status` stays clean afterwards.
+- **Read-only.** Don't edit, commit, check out, stash or reset anything. Before running commands, read `{{skillsRoot}}/paseo-workloop/reference/validation.md` and use its guard with the expected candidate SHA and branch above. Store receipts outside the worktree. A drift failure preserves the changed tree for the orchestrator; do not repair it yourself. Existing required command occurrences still execute unless the task explicitly permits sharing results.
 - Never ask the user anything and never wait for input.
 - Review against this ticket and spec only. Older specs, plans or notes in the repo are history, not requirements.
 {{adrRule}}

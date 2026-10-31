@@ -45,6 +45,10 @@ Users can request retro at any point, including during Quick or after archival. 
 
 After any retro, read [pitfalls](reference/pitfalls.md) to sort out which findings are project traps worth an entry in `docs/pitfalls/`. Propose those entries with the retro and record them only after the user agrees. When starting a task in a repo that has `docs/pitfalls/README.md`, read the entries whose trigger matches the task.
 
+## Validation evidence
+
+For fixed-candidate validation, API-fake calibration or failed browser startup, read [validation](reference/validation.md). It provides a command wrapper that detects worktree drift, saves per-command receipts, runs cheap checks first, and makes approved reuse distinct from repeated trials.
+
 ## Writing and maintaining documents
 
 When writing or editing agent-facing instructions, skills, specs, tickets or briefs, read [writing-for-agents](../writing-for-agents/SKILL.md). Prefer useful defaults, decision cues and examples; reserve hard constraints for actual failure boundaries. Human-facing docs should fit their readers.

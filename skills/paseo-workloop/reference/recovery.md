@@ -44,6 +44,14 @@ Run `paseo agent inspect <agentId>` and act on what it shows:
 
 Ordinary review rework uses `send` to the same executor. A defect found after integration is a new repair ticket, new session and new worktree; the completed executor stays as evidence.
 
+### Platform or safety interruption
+
+A platform refusal is an interrupted operation, not a code-review verdict. Preserve the exact error and its step/tool identifier when supplied. If the platform does not identify the action, record that uncertainty. Keep the same session and settings; do not disguise rejected work or change models/providers to evade the restriction.
+
+First request a diagnostic handoff using [the interruption template](../templates/interruption-handoff.md): completed commands and their real exits, durable log/receipt paths, first failures, unfinished criteria, observations separated from confirmed reproductions, and owned processes still running. Capture temporary logs before their workspace can disappear. A later success does not overwrite a failed occurrence.
+
+Assess whether a narrower, permitted scope can continue ordinary existing checks and source inspection. Leave the refused or uncertain experiment paused. If the required scope remains unavailable, report the exact missing step and stop that dependent work. Resume only the permitted scope; the final report must state what ran and what remained unverified. Do not infer a pass from a process ending or a prepared experiment.
+
 ### 3. Finish and archive
 
 A done ticket with no cleanup time is normally waiting for the whole run's retrospective, not an interrupted cleanup. `finish` validates delivery and retains sessions. Record retro findings or a brief skip reason, then `archive` captures transcripts and cleans up together.

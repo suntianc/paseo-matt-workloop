@@ -1516,6 +1516,8 @@ test("boundary: the reviewer brief states the boundary, the floor classes and th
   sb.ok("review", "01");
   const brief = readFileSync(join(sb.runDir, "briefs", `01-review-${sb.state().tasks["01"].candidateSha.slice(0, 8)}.md`), "utf8");
   assert.doesNotMatch(brief, /\{\{/);
+  assert.ok(brief.includes(`branch \`${sb.state().tasks["01"].branch}\``));
+  assert.ok(brief.includes("paseo-workloop/reference/validation.md"));
   assert.match(brief, /## Boundary\n/);
   // A Basis leads with the citation, a confirmed criterion or a floor class.
   assert.match(brief, /A finding's `Basis` cell starts with what it cites/);
