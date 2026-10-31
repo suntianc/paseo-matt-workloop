@@ -101,4 +101,19 @@ export function recordProblems(frontmatter) {
 
 export const numberIn = (id) => Number(/^REQ-(\d+)$/.exec(id)?.[1] ?? NaN);
 
+// A free-form note is one dated line at the end of `## Notes`. Everything else in
+// the prose — the summary, the history, notes already there — is left as it is.
+export function appendNote(body, line) {
+  const lines = String(body ?? "").replace(/\r\n/g, "\n").trimEnd().split("\n");
+  const heading = lines.findIndex((text) => text.trim() === "## Notes");
+  if (heading < 0) return `${lines.join("\n")}\n\n## Notes\n${line}\n`;
+  let end = lines.length;
+  for (let i = heading + 1; i < lines.length; i += 1) {
+    if (/^## /.test(lines[i])) { end = i; break; }
+  }
+  while (end > heading + 1 && lines[end - 1].trim() === "") end -= 1;
+  lines.splice(end, 0, line);
+  return `${lines.join("\n")}\n`;
+}
+
 const isMapping = (value) => value !== null && typeof value === "object" && !Array.isArray(value);

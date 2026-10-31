@@ -538,13 +538,17 @@ test("a gap in the numbering is healthy, not a finding", (t) => {
   assert.equal(readMetaJson(s.dir).lastIssued, 5);
 });
 
-test("commands that arrive in later tickets say so instead of inventing behaviour", (t) => {
+test("every command the dispatcher names answers as itself, never as an unknown one", (t) => {
   const s = sandbox(t);
+  // Which of these are still waiting for their ticket changes with every ticket,
+  // so what is asserted is the dispatcher's part: it knows the name, and a command
+  // that needs arguments fails as that command rather than as "unknown".
   for (const name of ["lookup", "context", "link", "sync", "note"]) {
     const result = s.run([name]);
-    assert.equal(result.status, 2, name);
-    assert.match(result.stderr, /not part of this build yet/);
+    assert.notEqual(result.status, 0, `${name} needs arguments`);
+    assert.doesNotMatch(result.stderr, /unknown command/, name);
   }
   assert.equal(s.run(["frobnicate"]).status, 2);
+  assert.match(s.run(["frobnicate"]).stderr, /unknown command/);
   assert.match(s.run([]).stdout, /usage: req/);
 });
