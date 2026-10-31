@@ -77,28 +77,40 @@ export function writeFileAtomic(path, text, io = realIO) {
 
 // ---------------------------------------------------------------- meta
 
-// `lastIssued` is the allocator's source of truth. A missing or damaged file is
-// reported, never trusted: callers take the highest number they can actually see
-// and repair upward, so a bad `_meta.json` can only ever cost a gap.
+// `lastIssued` is the allocator's source of truth: the high-water mark of every
+// number ever handed out. It is read from the value, not from its JSON type — a
+// number stored as text ("12", by a hand edit or another tool) is still 12, and
+// discarding it would let a number the ledger already issued be issued again.
+// Only a value that does not read as a non-negative integer is unreadable; the
+// callers then repair upward from the files, never downward.
 export function readMeta(dir) {
   const path = metaPath(dir);
   let text;
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
-    return { project: null, lastIssued: 0, updated_at: null, problem: error.code === "ENOENT" ? "missing" : error.message };
+    return {
+      project: null, lastIssued: 0, rawLastIssued: null, updated_at: null, typeMismatch: false,
+      problem: error.code === "ENOENT" ? "missing" : error.message,
+    };
   }
   try {
     const parsed = JSON.parse(text);
-    const lastIssued = Number.isInteger(parsed?.lastIssued) && parsed.lastIssued >= 0 ? parsed.lastIssued : null;
+    const raw = parsed?.lastIssued;
+    const numeric = typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : null;
+    const lastIssued = Number.isInteger(numeric) && numeric >= 0 ? numeric : null;
     return {
       project: typeof parsed?.project === "string" ? parsed.project : null,
       lastIssued: lastIssued ?? 0,
+      rawLastIssued: raw,
       updated_at: typeof parsed?.updated_at === "string" ? parsed.updated_at : null,
-      problem: lastIssued === null ? "lastIssued is not a non-negative integer" : null,
+      typeMismatch: lastIssued !== null && typeof raw !== "number",
+      problem: lastIssued === null ? `lastIssued is not a non-negative integer (${JSON.stringify(raw)})` : null,
     };
   } catch (error) {
-    return { project: null, lastIssued: 0, updated_at: null, problem: `not valid JSON: ${error.message}` };
+    return { project: null, lastIssued: 0, rawLastIssued: null, updated_at: null, typeMismatch: false, problem: `not valid JSON: ${error.message}` };
   }
 }
 

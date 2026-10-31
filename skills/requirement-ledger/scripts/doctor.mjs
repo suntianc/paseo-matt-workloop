@@ -82,6 +82,16 @@ function repairMeta({ dir, project, files, parsed, findings, now, io }) {
     });
     return target;
   }
+  // Readable, but stored as text: the value is kept and only its form is rewritten.
+  if (meta.typeMismatch) {
+    writeMeta(dir, { project, lastIssued: target, now }, io);
+    findings.push({
+      code: "meta-type",
+      message: `_meta.json lastIssued ${JSON.stringify(meta.rawLastIssued)} is stored as text; written back as ${target} without lowering it`,
+      repaired: true,
+    });
+    return target;
+  }
   return meta.lastIssued;
 }
 

@@ -305,6 +305,28 @@ test("lastIssued is never lowered, even when every file is gone", (t) => {
   assert.equal(s.run(["new", "After pruning"]).status, 0);
   assert.deepEqual(requirementFiles(s.dir), ["REQ-010-after-pruning.md"]);
   assert.equal(readMetaJson(s.dir).lastIssued, 10);
+
+  // The same number stored as a JSON string — a hand edit, or another tool — is
+  // still the high-water mark: "12" reads as 12, and never licenses reissuing 3.
+  // The files are what is missing here, so `_meta.json` is the only memory left.
+  const s2 = sandbox(t);
+  writeRecord(s2, 1, "First");
+  writeRecord(s2, 2, "Second");
+  writeFileSync(join(s2.dir, "_meta.json"), `${JSON.stringify({ project: "myapp", lastIssued: "12", updated_at: NOW })}\n`);
+
+  const report = s2.run(["doctor", "--repair-log"]);
+  assert.equal(report.status, 0, report.stdout + report.stderr);
+  assert.match(report.stdout, /lastIssued "12"/);
+  assert.equal(readMetaJson(s2.dir).lastIssued, 12, "the readable value survives, and is stored as a number");
+  assert.equal(s2.run(["new", "After twelve"]).stdout.split(/\s+/)[0], "REQ-013");
+
+  // `new` alone must not reissue it either: the allocator reads the same value.
+  const s3 = sandbox(t);
+  writeRecord(s3, 1, "First");
+  writeRecord(s3, 2, "Second");
+  writeFileSync(join(s3.dir, "_meta.json"), `${JSON.stringify({ project: "myapp", lastIssued: "12", updated_at: NOW })}\n`);
+  assert.equal(s3.run(["new", "After twelve"]).stdout.split(/\s+/)[0], "REQ-013");
+  assert.equal(readMetaJson(s3.dir).lastIssued, 13);
 });
 
 test("concurrent creates all land on distinct numbers", async (t) => {
@@ -492,6 +514,15 @@ test("a damaged _meta.json is rebuilt from the files present, not trusted", (t) 
   assert.match(report.stdout, /_meta\.json cannot be trusted/);
   assert.equal(readMetaJson(s.dir).lastIssued, 4);
   assert.equal(s.run(["new", "After the repair"]).stdout.split(/\s+/)[0], "REQ-005");
+
+  // A value that does not read as a number at all still repairs upward from the
+  // files, and the number it repairs to is the files' maximum, never a file's smaller one.
+  writeFileSync(join(s.dir, "_meta.json"), `${JSON.stringify({ project: "myapp", lastIssued: "banana", updated_at: NOW })}\n`);
+  const second = s.run(["doctor", "--repair-log"]);
+  assert.equal(second.status, 0, second.stdout + second.stderr);
+  assert.match(second.stdout, /cannot be trusted/);
+  assert.equal(readMetaJson(s.dir).lastIssued, 5);
+  assert.equal(s.run(["new", "After the second repair"]).stdout.split(/\s+/)[0], "REQ-006");
 });
 
 test("a gap in the numbering is healthy, not a finding", (t) => {
