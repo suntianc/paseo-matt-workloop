@@ -109,7 +109,7 @@ function locate(flags) {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(project)) {
     throw new UsageError(`project key ${JSON.stringify(project)} is not usable: lowercase letters, digits and dashes, starting with a letter or digit`);
   }
-  return { repo: repo ?? cwd, project, dir: ledgerDir(project), remote: repo ? gitRemote(repo) : null };
+  return { repo: repo ?? cwd, gitRepo: repo, project, dir: ledgerDir(project), remote: repo ? gitRemote(repo) : null };
 }
 
 function gitRemote(repo) {
@@ -291,7 +291,9 @@ function cmdRetire({ positional, flags }) {
 
 function cmdDoctor({ flags }) {
   const at = locate(flags);
-  const report = runDoctor({ project: at.project, repairLog: Boolean(flags["repair-log"]) });
+  const report = runDoctor({
+    project: at.project, repairLog: Boolean(flags["repair-log"]), repo: at.gitRepo, remote: at.remote,
+  });
 
   const readable = report.requirements.filter((requirement) => !requirement.error);
   say(`doctor: ${readable.length} requirement${readable.length === 1 ? "" : "s"}, lastIssued ${report.lastIssued}`);
@@ -300,13 +302,16 @@ function cmdDoctor({ flags }) {
     say(`  ${id}  ${status}  rev ${rev}  ${title}`);
   }
   if (!report.findings.length) {
-    say("clean: the records, _meta.json and the audit log agree");
+    say("clean: the records, _meta.json, the audit log, the runs and the refs agree");
     return;
   }
   say(`findings: ${report.findings.length}`);
   for (const finding of report.findings) {
     say(`  - ${finding.message}${finding.repaired ? " [repaired]" : ""}`);
   }
+  // Exit status: 0 when the ledger is clean or every finding was repaired (there
+  // is nothing left to act on), 1 when anything still needs a human, 2 for a usage
+  // error (the dispatcher's `fail`).
   process.exitCode = report.findings.some((finding) => !finding.repaired) ? 1 : 0;
 }
 
