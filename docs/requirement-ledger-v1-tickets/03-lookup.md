@@ -1,7 +1,7 @@
 # 03 Lookup 检索与歧义
 
 **Blocked by:** 02
-**Scope:** skills/requirement-ledger/scripts/
+**Scope:** skills/requirement-ledger/scripts/,skills/requirement-ledger/reference/lookup.md
 **Maps to:** E2、E3
 
 **Goal：** 实现 `req lookup` 的确定性候选与歧义契约（含中文子串/二元组），只给证据、不自动归属。

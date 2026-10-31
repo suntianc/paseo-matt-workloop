@@ -1,7 +1,7 @@
 # 02 台账存储、编号分配、锁与审计
 
 **Blocked by:** 01
-**Scope:** skills/requirement-ledger/scripts/
+**Scope:** skills/requirement-ledger/scripts/,skills/requirement-ledger/reference/storage.md
 **Maps to:** E1（建档部分）、E7（医生部分）、R2
 
 **Goal：** 实现 `.requirements/` 文件台账底座：编号分配、原子写、项目锁、审计日志、`new/list/show/retire` 与 `doctor` 基础检查。
