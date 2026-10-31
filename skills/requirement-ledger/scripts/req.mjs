@@ -4,19 +4,25 @@
 // replaces files atomically, retires them without deleting anything, and checks
 // that the ledger still adds up.
 //
-// `context`, `link`, `sync` and `note` are named in the dispatcher and answer that
-// they are not part of this build yet.
+// `PENDING` names the commands a later ticket adds. The dispatcher knows them so
+// the answer is "not part of this build yet" rather than "unknown command".
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
 import { runDoctor } from "./doctor.mjs";
 import { lookupRequirements, LOOKUP_DEFAULTS } from "./lookup.mjs";
-import { idFor, numberIn } from "./record.mjs";
+import { appendNote, idFor, numberIn } from "./record.mjs";
 import {
-  createRequirement, ledgerDir, listRequirementFiles, projectKey, readRequirement, readRequirements,
+  ambiguousIn, ambiguousRuns, lastCorrection, newOutcome, newRelation, primaryHolders, relationIn, syncDelivery,
+  withOutcome, withRelation, withoutRelation,
+} from "./relations.mjs";
+import { deliveryFrom, parseRunKey, readRun, RunError, runKeyOf, supersedeReason } from "./runstate.mjs";
+import {
+  appendLog, createRequirement, ledgerDir, listRequirementFiles, nextSeq, projectKey, readLog, readRequirement, readRequirements,
   saveRequirement, withLock,
 } from "./store.mjs";
+import { nowIso } from "./time.mjs";
 
 const USAGE = `usage: req <command> [options]
 
@@ -36,6 +42,13 @@ Options:
   --limit <n>        how many candidates to return (default ${LOOKUP_DEFAULTS.limit})
   --repair-log       append audit lines for recoverable gaps, without touching prose
 
+Workloop (reads the run's state.json; never writes it):
+  link <project>/<feature> <REQ> [--correct --reason "<why>"]
+                                    record which requirement a run delivers, or move it
+  sync <project>/<feature>          copy the run's delivery state into the ledger
+  note <REQ> --outcome "<summary>" [--commit <sha>] [--verification "<how>"]
+  note <REQ> "<text>"               record Quick work, or a note; creates no run
+
 The ledger lives in $WORKLOOP_ROOT/<project>/.requirements/ and defaults to
 ~/.workloop. Run the command from inside the project's repository.`;
 
@@ -43,9 +56,6 @@ The ledger lives in $WORKLOOP_ROOT/<project>/.requirements/ and defaults to
 // "not yet" rather than "unknown command".
 const PENDING = {
   context: "assemble a requirement's references",
-  link: "record which requirement a run delivers",
-  sync: "copy a run's delivery state into the ledger",
-  note: "record Quick work or a note",
 };
 
 const say = (line = "") => process.stdout.write(`${line}\n`);
@@ -181,13 +191,17 @@ function cmdList({ flags }) {
     return;
   }
   const width = Math.max(...requirements.map((requirement) => (requirement.frontmatter?.id ?? requirement.file).length));
+  const ambiguous = ambiguousRuns(requirements);
   for (const requirement of requirements) {
     if (requirement.error) {
       say(`${requirement.file.padEnd(width)}  unreadable  ${requirement.error}`);
       continue;
     }
     const { id, status, updated_at: updatedAt, title } = requirement.frontmatter;
-    say(`${id.padEnd(width)}  ${String(status).padEnd(7)}  ${String(updatedAt ?? "").slice(0, 10)}  ${title}`);
+    // A run two records claim is marked, not resolved (§6.5).
+    const marks = ambiguousIn(requirement.frontmatter, ambiguous);
+    const mark = marks.length ? `[${marks.map((run) => `ambiguous ${run.key}: ${run.also.join(", ")}`).join("; ")}] ` : "";
+    say(`${id.padEnd(width)}  ${String(status).padEnd(7)}  ${String(updatedAt ?? "").slice(0, 10)}  ${mark}${title}`);
   }
 }
 
@@ -198,6 +212,12 @@ function cmdShow({ positional, flags }) {
   const found = findRequirement(at.dir, id);
   if (!found) throw new UsageError(`no requirement ${id} in ${at.dir}`);
   process.stdout.write(readFileSync(join(at.dir, found.file), "utf8"));
+  if (Array.isArray(found.frontmatter?.runs) && found.frontmatter.runs.length) {
+    for (const run of ambiguousIn(found.frontmatter, ambiguousRuns(readRequirements(at.dir)))) {
+      warn(`${id} is ambiguous: ${run.key} is the primary of ${id} and ${run.also.join(", ")}, so a \`link --correct\` did not finish; ` +
+        "its ownership is unresolved until that correction converges");
+    }
+  }
 }
 
 // A search that only reads: no lock, no directory, no record and no owner. The
@@ -290,7 +310,310 @@ function cmdDoctor({ flags }) {
   process.exitCode = report.findings.some((finding) => !finding.repaired) ? 1 : 0;
 }
 
-const COMMANDS = { new: cmdNew, list: cmdList, show: cmdShow, lookup: cmdLookup, retire: cmdRetire, doctor: cmdDoctor };
+// ------------------------------------------------------- Workloop: link, sync, note
+
+const short = (sha) => (typeof sha === "string" && sha.length > 7 ? sha.slice(0, 7) : String(sha ?? ""));
+
+// The requirement a command names, with `findRequirement`'s rule (the number in
+// the file name first, then the id the record carries) applied to the full list,
+// which `link`, `sync` and `note` need anyway for the ambiguity check.
+function findIn(requirements, id) {
+  const byNumber = requirements.find((requirement) => requirement.number === numberIn(id));
+  if (byNumber) {
+    if (byNumber.error) throw new Error(`${byNumber.file}: ${byNumber.error}`);
+    return byNumber;
+  }
+  return requirements.find((requirement) => !requirement.error && requirement.frontmatter.id === id) ?? null;
+}
+
+// A full-length SHA or nothing: `status --json` prints seven characters, and a
+// truncated SHA recorded as if it were the commit would be a guess.
+function baseShaOf(state) {
+  if (typeof state.baseSha !== "string" || !state.baseSha) {
+    throw new Error("state.json has no baseSha: the commit the run started from cannot be recorded, and recording a short one would be a guess");
+  }
+  return state.baseSha;
+}
+
+// §6.5: two primaries is a question the ledger does not answer by choosing, and
+// every read that needs one owner refuses it the same way.
+function ambiguityError(key, holders, intent) {
+  const lines = [`${key} is the primary of ${holders.join(" and ")}: a \`link --correct\` did not finish, and nothing here picks one of them.`];
+  if (intent?.from && intent?.to && holders.includes(intent.to) && holders.includes(intent.from)) {
+    lines.push(`The recorded intent moves it from ${intent.from} to ${intent.to} ("${intent.reason}"). Converge it with:`);
+    lines.push(`  req link ${key} ${intent.to} --correct --reason "${intent.reason}"`);
+  } else {
+    lines.push(`Converge it with \`req link ${key} <REQ> --correct --reason "<why>"\`.`);
+  }
+  return new Error(lines.join("\n"));
+}
+
+// `link` records a relation; it never touches what Workloop says, so a run whose
+// repository differs from the record's is a warning the operator can act on, not a
+// silent association (doctor reports the same mismatch as a finding).
+function repoWarnings(at, record, run) {
+  const recorded = record.frontmatter.repo_path;
+  const repo = run.state.repo;
+  if (typeof recorded !== "string" || typeof repo !== "string" || !recorded || !repo) return [];
+  try {
+    if (realpathSync(recorded) === realpathSync(repo)) return [];
+  } catch {
+    return [];
+  }
+  return [`${record.frontmatter.id} belongs to ${recorded}, but the run was created in ${repo}`];
+}
+
+function cmdLink({ positional, flags }) {
+  if (positional.length !== 2) {
+    throw new UsageError('link needs a run and a requirement: req link <project>/<feature> <REQ> [--correct --reason "<why>"]');
+  }
+  const [address, idText] = positional;
+  const { project, feature } = parseRunKey(address);
+  const id = normaliseId(idText);
+  if (!id) throw new UsageError(`link needs a requirement id: req link ${address} REQ-001`);
+  if (flags.correct && !flags.reason) {
+    throw new UsageError('--correct needs --reason "<why>": the reason stays with the record and in _log.jsonl');
+  }
+  const at = locate(flags);
+  if (at.project !== project) {
+    throw new UsageError(`run ${address} belongs to project ${project}, but this ledger is ${at.project} (${at.dir}); ` +
+      `run the command in that project's repository or pass --project ${project}`);
+  }
+  // `link` reads the run, and a run that is not there is not a link to record.
+  // `--correct` moves recorded metadata, so it still works when the run directory
+  // has gone — that is how a dangling relation gets repaired.
+  let run = null;
+  let absent = null;
+  try {
+    run = readRun({ project, feature });
+  } catch (error) {
+    if (!flags.correct) throw error;
+    absent = error;
+  }
+  const key = runKeyOf(project, feature);
+
+  const outcome = withLock(at.dir, () => {
+    const requirements = readRequirements(at.dir);
+    const target = findIn(requirements, id);
+    if (!target) throw new Error(`no requirement ${id} in ${at.dir}`);
+    if (target.frontmatter.status === "retired") throw new Error(`${id} is retired: a retired requirement takes no new run`);
+
+    const holders = primaryHolders(requirements, project, feature);
+    const others = holders.filter((holder) => holder !== id);
+    const intent = lastCorrection(readLog(at.dir), key);
+    const relate = () => {
+      if (!run) throw new Error(`${absent.message}; there is no relation to move either`);
+      return newRelation({ project, feature, baseSha: baseShaOf(run.state) });
+    };
+
+    if (holders.length === 1 && holders[0] === id) {
+      return { kind: "already", record: target, relation: relationIn(target.frontmatter, project, feature) };
+    }
+
+    if (!flags.correct) {
+      if (holders.length > 1) throw ambiguityError(key, holders, intent);
+      if (holders.length === 1) {
+        throw new Error(`${key} is already the primary of ${holders[0]}; one run delivers one primary requirement in v1. ` +
+          `To move it: req link ${key} ${id} --correct --reason "<why>"`);
+      }
+      const relation = relate();
+      const saved = saveRequirement({
+        dir: at.dir, file: target.file, record: withRelation(target.frontmatter, relation), body: target.body,
+        op: "link", extra: { run: key, relation: "primary", base_sha: relation.base_sha },
+      });
+      return { kind: "linked", record: target, relation, saved, warnings: repoWarnings(at, target, run) };
+    }
+
+    // `--correct`: the one controlled way to move a run's primary requirement. It
+    // moves metadata only — never the run's execution facts or its delivery SHA.
+    if (others.length > 1) {
+      throw new Error(`${key} is the primary of ${holders.join(" and ")}; one reason cannot say which of them is wrong. ` +
+        `Converge them one correction at a time, and read \`req doctor\`.`);
+    }
+    const from = others[0] ?? null;
+    if (!from) {
+      // Nothing holds the run yet, so there is nothing to correct: link it.
+      if (!run) throw new Error(`${absent.message}; there is no recorded relation here to correct either`);
+      const relation = relate();
+      const saved = saveRequirement({
+        dir: at.dir, file: target.file, record: withRelation(target.frontmatter, relation), body: target.body,
+        op: "link", extra: { run: key, relation: "primary", base_sha: relation.base_sha },
+      });
+      return { kind: "linked", record: target, relation, saved, warnings: repoWarnings(at, target, run) };
+    }
+    const fromRecord = findIn(requirements, from);
+    if (!fromRecord) {
+      throw new Error(`${key} is recorded under ${from}, but ${from} is not in ${at.dir}; a correction cannot finish by guesswork`);
+    }
+    const resumed = Boolean(intent && intent.from === from && intent.to === id);
+    const reason = resumed ? intent.reason : String(flags.reason).trim();
+    if (!resumed) {
+      // The intent goes in before either requirement moves (R1): an interruption is
+      // then explainable from the log, and a retry converges on it.
+      const entries = readLog(at.dir);
+      appendLog(at.dir, { seq: nextSeq(entries), at: nowIso(), op: "correct", run: key, from, to: id, reason });
+    }
+    // Add the new relation first, remove the old one second. An interruption leaves
+    // the run in two requirements — visible, reported, recoverable — never in none.
+    const carried = relationIn(fromRecord.frontmatter, project, feature) ?? relate();
+    const added = saveRequirement({
+      dir: at.dir, file: target.file, record: withRelation(target.frontmatter, carried), body: target.body,
+      op: "link", extra: { run: key, from, to: id, reason },
+    });
+    const removed = saveRequirement({
+      dir: at.dir, file: fromRecord.file, record: withoutRelation(fromRecord.frontmatter, project, feature), body: fromRecord.body,
+      op: "unlink", extra: { run: key, from, to: id, reason },
+    });
+    const warnings = run ? repoWarnings(at, target, run) : [`${key} has no state.json: the relation moved as recorded metadata, without re-reading the run`];
+    return { kind: "corrected", record: target, from, to: id, resumed, reason, carried, added, removed, warnings };
+  });
+
+  const record = outcome.record.frontmatter.id;
+  if (outcome.kind === "already") {
+    say(`already linked: ${key} is the primary of ${record}`);
+    say(describeDelivery(outcome.relation?.delivery ?? { state: "pending" }));
+    return;
+  }
+  if (outcome.kind === "linked") {
+    say(`linked ${key} → ${record} (primary, base ${short(outcome.relation.base_sha)})`);
+    say(describeDelivery(outcome.relation.delivery));
+  } else {
+    say(`corrected: ${key} ${outcome.from} → ${outcome.to} (${outcome.resumed ? "resumed the recorded intent" : "intent recorded first"}: "${outcome.reason}")`);
+    say(describeDelivery(outcome.carried.delivery));
+  }
+  for (const warning of outcome.warnings ?? []) warn(warning);
+}
+
+function describeDelivery(delivery) {
+  if (delivery?.state !== "delivered") return "delivery pending";
+  const parts = [`delivered ${short(delivery.final_tip)} at ${delivery.delivered_at || "(no completion time recorded)"}`];
+  if (delivery.archived_at) parts.push(`archived ${delivery.archived_at}`);
+  if (delivery.evidence_dir) parts.push(`evidence ${delivery.evidence_dir}`);
+  return parts.join("\n");
+}
+
+function cmdSync({ positional, flags }) {
+  if (positional.length !== 1) throw new UsageError("sync needs a run: req sync <project>/<feature>");
+  const { project, feature } = parseRunKey(positional[0]);
+  const at = locate(flags);
+  if (at.project !== project) {
+    throw new UsageError(`run ${positional[0]} belongs to project ${project}, but this ledger is ${at.project} (${at.dir}); ` +
+      `run the command in that project's repository or pass --project ${project}`);
+  }
+  const run = readRun({ project, feature });
+  const target = deliveryFrom(run.state);
+  const key = runKeyOf(project, feature);
+  const reason = supersedeReason(run.dir);
+
+  const outcome = withLock(at.dir, () => {
+    const requirements = readRequirements(at.dir);
+    const ambiguous = ambiguousRuns(requirements);
+    if (ambiguous.has(key)) throw ambiguityError(key, ambiguous.get(key), lastCorrection(readLog(at.dir), key));
+    const holders = primaryHolders(requirements, project, feature);
+    if (!holders.length) throw new Error(`${key} is not linked to a requirement; run req link ${key} REQ-001 first`);
+    const record = findIn(requirements, holders[0]);
+    const relation = relationIn(record.frontmatter, project, feature);
+    const applied = syncDelivery(relation, target, { reason });
+    if (!applied.changes.length) return { kind: "in-sync", record, relation, target, conflict: applied.conflict };
+    const saved = saveRequirement({
+      dir: at.dir, file: record.file,
+      record: { ...record.frontmatter, runs: record.frontmatter.runs.map((entry) => (entry === relation ? applied.relation : entry)) },
+      body: record.body, op: "sync", extra: { run: key, changes: applied.changes.join(",") },
+    });
+    return { kind: "written", record, relation: applied.relation, changes: applied.changes, target, saved };
+  });
+
+  const record = outcome.record.frontmatter.id;
+  const delivery = outcome.relation.delivery ?? { state: "pending" };
+  const history = outcome.relation.delivery_history?.length ?? 0;
+  if (outcome.kind === "in-sync") {
+    say(`${key} → ${record}`);
+    if (outcome.target.state === "pending" && delivery.state !== "delivered" && !history) {
+      // E11b: nothing in state.json to record, and no snapshot here to fall back
+      // on. The ledger says so instead of inventing a delivery.
+      say("state.json has no completion, and this ledger holds no snapshot of a delivery for this run.");
+      say("Nothing is recorded and nothing is invented: only Workloop's own evidence (state.json, events.jsonl, a commit SHA) can say what was delivered.");
+      say(describeDelivery(delivery));
+      return;
+    }
+    say(`in sync: ${describeDelivery(delivery)}`);
+    if (history) say(`${history} superseded snapshot${history === 1 ? "" : "s"} kept in delivery_history`);
+    if (outcome.conflict) {
+      warn(`state.json reports ${short(outcome.conflict.reported)}, but the archived delivery is fixed at ${short(outcome.conflict.recorded)}; ` +
+        "an archived SHA is not rewritten");
+    }
+    return;
+  }
+
+  say(`${key} → ${record}`);
+  if (outcome.changes.includes("superseded")) {
+    const last = outcome.relation.delivery_history?.at(-1);
+    say(`superseded ${short(last?.final_tip)} (${last?.reason}) → delivery_history`);
+  }
+  say(describeDelivery(delivery));
+}
+
+// A `--commit` is kept only if the repository can resolve it: a SHA the ledger
+// cannot check is a SHA it should not write down.
+function resolveCommit(repo, value) {
+  const text = String(value ?? "").trim();
+  if (!/^[0-9a-f]{4,40}$/i.test(text)) throw new UsageError(`--commit ${JSON.stringify(text)} is not a commit SHA`);
+  const found = spawnSync("git", ["-C", repo, "rev-parse", "--verify", "--quiet", `${text}^{commit}`], { encoding: "utf8" });
+  const sha = found.status === 0 ? found.stdout.trim() : "";
+  if (!sha) throw new UsageError(`--commit ${text}: no such commit in ${repo}. A Quick outcome records a commit that exists, or none`);
+  return sha;
+}
+
+function cmdNote({ positional, flags }) {
+  const id = normaliseId(positional[0]);
+  if (!id) throw new UsageError('note needs a requirement: req note REQ-001 --outcome "<summary>" [--commit <sha>]');
+  const text = positional.slice(1).join(" ").trim();
+  const isOutcome = flags.outcome !== undefined;
+  if (isOutcome && text) throw new UsageError("note takes --outcome or a free note, not both");
+  if (!isOutcome && !text) throw new UsageError('note needs --outcome "<summary>" or a note to append: req note REQ-001 "…"');
+  if (!isOutcome && (flags.commit !== undefined || flags.verification !== undefined)) {
+    throw new UsageError("--commit and --verification describe an --outcome; a free note takes neither");
+  }
+  if (isOutcome && !String(flags.outcome).trim()) throw new UsageError("--outcome needs a summary");
+  const at = locate(flags);
+  const commitSha = flags.commit === undefined ? null : resolveCommit(at.repo, flags.commit);
+
+  const outcome = withLock(at.dir, () => {
+    const requirements = readRequirements(at.dir);
+    const found = findIn(requirements, id);
+    if (!found) {
+      throw new Error(`no requirement ${id} in ${at.dir}: a Quick change does not create one just to have somewhere to write`);
+    }
+    const now = nowIso();
+    if (isOutcome) {
+      const entry = newOutcome({ summary: String(flags.outcome).trim(), commitSha, verification: flags.verification?.trim() || null, now });
+      const saved = saveRequirement({
+        dir: at.dir, file: found.file, record: withOutcome(found.frontmatter, entry), body: found.body,
+        op: "note", extra: { outcome: entry.summary, ...(commitSha ? { commit_sha: commitSha } : {}) },
+      });
+      return { kind: "outcome", record: found, entry, saved };
+    }
+    const line = `- ${now.slice(0, 10)} ${text}`;
+    const saved = saveRequirement({
+      dir: at.dir, file: found.file, record: found.frontmatter, body: appendNote(found.body, line), op: "note", extra: { note: text },
+    });
+    return { kind: "note", record: found, line, saved };
+  });
+
+  const record = outcome.record.frontmatter.id;
+  if (outcome.kind === "outcome") {
+    const { entry } = outcome;
+    say(`noted ${record}: ${entry.summary}${entry.commit_sha ? ` (commit ${short(entry.commit_sha)})` : ""}`);
+    say("recorded as a Quick outcome; no run, and nothing in Workloop, is involved.");
+  } else {
+    say(`noted ${record}: ${outcome.line.slice(2)}`);
+  }
+}
+
+const COMMANDS = {
+  new: cmdNew, list: cmdList, show: cmdShow, lookup: cmdLookup, retire: cmdRetire, doctor: cmdDoctor,
+  link: cmdLink, sync: cmdSync, note: cmdNote,
+};
 
 function main(argv) {
   if (!argv.length || argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
@@ -309,7 +632,7 @@ function main(argv) {
     }
     command({ positional, flags });
   } catch (error) {
-    if (error instanceof UsageError) fail(error.message, 2);
+    if (error instanceof UsageError || (error instanceof RunError && error.code === "usage")) fail(error.message, 2);
     fail(error.message);
   }
 }
