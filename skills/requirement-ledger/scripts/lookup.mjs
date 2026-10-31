@@ -127,7 +127,8 @@ function matchedTerms(query, fields) {
   for (const run of query.runs) {
     const hits = [];
     if (run.chars.length === 1) {
-      if (fields.some((field) => field.han.has(run.chars[0]))) hits.push(0);
+      const character = run.chars[0];
+      if (fields.some((field) => characterHit(field, character))) hits.push(0);
     } else {
       for (let i = 0; i < run.chars.length - 1; i += 1) {
         const bigram = run.chars[i] + run.chars[i + 1];
@@ -151,6 +152,16 @@ function matchedTerms(query, fields) {
   return terms;
 }
 
+// A lone Chinese character is a substring of the field, not one of its terms: it
+// is recalled at half a bigram's weight, low enough to be evidence and not
+// enough to pass the threshold by itself. Bigram hits are unchanged, so the
+// calibrated scores below do not move.
+const CHARACTER_WEIGHT = 0.5;
+
+function characterHit(field, term) {
+  return term.length === 1 && field.text.includes(term);
+}
+
 // The share of a field's own vocabulary that the request covers, doubled so that
 // a field half covered scores 1 and a single incidental hit stays small. Taking
 // the best field rather than the sum is what makes a short alias a strong signal
@@ -158,7 +169,10 @@ function matchedTerms(query, fields) {
 function fieldScore(field, analysed) {
   let hits = 0;
   for (const term of analysed.latinSet) if (field.latin.has(term)) hits += 1;
-  for (const term of analysed.han) if (field.han.has(term)) hits += 1;
+  for (const term of analysed.han) {
+    if (characterHit(field, term)) hits += CHARACTER_WEIGHT;
+    else if (field.han.has(term)) hits += 1;
+  }
   if (!hits) return 0;
   return Math.min(1, (2 * hits) / (field.latin.size + field.han.size + 1));
 }
@@ -241,13 +255,15 @@ export function lookupRequirements({
   dir = ledgerDir(project),
 }) {
   const analysed = analyseQuery(query);
-  const candidates = readRequirements(dir)
+  const ranked = readRequirements(dir)
     // A record without an id or a title cannot be quoted as a candidate; it is
     // `doctor`'s finding, not a reason to fail the search.
     .filter((requirement) => !requirement.error && typeof requirement.frontmatter?.id === "string" && requirement.frontmatter.title)
     .map((requirement) => scoreAnalysed(analysed, requirement))
     .filter((candidate) => candidate.score > 0)
-    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
-    .slice(0, limit);
-  return { query, project, decision: decide(candidates, { threshold, lead }), candidates };
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  // The decision reads the whole ranking, including the runner-up the caller may
+  // not see: `--limit` decides how much evidence to print, never whether the
+  // leader actually leads.
+  return { query, project, decision: decide(ranked, { threshold, lead }), candidates: ranked.slice(0, limit) };
 }

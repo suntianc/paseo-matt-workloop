@@ -11,11 +11,13 @@ node scripts/req.mjs lookup "<text>" [--project <slug>] [--json]
 Every requirement's `title`, `aliases`, summary and `refs` are scored:
 
 - **Latin text** is split on whitespace and non-alphanumerics, then scored by token overlap.
-- **Chinese**, which offers no gaps to split on, is scored by substring and character-bigram overlap. v1 adds no segmentation library.
+- **Chinese**, which offers no gaps to split on, is scored by substring and character-bigram overlap. v1 adds no segmentation library. A single character still counts as a fragment, at half the weight of a bigram: enough to recall the requirement, not enough to pass the threshold alone.
 - An exact title or alias hit weighs most.
 - The score comes from that algorithm. A model never supplies it or adjusts it.
 
-Five candidates come back by default.
+Five candidates come back by default. The limit decides how many are printed, never how the
+decision is reached: `strong` is always measured against the full ranking, including a runner-up
+the reader is not shown.
 
 ## Reading the answer
 

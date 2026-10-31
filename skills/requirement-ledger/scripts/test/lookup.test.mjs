@@ -176,6 +176,21 @@ test("a Chinese fragment finds the requirement, rebuilt as whole fragments in ma
   assert.equal(fragment.candidates[0].score, 0.5, "the score is the title coverage, doubled and capped");
 });
 
+test("a single Chinese character is a low-scoring fragment, not a name match", (t) => {
+  const s = corpus(t);
+  // 码 appears in REQ-001's summary only. One character is weaker evidence than a
+  // bigram, so it is recalled but cannot pass the threshold on its own.
+  const answer = s.lookup(["码", "--json"]);
+  const hit = answer.candidates.find((candidate) => candidate.id === "REQ-001");
+  assert.ok(hit, "the character is a substring of the summary");
+  assert.ok(hit.score > 0 && hit.score < 0.5, `a fragment scores low: ${hit.score}`);
+  assert.equal(answer.decision, "none");
+  assert.deepEqual(hit.matched_terms, ["码"]);
+
+  // A character no record contains recalls nothing.
+  assert.deepEqual(s.lookup(["猫", "--json"]).candidates, []);
+});
+
 test("Chinese is matched by character order, not by the presence of characters", (t) => {
   const s = corpus(t);
   // 表报 are the right characters in the wrong order; a substring/bigram match
@@ -197,6 +212,12 @@ test("two requirements that both answer to the word make the answer ambiguous", 
   assert.equal(human.status, 0, human.stderr);
   assert.match(human.stdout, /ambiguous/);
   assert.match(human.stdout, /confirm with the user/, "the answer asks for a decision instead of making one");
+
+  // The display limit must not manufacture a lead: with one candidate shown, the
+  // runner-up still exists in the numbers, so the answer stays ambiguous.
+  const limited = s.lookup(["登录", "--limit", "1", "--json"]);
+  assert.equal(limited.candidates.length, 1, "only the leader is shown");
+  assert.equal(limited.decision, "ambiguous", "the hidden runner-up still counts");
 });
 
 test("the lead multiple decides when a clear leader counts as strong", (t) => {
