@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import { assembleContext, INCLUDE, parseInclude, renderText } from "./context.mjs";
 import { runDoctor } from "./doctor.mjs";
+import { lookupRequirements, LOOKUP_DEFAULTS } from "./lookup.mjs";
 import { appendNote, idFor, numberIn } from "./record.mjs";
 import {
   ambiguousIn, ambiguousRuns, lastCorrection, newOutcome, newRelation, primaryHolders, relationIn, syncDelivery,
@@ -29,6 +30,7 @@ const USAGE = `usage: req <command> [options]
   new <title> [--alias <term>]...   create a requirement and allocate its number
   list                              list this project's requirements
   show <REQ>                        print one requirement file
+  lookup "<text>" [--json]          find requirements the request's words overlap
   retire <REQ>                      mark a requirement retired; file and number stay
   doctor [--repair-log]             report inconsistencies; fill recoverable audit gaps
   context <REQ> [--json] [--include <sections>]
@@ -38,6 +40,10 @@ const USAGE = `usage: req <command> [options]
 Options:
   --project <slug>   operate on this project key instead of the repo's directory name
   --alias <term>     a search term for lookup (repeatable)
+  --json             print lookup's or context's answer as JSON
+  --threshold <n>    the score a candidate must reach to count (0-1, default ${LOOKUP_DEFAULTS.threshold})
+  --lead <n>         how many times the runner-up the leader must beat for "strong" (default ${LOOKUP_DEFAULTS.lead})
+  --limit <n>        how many candidates to return (default ${LOOKUP_DEFAULTS.limit})
   --repair-log       append audit lines for recoverable gaps, without touching prose
   --include <list>   context: add retro, pitfalls or history (comma separated)
 
@@ -51,11 +57,10 @@ Workloop (reads the run's state.json; never writes it):
 The ledger lives in $WORKLOOP_ROOT/<project>/.requirements/ and defaults to
 ~/.workloop. Run the command from inside the project's repository.`;
 
-// Later tickets add these; the dispatcher knows their names so the answer is
-// "not yet" rather than "unknown command".
-const PENDING = {
-  lookup: "search the ledger for candidates",
-};
+// Commands named here answer "not part of this build yet" rather than "unknown
+// command". Every command of the frozen CLI's minimum set now dispatches, so the
+// table is empty; a command still to come lands here first.
+const PENDING = {};
 
 const say = (line = "") => process.stdout.write(`${line}\n`);
 const warn = (line) => process.stderr.write(`req: ${line}\n`);
@@ -217,6 +222,50 @@ function cmdShow({ positional, flags }) {
         "its ownership is unresolved until that correction converges");
     }
   }
+}
+
+// A search that only reads: no lock, no directory, no record and no owner. The
+// numbers come from the records `store.mjs` already read, so the answer can be
+// recomputed from the files by anyone reading it.
+function cmdLookup({ positional, flags }) {
+  const query = positional.join(" ").trim();
+  if (!query) throw new UsageError('lookup needs the text to search for: req lookup "add a captcha to login"');
+  const at = locate(flags);
+  const options = {
+    threshold: numberFlag(flags, "threshold", LOOKUP_DEFAULTS.threshold, (n) => n >= 0 && n <= 1, "between 0 and 1"),
+    lead: numberFlag(flags, "lead", LOOKUP_DEFAULTS.lead, (n) => n >= 1, "of at least 1"),
+    limit: numberFlag(flags, "limit", LOOKUP_DEFAULTS.limit, (n) => Number.isInteger(n) && n > 0, "a whole number above 0"),
+  };
+  const answer = lookupRequirements({ project: at.project, dir: at.dir, query, ...options });
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(answer, null, 2)}\n`);
+    return;
+  }
+  say(`lookup: ${answer.query}`);
+  say(`project: ${answer.project}  decision: ${answer.decision}`);
+  for (const candidate of answer.candidates) {
+    say(`  ${candidate.id}  ${candidate.score.toFixed(2)}  ${candidate.status}  ${candidate.title}`);
+    if (candidate.matched_terms.length) say(`    matched: ${candidate.matched_terms.join(", ")}`);
+    if (candidate.summary_excerpt) say(`    summary: ${candidate.summary_excerpt}`);
+    if (candidate.run_count) say(`    runs: ${candidate.run_count}, last delivery: ${candidate.last_delivery ?? "pending"}`);
+  }
+  if (answer.decision === "none") {
+    say(`nothing reached the threshold ${options.threshold}: the word search found no evidence, which is a fact about vocabulary rather than about the product`);
+  } else if (answer.decision === "ambiguous") {
+    say("several candidates are close: confirm with the user which requirement this belongs to");
+  } else {
+    say("one candidate leads clearly, which is still not a confirmed owner: confirm before acting on it");
+  }
+}
+
+function numberFlag(flags, name, fallback, acceptable, expectation) {
+  const raw = flags[name];
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !acceptable(value)) {
+    throw new UsageError(`--${name} must be a number ${expectation}, found ${JSON.stringify(raw)}`);
+  }
+  return value;
 }
 
 function cmdRetire({ positional, flags }) {
@@ -598,7 +647,7 @@ function cmdNote({ positional, flags }) {
 }
 
 const COMMANDS = {
-  new: cmdNew, list: cmdList, show: cmdShow, retire: cmdRetire, doctor: cmdDoctor,
+  new: cmdNew, list: cmdList, show: cmdShow, lookup: cmdLookup, retire: cmdRetire, doctor: cmdDoctor,
   link: cmdLink, sync: cmdSync, note: cmdNote, context: cmdContext,
 };
 
