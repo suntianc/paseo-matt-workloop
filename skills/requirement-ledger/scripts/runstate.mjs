@@ -52,10 +52,14 @@ export function parseRunKey(text) {
 export const runKeyOf = (project, feature) => `${project}/${feature}`;
 
 // The run directory is `<WORKLOOP_ROOT>/<project>/<feature>`, exactly where
-// `init` puts it. Its absence is a wrong address or an uninitialised run, and
-// either way there is nothing to read.
+// `init` puts it. It is also where a run's retained documents and its evidence
+// live, so a reader that must name them still needs it after `state.json` is gone.
+export const runDirOf = (project, feature) => join(workloopRoot(), project, feature);
+
+// Its absence is a wrong address or an uninitialised run, and either way there is
+// nothing to read.
 export function readRun({ project, feature }) {
-  const dir = join(workloopRoot(), project, feature);
+  const dir = runDirOf(project, feature);
   const path = join(dir, "state.json");
   let text;
   try {
