@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
+import { assembleContext, INCLUDE, parseInclude, renderText } from "./context.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { lookupRequirements, LOOKUP_DEFAULTS } from "./lookup.mjs";
 import { appendNote, idFor, numberIn } from "./record.mjs";
@@ -32,15 +33,19 @@ const USAGE = `usage: req <command> [options]
   lookup "<text>" [--json]          find requirements the request's words overlap
   retire <REQ>                      mark a requirement retired; file and number stay
   doctor [--repair-log]             report inconsistencies; fill recoverable audit gaps
+  context <REQ> [--json] [--include <sections>]
+                                    assemble the record's pointers in the frozen order;
+                                    retro, pitfalls and history only on request
 
 Options:
   --project <slug>   operate on this project key instead of the repo's directory name
   --alias <term>     a search term for lookup (repeatable)
-  --json             print lookup's answer as JSON
+  --json             print lookup's or context's answer as JSON
   --threshold <n>    the score a candidate must reach to count (0-1, default ${LOOKUP_DEFAULTS.threshold})
   --lead <n>         how many times the runner-up the leader must beat for "strong" (default ${LOOKUP_DEFAULTS.lead})
   --limit <n>        how many candidates to return (default ${LOOKUP_DEFAULTS.limit})
   --repair-log       append audit lines for recoverable gaps, without touching prose
+  --include <list>   context: add retro, pitfalls or history (comma separated)
 
 Workloop (reads the run's state.json; never writes it):
   link <project>/<feature> <REQ> [--correct --reason "<why>"]
@@ -52,11 +57,10 @@ Workloop (reads the run's state.json; never writes it):
 The ledger lives in $WORKLOOP_ROOT/<project>/.requirements/ and defaults to
 ~/.workloop. Run the command from inside the project's repository.`;
 
-// Later tickets add these; the dispatcher knows their names so the answer is
-// "not yet" rather than "unknown command".
-const PENDING = {
-  context: "assemble a requirement's references",
-};
+// Commands named here answer "not part of this build yet" rather than "unknown
+// command". Every command of the frozen CLI's minimum set now dispatches, so the
+// table is empty; a command still to come lands here first.
+const PENDING = {};
 
 const say = (line = "") => process.stdout.write(`${line}\n`);
 const warn = (line) => process.stderr.write(`req: ${line}\n`);
@@ -308,6 +312,38 @@ function cmdDoctor({ flags }) {
     say(`  - ${finding.message}${finding.repaired ? " [repaired]" : ""}`);
   }
   process.exitCode = report.findings.some((finding) => !finding.repaired) ? 1 : 0;
+}
+
+// ------------------------------------------------------- context
+
+// §5's pointer set, assembled in its fixed order and never as prose. The one thing
+// this command refuses is §6.5's ambiguous ownership: a run two records claim is a
+// question, and context needs an answer, not a coin.
+function cmdContext({ positional, flags }) {
+  const id = normaliseId(positional[0]);
+  if (!id) throw new UsageError("context needs a requirement: req context REQ-001 [--json]");
+  const { include, unknown } = parseInclude(flags.include);
+  if (unknown.length) {
+    throw new UsageError(`--include ${unknown.join(", ")} is not a section: pick from ${INCLUDE.join(", ")}`);
+  }
+  const at = locate(flags);
+  const requirements = readRequirements(at.dir);
+  const found = findIn(requirements, id);
+  if (!found) throw new UsageError(`no requirement ${id} in ${at.dir}`);
+
+  const ambiguous = ambiguousRuns(requirements);
+  for (const run of found.frontmatter.runs ?? []) {
+    const key = `${run?.project}/${run?.feature}`;
+    if (!ambiguous.has(key)) continue;
+    throw ambiguityError(key, ambiguous.get(key), lastCorrection(readLog(at.dir), key));
+  }
+
+  const context = assembleContext({ requirement: found, dir: at.dir, include });
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(context, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(renderText(context));
 }
 
 // ------------------------------------------------------- Workloop: link, sync, note
@@ -612,7 +648,7 @@ function cmdNote({ positional, flags }) {
 
 const COMMANDS = {
   new: cmdNew, list: cmdList, show: cmdShow, lookup: cmdLookup, retire: cmdRetire, doctor: cmdDoctor,
-  link: cmdLink, sync: cmdSync, note: cmdNote,
+  link: cmdLink, sync: cmdSync, note: cmdNote, context: cmdContext,
 };
 
 function main(argv) {
