@@ -21,7 +21,7 @@ import {
 import { deliveryFrom, parseRunKey, readRun, RunError, runKeyOf, supersedeReason } from "./runstate.mjs";
 import {
   appendLog, createRequirement, ledgerDir, listRequirementFiles, nextSeq, projectKey, readLog, readRequirement, readRequirements,
-  saveRequirement, withLock,
+  sanitiseRemote, saveRequirement, withLock,
 } from "./store.mjs";
 import { nowIso } from "./time.mjs";
 
@@ -125,20 +125,6 @@ function gitRemote(repo) {
   if (!name) return null;
   const url = git("remote", "get-url", name);
   return url.status === 0 ? sanitiseRemote(url.stdout) : null;
-}
-
-// The URL form with credentials in front of the host, and the scp form
-// `git@github.com:owner/repo.git`, both become `github.com/owner/repo`:
-// credentials never reach the ledger.
-function sanitiseRemote(url) {
-  let text = String(url ?? "").trim();
-  if (!text) return null;
-  const hadScheme = /^[a-z+]+:\/\//i.test(text);
-  text = text.replace(/^[a-z+]+:\/\//i, "").replace(/^[^@/]+@/, "");
-  // `git@github.com:owner/repo.git` separates host and path with a colon; a URL
-  // with a scheme does not, so its colon may be a port and is left alone.
-  if (!hadScheme) text = text.replace(/^([^/:]+):(?!\/)/, "$1/");
-  return text.replace(/\/+$/, "").replace(/\.git$/, "") || null;
 }
 
 const normaliseId = (value) => {
@@ -248,6 +234,11 @@ function cmdLookup({ positional, flags }) {
     if (candidate.matched_terms.length) say(`    matched: ${candidate.matched_terms.join(", ")}`);
     if (candidate.summary_excerpt) say(`    summary: ${candidate.summary_excerpt}`);
     if (candidate.run_count) say(`    runs: ${candidate.run_count}, last delivery: ${candidate.last_delivery ?? "pending"}`);
+    // §6.5: the candidate is still shown, with its ownership said to be in doubt.
+    if (candidate.ambiguous) {
+      say("    ambiguous: true — this record holds a run that is also another requirement's primary; " +
+        "a `link --correct` did not finish, so its ownership is unresolved");
+    }
   }
   if (answer.decision === "none") {
     say(`nothing reached the threshold ${options.threshold}: the word search found no evidence, which is a fact about vocabulary rather than about the product`);

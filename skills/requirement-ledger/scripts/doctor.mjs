@@ -9,14 +9,14 @@
 // half-finished `link --correct`, a stale ADR reference — is reported and left for
 // the user to settle; `doctor` does not pick an owner, delete a relation or guess a
 // replacement.
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, join } from "node:path";
 
 import { bodyDigest, idFor, numberIn, recordProblems, slugify } from "./record.mjs";
 import { ambiguousRuns, lastCorrection, runsOf } from "./relations.mjs";
 import {
   appendLog, highestNumber, ledgerDir, listRequirementFiles, nextSeq, readLog, readMeta, readRequirements,
-  workloopRoot, writeMeta, withLock,
+  sameRepoPath, sanitiseRemote, workloopRoot, writeMeta, withLock,
 } from "./store.mjs";
 import { nowIso } from "./time.mjs";
 
@@ -113,13 +113,14 @@ function checkDoublePrimaries({ dir, parsed, findings }) {
 }
 
 // The record says which repository it belongs to; the ledger is being read from
-// one repository. `repo_remote` is stored already sanitised, and only that form is
-// ever compared or printed — a credential never reaches a finding.
+// one repository. `repo_remote` is compared and printed only in its sanitised
+// form, so a credential — even one a hand edit left in a record — never reaches a
+// finding.
 function checkRepoBinding({ parsed, findings, repo, remote }) {
   if (!repo) return;
   for (const requirement of parsed) {
     const { id, repo_path: recordedPath, repo_remote: recordedRemote } = requirement.frontmatter;
-    if (typeof recordedPath === "string" && recordedPath && !samePath(recordedPath, repo)) {
+    if (typeof recordedPath === "string" && recordedPath && !sameRepoPath(recordedPath, repo)) {
       findings.push({
         code: "repo-mismatch",
         id,
@@ -127,28 +128,16 @@ function checkRepoBinding({ parsed, findings, repo, remote }) {
         message: `${id}: repo_path ${recordedPath} is not the repository this ledger is read from (${repo}); reported, not rewritten`,
       });
     }
-    if (typeof remote === "string" && remote && typeof recordedRemote === "string" && recordedRemote && recordedRemote !== remote) {
+    const recorded = typeof recordedRemote === "string" ? sanitiseRemote(recordedRemote) : null;
+    if (typeof remote === "string" && remote && recorded && recorded !== remote) {
       findings.push({
         code: "repo-mismatch",
         id,
         field: "repo_remote",
-        message: `${id}: repo_remote ${recordedRemote} differs from this repository's ${remote}; reported, not rewritten`,
+        message: `${id}: repo_remote ${recorded} differs from this repository's ${remote}; reported, not rewritten`,
       });
     }
   }
-}
-
-// `repo_path` may name a symlinked or not-yet-created path: the comparison is on
-// the canonical form when both resolve, and on the normalised text otherwise.
-function samePath(a, b) {
-  const canonical = (path) => {
-    try {
-      return realpathSync(path);
-    } catch {
-      return resolve(path);
-    }
-  };
-  return canonical(a) === canonical(b);
 }
 
 // `refs` are citations, and a citation that no longer resolves is a fact about the

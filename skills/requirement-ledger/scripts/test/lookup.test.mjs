@@ -404,3 +404,42 @@ test("refs are searchable as supporting evidence, below a name match", (t) => {
   assert.equal(hit.score, 0.3, "refs are scored like the summary, and weaker than a name");
   assert.ok(hit.score < 1, "a citation is weaker evidence than the requirement's own name");
 });
+
+// ---------------------------------------------------------------- ambiguity
+
+test("a lookup marks a candidate whose run is another requirement's primary too, and still answers", (t) => {
+  const s = sandbox(t);
+  // `login` is an exact alias of all three; the shared run is the primary of
+  // REQ-001 and REQ-003, the unfinished-correction state of §6.5.
+  const shared = runLinked("req-001-login", "delivered");
+  seed(s, { n: 1, title: "用户登录", aliases: ["login"], summary: "账号登录。", runs: [shared] });
+  seed(s, { n: 2, title: "结算与支付", aliases: ["login"], summary: "结算。" });
+  seed(s, { n: 3, title: "账号安全", aliases: ["login"], summary: "账号安全。", runs: [shared] });
+
+  const answer = s.lookup(["login", "--json"]);
+  assert.deepEqual(ids(answer), ["REQ-001", "REQ-002", "REQ-003"], "the search still answers");
+  const marked = answer.candidates.filter((candidate) => candidate.ambiguous === true).map((candidate) => candidate.id);
+  assert.deepEqual(marked, ["REQ-001", "REQ-003"], "only the holders of the double primary are marked");
+  assert.equal("ambiguous" in answer.candidates.find((candidate) => candidate.id === "REQ-002"), false,
+    "a candidate with no runs carries no ambiguity field");
+
+  const human = s.run(["lookup", "login"]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.equal(human.stdout.match(/ambiguous: true/g)?.length, 2, "the text form marks the same two candidates");
+
+  // Converging the relation clears the mark: the answer is read from the files
+  // each time, never cached.
+  seed(s, { n: 3, title: "账号安全", aliases: ["login"], summary: "账号安全。" });
+  assert.equal(s.lookup(["login", "--json"]).candidates.some((candidate) => "ambiguous" in candidate), false);
+});
+
+test("a clean ledger marks no candidate ambiguous", (t) => {
+  const s = corpus(t);
+  for (const query of ["登录", "checkout", "csv"]) {
+    const answer = s.lookup([query, "--json"]);
+    assert.equal(answer.candidates.some((candidate) => "ambiguous" in candidate), false, query);
+  }
+  const human = s.run(["lookup", "登录"]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.doesNotMatch(human.stdout, /ambiguous: true/);
+});

@@ -44,6 +44,25 @@ const requirementFiles = (dir) => readdirSync(dir).filter((n) => n.startsWith("R
 const readMetaJson = (dir) => JSON.parse(readFileSync(join(dir, "_meta.json"), "utf8"));
 const readLogLines = (dir) => readLog(dir);
 
+// Every byte of the ledger, so "wrote nothing" covers the requirement files, the
+// meta and the audit log at once.
+function ledgerBytes(dir) {
+  if (!existsSync(dir)) return {};
+  const files = {};
+  for (const name of readdirSync(dir).sort()) files[name] = readFileSync(join(dir, name), "utf8");
+  return files;
+}
+
+// A second checkout with the same basename shares the project key, hence the one
+// ledger: the arrangement in which `new` has to refuse.
+function twoCheckouts(t) {
+  const s = sandbox(t);
+  const other = join(s.root, "other", "myapp");
+  mkdirSync(other, { recursive: true });
+  spawnSync("git", ["-C", other, "init", "-q"], { encoding: "utf8" });
+  return { ...s, other: realpathSync(other) };
+}
+
 // ---------------------------------------------------------------- the record
 
 test("a record survives a round trip through frontmatter and back", () => {
@@ -428,6 +447,77 @@ test("retire flips the status and keeps the file, the number and the prose", (t)
 
   assert.equal(s.run(["new", "Something else"]).status, 0);
   assert.deepEqual(requirementFiles(s.dir), ["REQ-001-user-login.md", "REQ-002-something-else.md"]);
+});
+
+// ---------------------------------------------------------------- repository binding
+
+test("new refuses a ledger that belongs to another checkout of the same name, and writes nothing", (t) => {
+  const s = twoCheckouts(t);
+  assert.equal(s.run(["new", "From A", "--alias", "login"]).status, 0);
+  const before = ledgerBytes(s.dir);
+
+  const refused = s.run(["new", "From B"], { cwd: s.other });
+  assert.notEqual(refused.status, 0, "the second checkout is refused");
+  assert.match(refused.stderr, /REQ-001 records this ledger as /);
+  assert.ok(refused.stderr.includes(s.repo), "the refusal names the ledger's repository");
+  assert.ok(refused.stderr.includes(s.other), "the refusal names the current repository");
+
+  assert.deepEqual(ledgerBytes(s.dir), before, "no requirement file, no meta change, no audit line");
+});
+
+test("a ledger that recorded no repository, or only its path, still accepts new", (t) => {
+  const s = sandbox(t);
+  mkdirSync(s.dir, { recursive: true });
+  // An older ledger: a record written before the repository binding existed, and
+  // one that predates `repo_remote` only.
+  const untethered = newRecord({ id: "REQ-001", title: "Old requirement", repoPath: s.repo, now: NOW });
+  delete untethered.repo_path;
+  writeFileSync(join(s.dir, fileNameFor(untethered.id, untethered.title)), emitRecord(untethered, "## Summary\nOlder ledger.\n"));
+  const pathOnly = newRecord({ id: "REQ-002", title: "Path only", repoPath: s.repo, now: NOW });
+  writeFileSync(join(s.dir, fileNameFor(pathOnly.id, pathOnly.title)), emitRecord(pathOnly, "## Summary\n"));
+
+  const created = s.run(["new", "From today"]);
+  assert.equal(created.status, 0, created.stderr);
+  assert.match(created.stdout, /^REQ-003\b/);
+  assert.deepEqual(requirementFiles(s.dir), [
+    "REQ-001-old-requirement.md", "REQ-002-path-only.md", "REQ-003-from-today.md",
+  ]);
+});
+
+test("new refuses a ledger whose recorded remote is a different repository", (t) => {
+  const s = sandbox(t);
+  s.git("remote", "add", "origin", "https://github.com/owner/one.git");
+  assert.equal(s.run(["new", "From A"]).status, 0);
+
+  // The same checkout repointed at another remote is another repository: the
+  // path still agrees, and the remote is what refuses.
+  s.git("remote", "set-url", "origin", "https://github.com/owner/two.git");
+  const before = ledgerBytes(s.dir);
+  const refused = s.run(["new", "Again"]);
+  assert.notEqual(refused.status, 0, "the remote disagreement is refused");
+  assert.match(refused.stderr, /REQ-001 records this ledger as github\.com\/owner\/one/);
+  assert.match(refused.stderr, /github\.com\/owner\/two/, "the current remote is named");
+  assert.deepEqual(ledgerBytes(s.dir), before);
+});
+
+test("a credential in a recorded remote is stripped before it is compared or printed", (t) => {
+  const s = sandbox(t);
+  s.git("remote", "add", "origin", "https://github.com/owner/one.git");
+  mkdirSync(s.dir, { recursive: true });
+  const credential = ["not-a-real", "credential"].join("-");
+  const record = newRecord({ id: "REQ-001", title: "Kept by hand", repoPath: s.repo, now: NOW });
+  record.repo_remote = `https://user:${credential}@github.com/owner/one`;
+  writeFileSync(join(s.dir, fileNameFor(record.id, record.title)), emitRecord(record, "## Summary\n"));
+  assert.equal(s.run(["new", "From A"]).status, 0, "the sanitised form is the same repository");
+
+  // A different repository, whose recorded URL still carries a credential: the
+  // refusal names the repositories and never repeats the token.
+  record.repo_remote = `https://user:${credential}@github.com/owner/two`;
+  writeFileSync(join(s.dir, fileNameFor(record.id, record.title)), emitRecord(record, "## Summary\n"));
+  const refused = s.run(["new", "Again"]);
+  assert.notEqual(refused.status, 0);
+  assert.ok(!refused.stderr.includes(credential), "the credential is not printed");
+  assert.match(refused.stderr, /github\.com\/owner\/two/);
 });
 
 // ---------------------------------------------------------------- audit gaps

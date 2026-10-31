@@ -8,6 +8,7 @@
 // the summary and refs less; a field half covered already scores 1 on its own.
 // There is no model, no randomness, no index and no library — the same records
 // and query always produce the same numbers.
+import { ambiguousIn, ambiguousRuns } from "./relations.mjs";
 import { ledgerDir, readRequirements } from "./store.mjs";
 
 // The three knobs the design keeps: an absolute floor, how far ahead the leader
@@ -255,11 +256,19 @@ export function lookupRequirements({
   dir = ledgerDir(project),
 }) {
   const analysed = analyseQuery(query);
-  const ranked = readRequirements(dir)
+  const requirements = readRequirements(dir);
+  // §6.5: a run two records claim is an ownership question, not a settled fact.
+  // The predicate is `relations.mjs`', the same one `list`, `show` and `doctor`
+  // mark from; lookup still answers, and only says the ownership is unresolved.
+  const ambiguous = ambiguousRuns(requirements);
+  const ranked = requirements
     // A record without an id or a title cannot be quoted as a candidate; it is
     // `doctor`'s finding, not a reason to fail the search.
     .filter((requirement) => !requirement.error && typeof requirement.frontmatter?.id === "string" && requirement.frontmatter.title)
-    .map((requirement) => scoreAnalysed(analysed, requirement))
+    .map((requirement) => {
+      const candidate = scoreAnalysed(analysed, requirement);
+      return ambiguousIn(requirement.frontmatter, ambiguous).length ? { ...candidate, ambiguous: true } : candidate;
+    })
     .filter((candidate) => candidate.score > 0)
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
   // The decision reads the whole ranking, including the runner-up the caller may

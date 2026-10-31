@@ -1,10 +1,11 @@
 // The ledger's storage foundation, shared by every command: where a project's
-// requirements live, how a file is replaced without a reader ever seeing half of
-// it, how a number is handed out exactly once, the project lock, and the audit
-// log. Commands compose these; nothing here prints.
+// requirements live, which repository the ledger belongs to, how a file is
+// replaced without a reader ever seeing half of it, how a number is handed out
+// exactly once, the project lock, and the audit log. Commands compose these;
+// nothing here prints.
 import { randomBytes } from "node:crypto";
 import {
-  closeSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync,
+  closeSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -330,11 +331,77 @@ export function readRequirements(dir) {
   });
 }
 
+// ---------------------------------------------------------------- repository binding
+
+// The URL form with credentials in front of the host, and the scp form
+// `git@github.com:owner/repo.git`, both become `github.com/owner/repo`:
+// credentials never reach the ledger, a finding or a refusal.
+export function sanitiseRemote(url) {
+  let text = String(url ?? "").trim();
+  if (!text) return null;
+  const hadScheme = /^[a-z+]+:\/\//i.test(text);
+  text = text.replace(/^[a-z+]+:\/\//i, "").replace(/^[^@/]+@/, "");
+  // `git@github.com:owner/repo.git` separates host and path with a colon; a URL
+  // with a scheme does not, so its colon may be a port and is left alone.
+  if (!hadScheme) text = text.replace(/^([^/:]+):(?!\/)/, "$1/");
+  return text.replace(/\/+$/, "").replace(/\.git$/, "") || null;
+}
+
+// `repo_path` may name a symlinked or not-yet-created path: the comparison is on
+// the canonical form when both resolve, and on the normalised text otherwise.
+export function sameRepoPath(a, b) {
+  const canonical = (path) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return resolve(path);
+    }
+  };
+  return canonical(a) === canonical(b);
+}
+
+// The repository this ledger already belongs to, when a record says so and that
+// answer disagrees with the one running the command. A record that records
+// neither field — an older ledger, or one written before the binding existed —
+// says nothing here, and never blocks a write. Only a recorded value that
+// disagrees refuses.
+function repoConflict(dir, { repoPath, repoRemote = null } = {}) {
+  const currentRemote = sanitiseRemote(repoRemote);
+  for (const requirement of readRequirements(dir)) {
+    if (requirement.error) continue;
+    const { id, repo_path: recordedPath, repo_remote: recordedRemote } = requirement.frontmatter;
+    if (typeof recordedPath === "string" && recordedPath && repoPath && !sameRepoPath(recordedPath, repoPath)) {
+      return { id, field: "repo_path", recorded: recordedPath, current: repoPath };
+    }
+    const recorded = typeof recordedRemote === "string" ? sanitiseRemote(recordedRemote) : null;
+    if (recorded && currentRemote && recorded !== currentRemote) {
+      return { id, field: "repo_remote", recorded, current: currentRemote };
+    }
+  }
+  return null;
+}
+
+// §3.1: the ledger belongs to one repository. The refusal names both sides, and
+// only ever the sanitised remote, so a recorded credential cannot be printed.
+class RepoMismatchError extends Error {
+  constructor({ id, field, recorded, current }) {
+    const now = field === "repo_path" ? "this command runs in" : "this repository is";
+    super(`${id} records this ledger as ${recorded}, but ${now} ${current}: ` +
+      "`new` does not append to another repository's ledger. Run it from that repository, " +
+      "or give this one its own ledger with --project <slug>");
+    this.name = "RepoMismatchError";
+  }
+}
+
 // `new`: allocate, then write the file, then record the write. The caller holds
 // the lock.
 export function createRequirement({ project, repoPath, repoRemote = null, title, aliases = [], now = nowIso(), io = realIO }) {
   const dir = ledgerDir(project);
   return withLock(dir, () => {
+    // Answered before a number is allocated or a file is written, so a refused
+    // `new` leaves the ledger — including `_meta.json` — exactly as it was.
+    const conflict = repoConflict(dir, { repoPath, repoRemote });
+    if (conflict) throw new RepoMismatchError(conflict);
     const n = allocateId(dir, { project, now, io });
     const record = newRecord({ id: idFor(n), title, aliases, repoPath, repoRemote, now });
     const body = `## Summary\n\n## History\n\n## Notes\n`;

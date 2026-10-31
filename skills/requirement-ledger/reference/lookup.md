@@ -11,7 +11,7 @@ node scripts/req.mjs lookup "<text>" [--project <slug>] [--json]
 Every requirement's `title`, `aliases`, summary and `refs` are scored:
 
 - **Latin text** is split on whitespace and non-alphanumerics, then scored by token overlap.
-- **Chinese**, which offers no gaps to split on, is scored by substring and character-bigram overlap. v1 adds no segmentation library. A single character still counts as a fragment, at half the weight of a bigram: enough to recall the requirement, not enough to pass the threshold alone.
+- **Chinese**, which offers no gaps to split on, is scored by substring and character-bigram overlap. v1 adds no segmentation library. A single character still counts as a fragment, at half the weight of a bigram: enough to recall the requirement. A one-character query that is exactly a title or alias keeps the exact-match score of 1; otherwise the character reaches at most 0.5 — exactly the default threshold — and only on a one- or two-character title or alias, with a longer field below it.
 - An exact title or alias hit weighs most.
 - The score comes from that algorithm. A model never supplies it or adjusts it.
 
@@ -41,6 +41,8 @@ the reader is not shown.
   ]
 }
 ```
+
+A candidate whose record holds a run that another requirement also holds as primary carries `ambiguous: true`, in JSON and in the text reply: the search still answers, and that run's ownership stays unresolved until the `link --correct` finishes.
 
 `decision` is advice about those numbers and nothing more:
 
