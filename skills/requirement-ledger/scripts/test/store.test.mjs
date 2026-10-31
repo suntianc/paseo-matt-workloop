@@ -540,7 +540,8 @@ test("a gap in the numbering is healthy, not a finding", (t) => {
 
 test("commands that arrive in later tickets say so instead of inventing behaviour", (t) => {
   const s = sandbox(t);
-  for (const name of ["lookup", "context", "link", "sync", "note"]) {
+  // `lookup` has left this list; its own tests live in lookup.test.mjs.
+  for (const name of ["context", "link", "sync", "note"]) {
     const result = s.run([name]);
     assert.equal(result.status, 2, name);
     assert.match(result.stderr, /not part of this build yet/);
