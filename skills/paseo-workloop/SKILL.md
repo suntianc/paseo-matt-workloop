@@ -23,6 +23,10 @@ If the request already supplies the goal, scope and acceptance, skip further dis
 
 Read relevant project instructions and ADRs. Resolve material conflicts with the user. Carry decisions into the work rather than asking the same questions again at ticket creation.
 
+## Requirement lookup
+
+In a project that keeps a requirement ledger, recall before you clarify: `node <requirement-ledger>/scripts/req.mjs lookup "<the user's words>"` returns candidate requirements as evidence, and you decide the owner. A Direct or Full run records that owner with `link` after `WL init`; once `WL finish` succeeds, `sync` is a fixed step, because the ledger's delivery snapshot depends on it. [Requirement ledger](../requirement-ledger/SKILL.md) has the commands and their rules.
+
 ## Quick
 
 Make the authorized change while preserving existing work. Choose verification that demonstrates the requested result: a focused test for behavior, or content/link/diff checks for a small document edit. Independent review is useful when the risk warrants it, rather than mandatory for every edit.

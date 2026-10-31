@@ -9,6 +9,7 @@ This collection holds a set of agent skills for taking a feature from idea to in
   - [paseo-workloop](paseo-workloop/SKILL.md) routes Quick work to the current session and Direct/Full runs to Paseo. It is the main entry point.
   - [retro](retro/SKILL.md) provides a suggestion-only entry point; its unmodified upstream source is retained under `retro/reference/upstream.md`.
   - [codegraph](codegraph/SKILL.md) covers the CodeGraph code index.
+  - [requirement-ledger](requirement-ledger/SKILL.md) tracks a project's long-lived requirements, finds which one a new request belongs to, and points at the runs, specs, ADRs and deliveries behind it. It reads Workloop state and never writes it.
 
 Upstream source copies are never edited here. The retro wrapper narrows its upstream reference to findings and suggestions. Whatever the workloop needs done differently goes into its own briefs: [executor](paseo-workloop/templates/executor-brief.md) and [reviewer](paseo-workloop/templates/reviewer-brief.md). These tell each agent which steps of the upstream skill to skip or replace. Because upstream stays untouched, updating is a copy.
 
@@ -27,6 +28,7 @@ Upstream source copies are never edited here. The retro wrapper narrows its upst
 | setup-matt-pocock-skills | upstream | not needed by the workloop, whose runs keep their own tracker; run it only to use upstream skills on their own |
 | paseo-workloop | local | orchestration |
 | codegraph | local | code navigation, when a repo is indexed |
+| requirement-ledger | local | which requirement a request belongs to, and its history before design work |
 
 These skills were removed: `implement-spec`, `loop-me` and `chief-of-staff`.
 

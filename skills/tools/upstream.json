@@ -27,6 +27,7 @@
     "codegraph",
     "paseo-workloop",
     "tools",
-    "retro"
+    "retro",
+    "requirement-ledger"
   ]
 }
