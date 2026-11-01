@@ -10,6 +10,7 @@ This collection holds a set of agent skills for taking a feature from idea to in
   - [retro](retro/SKILL.md) provides a suggestion-only entry point; its unmodified upstream source is retained under `retro/reference/upstream.md`.
   - [codegraph](codegraph/SKILL.md) covers the CodeGraph code index.
   - [requirement-ledger](requirement-ledger/SKILL.md) tracks a project's long-lived requirements, finds which one a new request belongs to, and points at the runs, specs, ADRs and deliveries behind it. It reads Workloop state and never writes it.
+  - [workloop-audit](workloop-audit/SKILL.md) reads a run's records and Git without writing either: it counts what the run's reviews, rework and delivery show, and flags what the workflow's rules expect but the records contradict. It is optional, and `retro` starts with it when it is installed.
 
 Upstream source copies are never edited here. The retro wrapper narrows its upstream reference to findings and suggestions. Whatever the workloop needs done differently goes into its own briefs: [executor](paseo-workloop/templates/executor-brief.md) and [reviewer](paseo-workloop/templates/reviewer-brief.md). These tell each agent which steps of the upstream skill to skip or replace. Because upstream stays untouched, updating is a copy.
 
@@ -29,6 +30,7 @@ Upstream source copies are never edited here. The retro wrapper narrows its upst
 | paseo-workloop | local | orchestration |
 | codegraph | local | code navigation, when a repo is indexed |
 | requirement-ledger | local | which requirement a request belongs to, and its history before design work |
+| workloop-audit | local | a read-only health check of past runs, at retro or across runs |
 
 These skills were removed: `implement-spec`, `loop-me` and `chief-of-staff`.
 

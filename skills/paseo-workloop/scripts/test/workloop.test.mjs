@@ -1633,6 +1633,8 @@ test("boundary: a re-review brief adds the previous review, its candidate and th
   assert.ok(brief.includes(`git diff ${first.candidateSha}..${second.candidateSha}`));
   assert.match(brief, /\*\*Confirm each previous in-boundary blocking finding\*\*: fixed, or not fixed[\s\S]*\*\*Re-run every acceptance command\*\*[\s\S]*\*\*Look for floor-class problems/);
   assert.match(brief, /Raise no other new findings/);
+  // New findings continue the previous review's numbering, so an ID names one finding.
+  assert.match(brief, /Number each new finding after the highest number the previous review used for its letter \(after `P4` comes `P5`\), so that no ID ever names two different findings\./);
 });
 
 test("boundary: a re-review cites the most recent completed review, and every displaced review survives to finish", () => {
@@ -3648,6 +3650,8 @@ test("final review: a round after a reported one adds that report, its tip and t
   assert.ok(brief.includes(`written for integration tip \`${first.tip}\``), `the previous tip\n${brief}`);
   assert.ok(brief.includes(`git diff ${first.tip}..${tip}`), `the change since\n${brief}`);
   assert.equal(brief.match(/## Re-review/g).length, 1, "one previous round, named once");
+  // New findings continue the previous round's numbering, as a ticket re-review does.
+  assert.match(brief, /Number each new finding after the highest number the previous review used for its letter \(after `P4` comes `P5`\), so that no ID ever names two different findings\./);
 });
 
 test("final review: --again at the same tip re-reviews that tip on both sides of the diff", () => {

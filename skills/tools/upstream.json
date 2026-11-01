@@ -28,6 +28,7 @@
     "paseo-workloop",
     "tools",
     "retro",
-    "requirement-ledger"
+    "requirement-ledger",
+    "workloop-audit"
   ]
 }

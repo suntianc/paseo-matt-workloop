@@ -8,7 +8,7 @@
 
 ## 1. 技能清单
 
-以 **`paseo-workloop`** 为编排入口，也可单独使用配套技能。整套收录 17 个上游技能来源，并提供本地 `paseo-workloop`、`requirement-ledger`、`codegraph` 和只输出建议的 `retro` 入口。
+以 **`paseo-workloop`** 为编排入口，也可单独使用配套技能。整套收录 17 个上游技能来源，并提供本地 `paseo-workloop`、`requirement-ledger`、`workloop-audit`、`codegraph` 和只输出建议的 `retro` 入口。
 
 | 技能 | 用途 |
 | --- | --- |
@@ -16,6 +16,7 @@
 | [writing-for-agents](skills/writing-for-agents/SKILL.md) | 编写清晰、按需读取的 Agent 指令和参考资料。 |
 | [paseo-workloop](skills/paseo-workloop/SKILL.md) | 通过 Paseo 协调任务、独立 worktree、独立审查、返工与串行集成。 |
 | [requirement-ledger](skills/requirement-ledger/SKILL.md) | 判断新请求属于哪条长期需求，并指向其背后的 run、规格、ADR 和交付记录。 |
+| [workloop-audit](skills/workloop-audit/SKILL.md) | 以只读方式体检已往的 Workloop run：统计记录反映的事实，并标出工作流规则预期与记录相矛盾之处。 |
 | [grill-me](skills/grill-me/SKILL.md) | 与用户澄清需求目标、边界和设计选择。 |
 | [grill-with-docs](skills/grill-with-docs/SKILL.md) | 在澄清需求时记录领域术语和架构决策。 |
 | [grilling](skills/grilling/SKILL.md) | 按决策依赖分轮追问，在前提明确后提出后续问题。 |

@@ -24,6 +24,8 @@ At run close, perform retro when evidence shows one of these patterns. A serious
 
 Use the requested session or run; default to the current one. For a workloop run, cover the orchestrator's decisions and the executor/reviewer attempts, including replacements. Read the relevant conversation, reports, reviews, messages and events. Do not infer the process from the final summary alone.
 
+When the [workloop-audit](../workloop-audit/SKILL.md) skill is installed, start a run's retro with `node <workloop-audit skill>/scripts/audit.mjs run <project>/<feature>`. It counts what the run's records show and flags what its rules expect but the records contradict. Answer every `check` flag in the retro, with its cause or why it was expected, and pass its reminder line, if it prints one, to the user. Without the skill, retro works as below.
+
 `node <workloop skill>/scripts/workloop.mjs --run <run> evidence` saves child activity transcripts and their IDs under `evidence/`. Archived runs keep those files. CLI activity may curate tool output; return to original sessions when the precise output matters. State missing evidence or uncertainty rather than filling gaps with a guessed cause.
 
 ## Output

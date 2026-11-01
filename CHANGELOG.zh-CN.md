@@ -14,6 +14,7 @@
 - **新增：** `paseo-workloop/scripts/validate.mjs` 在干净的 worktree 上，按预期的 SHA 和分支执行命令。命令执行后若 HEAD、分支、index、已跟踪文件或未被忽略的文件发生变化，即使退出码为 0 也判为失败，并保留改动后的工作树供检查。每次执行在 worktree 之外的新目录中写入 `receipt.json` 和每条命令的完整输出；`--preflight` 检查先执行，相同命令的成功结果只有在指定 `--reuse-identical` 时才复用，`--repeat-check` 每次都执行。[Validation](skills/paseo-workloop/reference/validation.md) 还说明了如何校准 API 替身、如何诊断浏览器启动失败；新增的中断交接模板用于在平台拒绝某一步时记录已执行的内容。
 - **新增：** 写完报告的终审轮次之后，下一轮与 ticket 复审一样收窄：简报写明该报告、它的集成提交和 `git diff <previousTip>..<tip>`，只确认上一轮边界内的阻塞性发现、核对验收映射、重跑检查和回归集、复评每条豁免，并检查上次提交以来改动中的底线问题。同一提交上的另一轮（`final-review --prepare --again`）复审同一提交；没有编号标准的 run 仍使用原来的简报。
 - **新增：** 终审返修周期与返修轮次一样设上限：已写出报告的轮次之后，每个新的集成提交算一个返修周期；超过上限（默认两轮，可用 `config --max-rework-rounds <n>` 调整）时 `final-review --prepare` 拒绝启动，`--extra-round --reason "<用户的决定>"` 随该轮记录用户决定。`finish` 把它与超过上限的 ticket 轮次一起列出，`status` 会提示下一周期将超限，因此写返修 ticket 之前就会先问用户。
+- **新增：** `workloop-audit` 技能及其 `scripts/audit.mjs`，对已往 run 做只读体检。`audit.mjs run <project>/<feature>` 统计 run 记录反映的事实——ticket、审查、返修轮次及超过上限的轮次、终审轮次、按类型统计的豁免、失败和冲突的集成、重试、接管，以及集成检查的耗时——用 workloop 自己的解析器读取报告，把每轮复审的阻塞性发现归入 `carried`、`in-change`、`late`、`outside-repo`、`unplaced` 或 `out`，并标出规则预期与记录相矛盾之处：`late` 的发现、没有 `## Findings` 的返修报告、已完成却没有复盘的 run、漏做 `sync` 的台账。`audit.mjs all [--project <p>] [--json] [--save]` 在多次 run 之间做同样的事，与上次保存的检查对比，并把下次对比的基准保存在 `$WORKLOOP_ROOT/.workloop-audit/` 下。它不写入任何 run、仓库或台账，workloop 也不依赖它；安装后 `retro` 以它开始。ticket 复审和终审复审的简报现在要求新发现接着上一轮的最高编号排，使一个 ID 在整个任务中只对应一条发现；只有当复审简报包含这一要求时，审计才把重复的 ID 视为同一条发现。
 - **调整：** 迟到的发现——针对本轮未改动代码中某条已确认标准的缺陷——先由编排者判定：确认该缺陷后以返修轮次或返修 ticket 修掉，并计入上限；或写明为何不成立。只有编排者无法判定的问题（例如对标准含义的争议）才交给用户；其余建议和产品决定仍由用户决定。
 - **调整：** Reviewer 和终审 reviewer 的简报写明候选版本所在分支，并要求通过 `validate.mjs` 执行命令，回执保存在 worktree 之外。
 - **调整：** 在维护台账的项目中，`paseo-workloop` 在澄清需求前先执行检索，`WL init` 之后用 `req link` 记录归属，`WL finish` 之后固定执行 `req sync`。
@@ -26,7 +27,7 @@
 
 ### 验证
 
-- 全部 365 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景，经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它的测试，终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试，以及返修消息的测试（附加的返修方法、`--prepare` 消息的 prompt，以及不带该方法的消息）。
+- 全部 375 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景，经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它的测试，终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试，返修消息的测试（附加的返修方法、`--prepare` 消息的 prompt，以及不带该方法的消息），以及审计的测试（发现落点、复审分类、标记与只读行为）。
 - `npm run check:links` 能解析所有相对链接和 `skill://` 引用。
 - 打包后的 npx 安装、tarball 内容，以及 Windows 和 Linux 上的运行尚未检查，将在发布时完成。
 
