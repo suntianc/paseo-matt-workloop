@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseYaml, stringifyYaml } from "../yaml.mjs";
 import { bodyDigest, emitRecord, fileNameFor, idFor, newRecord, parseRecord, recordProblems } from "../record.mjs";
-import { allocateId, readLog, writeFileAtomic } from "../store.mjs";
+import { allocateId, LockError, readLog, withLock, writeFileAtomic } from "../store.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "..", "req.mjs");
@@ -275,6 +275,49 @@ test("a lock left by a dead process is taken over", (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(requirementFiles(s.dir).length, 1);
   assert.equal(existsSync(join(s.dir, ".lock")), false, "the lock is released");
+});
+
+test("a stale lock another contender took first is not deleted from under it", (t) => {
+  const s = sandbox(t);
+  const dead = spawnSync(process.execPath, ["-e", ""]);
+  mkdirSync(s.dir, { recursive: true });
+  const lock = join(s.dir, ".lock");
+  writeFileSync(lock, JSON.stringify({ pid: dead.pid, at: NOW }));
+  // Between this contender judging the lock dead and breaking it, a faster one
+  // breaks it and takes the lock: a live process now holds it.
+  const theirs = `${JSON.stringify({ pid: process.ppid, at: NOW })}\n`;
+  let raced = false;
+  const beforeBreak = () => {
+    if (raced) return;
+    raced = true;
+    unlinkSync(lock);
+    writeFileSync(lock, theirs);
+  };
+  let ran = false;
+  assert.throws(
+    () => withLock(s.dir, () => { ran = true; }, { waitMs: 100, beforeBreak }),
+    (error) => error instanceof LockError && error.message.includes(`locked by process ${process.ppid}`),
+  );
+  assert.equal(ran, false, "the second writer never ran");
+  assert.equal(readFileSync(lock, "utf8"), theirs, "the live contender's lock stays");
+  assert.equal(existsSync(`${lock}.break`), false, "the break guard is released");
+});
+
+test("a break guard left by a dead process is reported, and the stale lock is left alone", (t) => {
+  const s = sandbox(t);
+  const dead = spawnSync(process.execPath, ["-e", ""]);
+  mkdirSync(s.dir, { recursive: true });
+  const lock = join(s.dir, ".lock");
+  const stale = JSON.stringify({ pid: dead.pid, at: NOW });
+  writeFileSync(lock, stale);
+  writeFileSync(`${lock}.break`, stale);
+  let ran = false;
+  assert.throws(
+    () => withLock(s.dir, () => { ran = true; }, { waitMs: 100 }),
+    (error) => error instanceof LockError && error.message.includes(".lock.break") && /no longer running/.test(error.message),
+  );
+  assert.equal(ran, false);
+  assert.equal(readFileSync(lock, "utf8"), stale, "the lock is not deleted while the guard is unresolved");
 });
 
 // ---------------------------------------------------------------- allocation
@@ -740,4 +783,22 @@ test("every command the dispatcher names answers as itself, never as an unknown 
   assert.equal(s.run(["frobnicate"]).status, 2);
   assert.match(s.run(["frobnicate"]).stderr, /unknown command/);
   assert.match(s.run([]).stdout, /usage: req/);
+});
+
+test("an option the command does not take is refused, not ignored", (t) => {
+  const s = sandbox(t);
+  assert.equal(s.run(["new", "First"]).status, 0);
+  const typo = s.run(["list", "--porject", "other"]);
+  assert.equal(typo.status, 2);
+  assert.match(typo.stderr, /list has no option --porject; it takes --project, --help/);
+  assert.equal(typo.stdout, "", "nothing is listed from a ledger the caller did not mean");
+  // Another command's flag is refused the same way, before anything is written.
+  const before = ledgerBytes(s.dir);
+  const misplaced = s.run(["note", "REQ-001", "a note", "--reason", "why"]);
+  assert.equal(misplaced.status, 2);
+  assert.match(misplaced.stderr, /note has no option --reason/);
+  assert.deepEqual(ledgerBytes(s.dir), before);
+  // What a command does take still works, the shared --project included.
+  assert.equal(s.run(["list", "--project", "myapp"]).status, 0);
+  assert.equal(s.run(["note", "REQ-001", "a note"]).status, 0);
 });

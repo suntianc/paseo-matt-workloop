@@ -161,9 +161,11 @@ export function allocateId(dir, { project, now = nowIso(), io = realIO } = {}) {
 // Holds the project lock for the duration of `fn`. A lock left behind by a dead
 // process is taken over; one whose holder cannot be shown to be dead is not,
 // because taking a live writer's lock loses its work.
-// `REQ_LOCK_WAIT_MS` shortens the wait in tests; nothing else needs it.
+// `REQ_LOCK_WAIT_MS` shortens the wait in tests, and `beforeBreak` lets a test act
+// as a second contender between judging a lock dead and breaking it; nothing else
+// needs either.
 export function withLock(dir, fn, options = {}) {
-  const { waitMs = Number(process.env.REQ_LOCK_WAIT_MS) || 2000, sleep = sleepSync } = options;
+  const { waitMs = Number(process.env.REQ_LOCK_WAIT_MS) || 2000, sleep = sleepSync, beforeBreak } = options;
   mkdirSync(dir, { recursive: true });
   const path = join(dir, ".lock");
   const deadline = Date.now() + waitMs;
@@ -183,7 +185,12 @@ export function withLock(dir, fn, options = {}) {
         sleep(50);
         continue;
       }
-      try { unlinkSync(path); } catch (error2) { if (error2.code !== "ENOENT") throw error2; }
+      if (holder.state !== "dead") continue;
+      beforeBreak?.();
+      if (breakStaleLock(path, holder.text)) continue;
+      // Another contender is breaking the same stale lock; look again once it is done.
+      if (Date.now() > deadline) throw new LockError(breakGuardStuck(`${path}.break`));
+      sleep(50);
     }
   }
   const release = () => {
@@ -227,7 +234,46 @@ function lockHolder(path) {
     };
   }
   if (alive(pid)) return { state: "alive", pid };
-  return { state: "dead", pid };
+  return { state: "dead", pid, text };
+}
+
+// Two contenders can judge the same dead lock at once. If each simply deleted it,
+// the slower one could delete the lock the faster one had just taken, and both
+// would write. Breaking is therefore serialised by a guard file, and the lock is
+// removed only while it still holds the very text that was judged dead. False
+// means another contender holds the guard, so nothing was decided here.
+function breakStaleLock(path, judged) {
+  const guard = `${path}.break`;
+  try {
+    takeLockFile(guard);
+  } catch (error) {
+    if (error.code === "EEXIST") return false;
+    throw error;
+  }
+  try {
+    let current;
+    try {
+      current = readFileSync(path, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") return true;
+      throw error;
+    }
+    if (current === judged) unlinkSync(path);
+    return true;
+  } finally {
+    try { unlinkSync(guard); } catch {}
+  }
+}
+
+// The guard is held only for one read and one delete, so one still there at the
+// deadline was most likely left by a process that died in between. Whether it may
+// go is the user's call, as with any lock whose holder cannot be confirmed.
+function breakGuardStuck(guard) {
+  const holder = lockHolder(guard);
+  const who = holder.state === "dead" ? `process ${holder.pid}, which is no longer running`
+    : holder.state === "alive" ? `process ${holder.pid}, which is still running` : "a process that cannot be identified";
+  return `the ledger lock is stale, but ${guard}, left by ${who}, is still clearing it; ` +
+    "retry, or remove that file if you know no req command is running";
 }
 
 // The lock appears with its pid already inside it: the content is written to a

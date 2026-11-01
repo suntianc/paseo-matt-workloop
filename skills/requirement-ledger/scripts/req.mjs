@@ -72,7 +72,17 @@ function fail(message, code = 1) {
   process.exit(code);
 }
 
-function parse(argv) {
+// The options each command reads, beside the two every command takes. Anything
+// else is a typo or another command's flag, and is refused rather than ignored:
+// `list --porject other` would otherwise read this project's ledger without a word.
+const COMMON_OPTIONS = ["project", "help"];
+const OPTIONS = {
+  new: ["alias"], list: [], show: [], lookup: ["json", "threshold", "lead", "limit"], retire: [], doctor: ["repair-log"],
+  context: ["json", "include"], link: ["correct", "reason"], sync: [], note: ["outcome", "commit", "verification"],
+};
+
+function parse(argv, command) {
+  const allowed = [...COMMON_OPTIONS, ...(OPTIONS[command] ?? [])];
   const positional = [];
   const flags = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -88,6 +98,9 @@ function parse(argv) {
     }
     const eq = arg.indexOf("=");
     const name = eq >= 0 ? arg.slice(2, eq) : arg.slice(2);
+    if (!allowed.includes(name)) {
+      throw new UsageError(`${command} has no option --${name}; it takes ${allowed.map((option) => `--${option}`).join(", ")}`);
+    }
     if (["json", "repair-log", "correct", "help"].includes(name)) {
       flags[name] = true;
       continue;
@@ -665,7 +678,7 @@ function main(argv) {
   const command = COMMANDS[name];
   if (!command) fail(`unknown command ${JSON.stringify(name)}\n\n${USAGE}`, 2);
   try {
-    const { positional, flags } = parse(rest);
+    const { positional, flags } = parse(rest, name);
     if (flags.help) {
       process.stdout.write(`${USAGE}\n`);
       return;
