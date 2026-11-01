@@ -1,6 +1,6 @@
 # Requirement Ledger —— Paseo Workloop 持续需求管理 v1 设计（修订版 / 冻结稿）
 
-**文档性质：** 实施设计输入，尚未实现、未经运行验证。
+**文档性质：** 实施设计输入。v1 已按本设计实现，E1–E11 验收测试通过（合入 `fbfcc75`，审查修复 `db5c4a9`）；本文保持冻结，当前行为以 `skills/requirement-ledger/` 及其参考文档为准。
 **设计基线：** 本地当前 HEAD `1e549f4`（相对 v3.1.0 `7f82056a` 仅领先 1 个提交，见 §0）。
 **前置文档：** 上一版《Paseo Workloop 持续需求管理架构改造指导文档》v1.0（长期参考，不再作为第一阶段实现依据）。
 **适用范围：** 第一阶段（Phase 1）最小可行需求台账；不实现 Event Router、Inbox、Subscription、SQLite、常驻服务、多租户、跨主机同步。

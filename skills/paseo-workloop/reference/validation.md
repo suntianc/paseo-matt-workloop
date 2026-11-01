@@ -24,7 +24,7 @@ The timeout defaults to 30 minutes per command; `--timeout` sets a positive numb
 
 ## Order checks and preserve repetitions
 
-Put cheap static checks in `--preflight`; those run before `--check` and `--repeat-check`, preserving order within each list. A failed preflight stops expensive browser tests. Select the commands required by the repository; the example is not a universal package-manager convention.
+Put cheap static checks in `--preflight`; those run before `--check` and `--repeat-check`, preserving order within each list. A failed preflight stops expensive browser tests. Any failed or drifting command stops the rest of the invocation, whatever its list: the receipt keeps that first failure and holds nothing for the commands after it. When every criterion needs its own result, run each in a separate invocation with its own evidence directory. Select the commands required by the repository; the example is not a universal package-manager convention.
 
 By default every supplied occurrence executes, including identical commands. Where the user has explicitly approved sharing an execution, `--reuse-identical` can reuse a successful **consecutive identical command** in this invocation only. Its receipt records `reusedFrom`, a zero-based index into `checks`; it does not invent an exit code for an execution that did not occur. Reuse requires the same repository snapshot and environment digest. Any intervening executed command clears reuse, because it may change ignored dependencies or other inputs.
 

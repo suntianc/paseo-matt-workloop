@@ -2,6 +2,29 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+### Summary
+
+A project that evolves over many runs can now keep a requirement ledger: one record per long-lived requirement, found again from the words of a new request and pointing at the runs, specs, ADRs and deliveries behind it, so design work starts from what earlier runs learned. Reviewers now run their commands through a guard that fails when a command changes the candidate it measures, and keeps a receipt and the full output of every command. Version, date and release verification are completed at release.
+
+### Changes
+
+- **Added:** The `requirement-ledger` skill and its CLI, `scripts/req.mjs`. Each project's ledger lives under `$WORKLOOP_ROOT/<project>/.requirements/`, outside the repository, as one Markdown record per `REQ-<n>`; numbers are never reused, and a retired requirement keeps its file. `lookup` scores the request's Latin words and Chinese character pairs against titles, aliases, summaries and refs, and returns candidates with a `strong`, `ambiguous` or `none` decision as evidence, never as an owner. `context` lists a requirement's pointers in a fixed order and tells a finished, an archived and an archived-without-evidence delivery apart. `link`, `sync` and `note` are the whole Workloop integration and read a run's `state.json` without writing it; `sync` keeps a delivery that a reopened run superseded in `delivery_history`. `link --correct --reason` is the one way to move a run to another requirement, and an interrupted correction leaves the run in both records, which `context`, `sync` and `link` refuse and `list`, `show`, `lookup` and `doctor` mark. `doctor [--repair-log]` checks numbering, duplicates, runs, refs, the repository binding and the audit log.
+- **Added:** `paseo-workloop/scripts/validate.mjs` runs commands against an expected SHA and branch on a clean worktree. It fails a command that leaves HEAD, the branch, the index or tracked and non-ignored files changed, even with exit 0, and leaves the changed tree for inspection. Each run writes `receipt.json` and every command's full output to a new directory outside the worktree; `--preflight` checks run first, identical successes are reused only with `--reuse-identical`, and `--repeat-check` always executes. [Validation](skills/paseo-workloop/reference/validation.md) also covers calibrating API fakes and diagnosing a browser that fails to start, and a new interruption handoff template records what ran when a platform refuses a step.
+- **Changed:** Reviewer and final-reviewer briefs name the candidate's branch and ask the reviewer to run commands through `validate.mjs`, keeping its receipts outside the worktree.
+- **Changed:** In a project with a ledger, `paseo-workloop` looks up the request before clarifying it, records the owner with `req link` after `WL init`, and runs `req sync` as a fixed step after `WL finish`.
+
+### Upgrade
+
+No migration is needed. The ledger is optional and nothing is created until the first `req new`; projects without one behave as before. Runs in progress are unaffected; reviews dispatched after updating receive the new brief. Requires Node.js 20+, npm and Git. The pinned install and update commands are added when this version is released.
+
+### Verification
+
+- All 357 local tests pass (`npm test`), including the ledger's E1–E11 acceptance scenarios and tests that reach `validate.mjs` through a symlinked directory and run it in a repository with a submodule.
+- `npm run check:links` resolves every relative link and `skill://` reference.
+- The packaged npx install, the tarball contents and Windows and Linux runs have not been checked yet; that happens at release.
+
 ## [3.1.0] - 2026-10-28
 
 ### Summary

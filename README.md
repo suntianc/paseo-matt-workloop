@@ -8,13 +8,14 @@ For release history and upgrade notes, see the [changelog](CHANGELOG.md).
 
 ## 1. Skills
 
-Start with **`paseo-workloop`** for orchestration, or use a supporting skill on its own. The collection includes 17 upstream skill sources, with local `paseo-workloop`, `codegraph` and a suggestion-only `retro` entry point.
+Start with **`paseo-workloop`** for orchestration, or use a supporting skill on its own. The collection includes 17 upstream skill sources, with local `paseo-workloop`, `requirement-ledger`, `codegraph` and a suggestion-only `retro` entry point.
 
 | Skill | Use it to… |
 | --- | --- |
 | [retro](skills/retro/SKILL.md) | Review recurring problems and suggest improvements for the user to decide, without applying them. |
 | [writing-for-agents](skills/writing-for-agents/SKILL.md) | Write clear, selectively loaded instructions and references for agents. |
 | [paseo-workloop](skills/paseo-workloop/SKILL.md) | Coordinate tickets, isolated worktrees, independent review, rework, and serial integration through Paseo. |
+| [requirement-ledger](skills/requirement-ledger/SKILL.md) | Find which long-lived requirement a request belongs to, and point at the runs, specs, ADRs and deliveries behind it. |
 | [grill-me](skills/grill-me/SKILL.md) | Clarify a request's goal, boundaries, and design choices with the user. |
 | [grill-with-docs](skills/grill-with-docs/SKILL.md) | Clarify a request while capturing domain vocabulary and architectural decisions. |
 | [grilling](skills/grilling/SKILL.md) | Interview in rounds, asking each question after its prerequisite decisions are settled. |

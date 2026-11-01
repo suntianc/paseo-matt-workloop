@@ -2,6 +2,29 @@
 
 [English](CHANGELOG.md) · **简体中文**
 
+## 未发布
+
+### 摘要
+
+跨多次 run 持续演进的项目现在可以维护需求台账：每条长期需求一份记录，新请求可以按原话找回它，并指向其背后的 run、规格、ADR 和交付记录，设计时从之前 run 已经得出的结论出发。Reviewer 现在通过守卫执行命令：命令改动了被测候选版本时判为失败，并保存每条命令的回执和完整输出。版本号、日期和发布验证在发布时补齐。
+
+### 变更
+
+- **新增：** `requirement-ledger` 技能及其命令行 `scripts/req.mjs`。每个项目的台账位于仓库之外的 `$WORKLOOP_ROOT/<project>/.requirements/`，每个 `REQ-<n>` 一份 Markdown 记录；编号永不复用，退役的需求保留文件。`lookup` 用请求中的拉丁词和中文二字组对标题、别名、摘要和引用打分，返回带 `strong`、`ambiguous` 或 `none` 判定的候选，只作为证据，不代为认定归属。`context` 按固定顺序列出需求的各项指针，并区分已完成、已归档、已归档但证据缺失三种交付状态。`link`、`sync`、`note` 是与 Workloop 的全部接口，只读取 run 的 `state.json`、从不写入；`sync` 会把被重新打开的 run 取代的交付保存在 `delivery_history` 中。`link --correct --reason` 是把 run 改挂到另一条需求的唯一方式；纠错中断时 run 会同时出现在两条记录中，`context`、`sync`、`link` 拒绝执行，`list`、`show`、`lookup`、`doctor` 会标注出来。`doctor [--repair-log]` 检查编号、重复、run、引用、仓库归属和审计日志。
+- **新增：** `paseo-workloop/scripts/validate.mjs` 在干净的 worktree 上，按预期的 SHA 和分支执行命令。命令执行后若 HEAD、分支、index、已跟踪文件或未被忽略的文件发生变化，即使退出码为 0 也判为失败，并保留改动后的工作树供检查。每次执行在 worktree 之外的新目录中写入 `receipt.json` 和每条命令的完整输出；`--preflight` 检查先执行，相同命令的成功结果只有在指定 `--reuse-identical` 时才复用，`--repeat-check` 每次都执行。[Validation](skills/paseo-workloop/reference/validation.md) 还说明了如何校准 API 替身、如何诊断浏览器启动失败；新增的中断交接模板用于在平台拒绝某一步时记录已执行的内容。
+- **调整：** Reviewer 和终审 reviewer 的简报写明候选版本所在分支，并要求通过 `validate.mjs` 执行命令，回执保存在 worktree 之外。
+- **调整：** 在维护台账的项目中，`paseo-workloop` 在澄清需求前先执行检索，`WL init` 之后用 `req link` 记录归属，`WL finish` 之后固定执行 `req sync`。
+
+### 升级说明
+
+无需迁移。台账是可选的，首次执行 `req new` 之前不会创建任何内容；没有台账的项目行为不变。进行中的 run 不受影响；更新后派出的审查使用新简报。需要 Node.js 20+、npm 和 Git。固定版本的安装和更新命令在本版本发布时补充。
+
+### 验证
+
+- 全部 357 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景，以及经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它的测试。
+- `npm run check:links` 能解析所有相对链接和 `skill://` 引用。
+- 打包后的 npx 安装、tarball 内容，以及 Windows 和 Linux 上的运行尚未检查，将在发布时完成。
+
 ## [3.1.0] - 2026-10-28
 
 ### 摘要
