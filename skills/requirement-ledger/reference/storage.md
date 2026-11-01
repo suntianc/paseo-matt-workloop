@@ -90,7 +90,7 @@ To make an unrecorded edit visible, each `_log.jsonl` line may carry a digest of
 
 ## Writing safely
 
-- **One lock per project.** `.requirements/.lock` is published exclusively: the pid and time are written to a `flag "wx"` temp file, which is then hard-linked into place. The link fails if the lock already exists, and the lock never exists without its pid, so a contender never has to judge a lock it cannot read. Workloop's own lock, atomic-write and journal helpers are not exported, so the CLI implements the same idea in a few lines rather than importing them.
+- **One lock per project.** `.requirements/.lock` is published exclusively: the pid and time are written to a `flag "wx"` temp file, which is then hard-linked into place. The link fails if the lock already exists, and the lock never exists without its pid, so a contender never has to judge a lock it cannot read.
 - **Stale locks.** Liveness is decided by pid. A lock that cannot be shown to be dead is not taken over: the command fails and names the holder, because taking a live writer's lock loses work. Two commands can find the same dead lock at once, so breaking it is serialised by `.requirements/.lock.break`, and the lock is removed only while it still holds what was judged dead; the slower command then sees the faster one's live lock and waits. The guard exists only for that one read and delete. One that outlives it was left by a process that died in between, and the command names it for the user to remove.
 - **Replace, never rewrite in place.** Write a temp file in the same directory, then `rename`. A reader sees the old file or the new one, never half of either.
 - **Crash consistency, and its limit.** `rename` is atomic; it is not durable. v1 guarantees crash consistency — a killed process leaves no corrupt file, and the lock plus a retry recovers — and does its best for power loss by `fsync`ing the temp file before the rename and the directory after it. It claims no strict transaction across a power cut; `doctor` is the backstop.
@@ -109,4 +109,4 @@ To make an unrecorded edit visible, each `_log.jsonl` line may carry a digest of
 7. dangling `refs.adr` or `refs.pitfalls` — reported, never deleted or guessed at;
 8. `repo_path` or `repo_remote` disagreeing with the current repository.
 
-`--repair-log` only appends recoverable audit lines. It never touches prose or a delivery SHA.
+`--repair-log` only appends recoverable audit lines; it never touches prose or a delivery SHA.

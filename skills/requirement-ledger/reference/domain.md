@@ -19,11 +19,11 @@ Everything the ledger says about a run is a projection taken from that run's `st
 
 ## One orchestration centre
 
-Workloop is the only place that decides what gets built, by whom, in what order, and whether it passed. The ledger owns no run state machine, schedules nothing, and never becomes a second dispatcher. The constraints this puts on each command are in [authorization](authorization.md).
+Workloop is the only place that decides what gets built, by whom, in what order, and whether it passed; the ledger schedules nothing and never dispatches. The constraints this puts on each command are in [authorization](authorization.md).
 
 ## Cardinality
 
 - One requirement takes **many runs**. A capability is delivered, revised and delivered again.
 - One run takes **exactly one primary requirement** in v1.
-- A single primary requirement is not a single capability. When a change also touches another capability, say so in that run's execution scope, acceptance criteria or delivery record. Attach a second primary only when there really are two independent business goals, and prefer splitting those into two requirements.
+- A single primary requirement is not a single capability. When a change also touches another capability, say so in that run's execution scope, acceptance criteria or delivery record. Two independent business goals are two requirements, and the run links to one of them as primary. `link --correct --reason` is the only way to move a run to another requirement.
 - v1 relations are flat: no parent and child, no supersedes, no depends-on.

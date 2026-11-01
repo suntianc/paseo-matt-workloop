@@ -19,7 +19,7 @@ A reference resolves the same way here and in `doctor`: an explicit or repositor
 
 ## On-demand sections
 
-The reply stops at step 5 unless `--include` names what to add: `retro` appends each run's retrospective pointer, `pitfalls` the pitfalls the record cites, and `history` its prose changes, Quick outcomes and any delivery a reopened run superseded. Names are comma- or space-separated and may come in any order; an unknown name is refused rather than ignored, so a typo cannot silently drop a section.
+The reply stops at step 5 unless `--include` names what to add: `retro` appends each run's retrospective pointer, `pitfalls` the pitfalls the record cites, and `history` its prose changes, Quick outcomes and any delivery a reopened run superseded. Names are comma- or space-separated and may come in any order; an unknown name is refused rather than ignored.
 
 ```
 node scripts/req.mjs context REQ-001 --include retro,history

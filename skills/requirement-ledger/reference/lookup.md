@@ -52,10 +52,7 @@ A candidate whose record holds a run that another requirement also holds as prim
 | `ambiguous` | Several candidates sit close together. Ask the user which one this is. |
 | `none` | Nothing passes the threshold. |
 
-Two readings it does not support:
-
-- **`strong` is not a confirmed owner.** Main judges, and asks the user when the answer changes what gets built.
-- **`none` is not proof of a new requirement.** It says the word search found no evidence, which is a fact about vocabulary rather than about the product. Main decides from the conversation.
+Neither decision is a verdict: `strong` is not a confirmed owner, and `none` says the vocabulary found nothing rather than that the product lacks it, so it is not proof of a new requirement. Main judges from the conversation, and asks the user when the answer changes what gets built.
 
 `matched_terms`, `summary_excerpt` and `score` come from stored fields and the algorithm, so they can be quoted back to the user as evidence.
 
@@ -63,6 +60,6 @@ Two readings it does not support:
 
 The search covers the current project only, with no fallback to another. Requirements belonging to other projects are not returned, including one that happens to share a name with a requirement here: a name match in another project is still another project's requirement.
 
-A lookup writes nothing to the ledger and assigns nothing. An optional audit line records that the query happened.
+A lookup writes nothing to the ledger and assigns nothing; an optional audit line records the query.
 
 The first version keeps a few explicit knobs — an absolute threshold, a lead multiple, top-N — calibrated from test cases rather than tuned in place.

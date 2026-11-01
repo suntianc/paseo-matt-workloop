@@ -25,7 +25,7 @@ Read relevant project instructions and ADRs. Resolve material conflicts with the
 
 ## Requirement lookup
 
-In a project that keeps a requirement ledger, recall before you clarify: `node <requirement-ledger>/scripts/req.mjs lookup "<the user's words>"` returns candidate requirements as evidence, and you decide the owner. A Direct or Full run records that owner with `link` after `WL init`; once `WL finish` succeeds, `sync` is a fixed step, because the ledger's delivery snapshot depends on it. [Requirement ledger](../requirement-ledger/SKILL.md) has the commands and their rules.
+In a project that keeps a requirement ledger, recall before you clarify: `node <requirement-ledger>/scripts/req.mjs lookup "<the user's words>"` returns candidate requirements as evidence, and you decide the owner. A Direct or Full run records that owner with `link` after `WL init`; `sync` is a fixed step once `WL finish` succeeds, and again once `archive` completes. [Requirement ledger](../requirement-ledger/SKILL.md) has the commands and their rules.
 
 ## Quick
 
@@ -37,7 +37,7 @@ Explain what changed, what you checked and any remaining limit. Quick needs neit
 
 Read [the run procedure](reference/run.md) when starting or continuing a ticketed run. It covers runtime prerequisites, briefs, dispatch, reviews and integration. The script owns state and Git operations; you make the judgment calls.
 
-Before integration, rework continues with the original executor, session and worktree. After integration, defects get a new repair ticket, new session and new worktree from the current integration tip. Prior sessions remain available as evidence.
+Before integration, rework continues with the original executor, session and worktree; after it, a defect gets a new repair ticket, session and worktree from the current tip. Prior sessions stay as evidence.
 
 For interrupted operations or an unrecoverable session, read [recovery](reference/recovery.md). For notifications and heartbeat reconciliation, read [async supervision](reference/async-supervision.md).
 

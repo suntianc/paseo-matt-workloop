@@ -1,6 +1,6 @@
 # Asynchronous supervision
 
-Use completion notifications for ordinary progress and a 55-minute heartbeat for missed notifications, stalled commands and permissions. This is not real-time supervision. View a worker's Paseo conversation for live output; fetch `get_agent_activity` or `paseo agent logs <id> --tail 20` when the user asks for a summary or an anomaly needs investigation. Do not add a monitor model or frequent status summaries unless requested.
+Use completion notifications for ordinary progress and a 55-minute heartbeat for missed notifications, stalled commands and permissions. This is not real-time supervision: do not add a monitor model or frequent status summaries unless the user asks.
 
 ## Dispatch, review and rework
 
@@ -21,7 +21,7 @@ The script checks the usual budgets, worktree and review guards, persists a pend
 
 The actual `arguments` also contain the selected provider/model/settings, workspace, labels and task prompt. Pass **only `arguments`**, unchanged, to the named Paseo MCP tool. The call must be agent-scoped to the owning orchestrator on the same daemon. A top-level or remote external MCP call has no equivalent parent callback.
 
-1. Execute that one MCP request. Do not wait or poll for the worker to finish.
+1. Execute that one MCP request.
 2. Once its response has arrived, and in a later tool call than the MCP request itself, pass the response unchanged to `ack` on stdin (`final` instead of `NN` for the final reviewer):
 
    ```sh
@@ -30,19 +30,19 @@ The actual `arguments` also contain the selected provider/model/settings, worksp
    EOF
    ```
 
-   The script takes a bare response for the action pending now and saves it as `messages/receipt-<NN>-<action>.json`; acknowledge right after the call, before preparing anything else for that ticket. A receipt file in the `{ "action": "<action id>", "result": <response> }` wrapper still works with `--receipt <file>`, and it is checked against the pending action id. Creation receipts must match the action label and worktree, and a worker the response doesn't name is refused, so never write a receipt before the response exists. Rework changes task state only after dispatch acknowledgement. Duplicate acknowledgement is harmless.
-4. Dispatch any other eligible frontier work, then run `WL watch` and end this turn. Report that workers are running and you will resume on notification; do not claim the work is complete.
+   The script takes a bare response for the action pending now and saves it as `messages/receipt-<NN>-<action>.json`; acknowledge right after the call, before preparing anything else for that ticket. The `{ "action": "<action id>", "result": <response> }` wrapper still works with `--receipt <file>` and is checked against the pending action id. Never write a receipt before the response exists. Rework changes task state only after dispatch acknowledgement, and duplicate acknowledgement is harmless.
+3. Dispatch any other eligible frontier work, then run `WL watch` and end this turn, reporting that workers are running and that you resume on notification.
 
 The executor and reviewer finish with `Result`, `Report`, and `Summary` lines. Read the report and verify the live status before advancing; the notification and three lines do not replace acceptance evidence. A `question`, `blocked`, `changes_requested`, error, or missing report requires a decision by the orchestrator.
 
-Bare dispatch/review/send commands retain the legacy CLI path for existing scripts. That path does not promise a finish callback. The skill's default is `--prepare` plus MCP, not a silent fallback to CLI launches.
+Bare dispatch/review/send commands keep the legacy CLI path for existing scripts, which does not promise a finish callback; the skill's default is `--prepare` plus MCP, not a silent fallback.
 
 ## Interruption and errors
 
 Run `WL action NN` (or `WL action final`) to retrieve a pending request. **Printing the request again is not permission to execute it again.**
 
 - If the tool was never called, execute it once and acknowledge it.
-- If creation may have succeeded, query the run/task/action labels (including archived agents), recover the matching agent ID and response, and acknowledge the existing worker. Never start another worker just because the acknowledgement was lost. `ack` rejects unrelated IDs and worktrees.
+- If creation may have succeeded, query the run/task/action labels (including archived agents), recover the matching agent ID and response, and acknowledge the existing worker. Never start another worker just because the acknowledgement was lost.
 - If a send may have succeeded, inspect its activity and recover its dispatch receipt. Do not resend automatically. A report can already have been rewritten before the acknowledgement arrives.
 - A confirmed creation error with no matching agent can be acknowledged with its actual `isError: true` response; no success is recorded and preparation can be retried after correcting the cause. Errors after creation and ambiguous send errors retain the pending action for reconciliation.
 - Existing legacy runs can use `WL watch` as a fallback wake-up. Do not assume old CLI workers gained notifications. Restore notifications with an agent-scoped MCP follow-up only after the worker is idle and the intended continuation has been established.
@@ -100,6 +100,6 @@ For automatic renewal after every orchestrator turn, merge this entry into the *
 
 ## Long commands
 
-Use the provider's own background-command completion notification when supported. Keep the job/session identifier, return control, and collect the real result on completion. `WL integrate` and `WL finish` are such commands: their checks run as a check phase outside the run lock, each check stops at the run's time limit, and `watch` keeps the heartbeat armed while the phase runs and reports it as a problem if its process died. See the Integration section of [run.md](run.md). Providers differ: do not invent a universal background-command notification flag. If unavailable, use a managed job and the same fallback health checks, and state that limitation.
+`WL integrate` and `WL finish` are long commands: start one with the provider's own background completion notification, keep the job/session identifier, return control, and collect the real result on completion. Their checks run as a check phase outside the run lock, each stops at the run's time limit, and `watch` keeps the heartbeat armed and reports a phase whose process died. See the Integration section of [run.md](run.md). Do not invent a universal background-command flag: when there is none, use a managed job and the same fallback health checks, and state that limitation.
 
-`WL patrol` is now a diagnostic snapshot: default window 1 second, maximum 60 seconds. Its deadline includes `agent inspect` calls; all Paseo CLI calls also have a 30-second timeout (`PASEO_TIMEOUT_MS` override). A timed-out write may already have reached the daemon and must be reconciled before retrying. Never wrap patrol in an hour-long shell loop.
+`WL patrol` is a diagnostic snapshot: default window 1 second, maximum 60 seconds. Its deadline includes `agent inspect` calls; all Paseo CLI calls also time out after 30 seconds (`PASEO_TIMEOUT_MS`). A timed-out write may already have reached the daemon, so reconcile it before retrying.

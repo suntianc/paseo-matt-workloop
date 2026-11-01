@@ -17,6 +17,7 @@
 - **调整：** 迟到的发现——针对本轮未改动代码中某条已确认标准的缺陷——先由编排者判定：确认该缺陷后以返修轮次或返修 ticket 修掉，并计入上限；或写明为何不成立。只有编排者无法判定的问题（例如对标准含义的争议）才交给用户；其余建议和产品决定仍由用户决定。
 - **调整：** Reviewer 和终审 reviewer 的简报写明候选版本所在分支，并要求通过 `validate.mjs` 执行命令，回执保存在 worktree 之外。
 - **调整：** 在维护台账的项目中，`paseo-workloop` 在澄清需求前先执行检索，`WL init` 之后用 `req link` 记录归属，`WL finish` 之后固定执行 `req sync`。
+- **调整：** 收紧了 `paseo-workloop` 与 `requirement-ledger` 面向编排者的参考文档，行为不变：同一规则的重复表述只保留一处，拒绝信息已写明修改办法的句子更短，带日期的 Paseo 兼容性观察记录移到 `paseo-workloop/reference/paseo-compat-history.md`，并修正了五处文档错误（第二条主需求、归档后应做的 `sync`、记录复核决定、检查阶段中的 `config`、远程 daemon 上的启动设置）。
 
 ### 升级说明
 

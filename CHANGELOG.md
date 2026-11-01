@@ -17,6 +17,7 @@ A project that evolves over many runs can now keep a requirement ledger: one rec
 - **Changed:** A late finding — a defect against a confirmed criterion in code the round did not change — is settled by the orchestrator first: it confirms the defect and has it fixed as a rework round or a repair ticket, counted against the cap, or notes why it does not hold. Only what it cannot settle, such as a dispute over what a criterion means, goes to the user, who still decides every other suggestion and product decision.
 - **Changed:** Reviewer and final-reviewer briefs name the candidate's branch and ask the reviewer to run commands through `validate.mjs`, keeping its receipts outside the worktree.
 - **Changed:** In a project with a ledger, `paseo-workloop` looks up the request before clarifying it, records the owner with `req link` after `WL init`, and runs `req sync` as a fixed step after `WL finish`.
+- **Changed:** The Main-facing references of `paseo-workloop` and `requirement-ledger` are tightened with no behaviour change: a rule stated in several places is stated once, a sentence whose refusal message already names the fix is shorter, the dated Paseo compatibility history moved to `paseo-workloop/reference/paseo-compat-history.md`, and five documentation errors are corrected (a second primary requirement, the `sync` owed after archive, the recorded review decision, `config` in a live versus an interrupted check phase, and launch settings on a remote daemon).
 
 ### Upgrade
 

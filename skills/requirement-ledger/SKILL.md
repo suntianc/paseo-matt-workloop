@@ -9,8 +9,8 @@ A **requirement** is one long-lived business capability of a project, named `REQ
 
 Two boundaries hold throughout this skill:
 
-- **Workloop is the only coding orchestration centre.** It owns runs, tickets, attempts, verdicts, delivery state and the run state machine. The ledger owns none of that: it reads a run's `state.json` and never writes it.
-- **The ledger executes nothing.** It runs no code, starts no agents, creates no tickets, pushes nothing. It answers two questions: which requirement is this, and where is that requirement's history.
+- **Workloop is the only coding orchestration centre.** It owns runs, tickets, attempts, verdicts, delivery state and the run state machine; the ledger owns none of that, and reads a run's `state.json` without writing it.
+- **The ledger executes nothing.** It runs no code, starts no agents, creates no tickets and pushes nothing. It answers two questions: which requirement is this, and where is that requirement's history.
 
 ## Look up before you clarify
 
@@ -20,7 +20,7 @@ Before a request becomes a spec, a ticket or a change, run the lookup on the use
 node <this skill's directory>/scripts/req.mjs lookup "<the request>"
 ```
 
-It scores every requirement of the current project on title, aliases, summary and refs, and returns up to five candidates with `score`, `matched_terms` and a `decision` of `strong`, `ambiguous` or `none`.
+It scores every requirement of the current project on title, aliases, summary and refs, and returns up to five candidates with `score`, `matched_terms` and a `decision`: `strong`, `ambiguous` or `none`.
 
 The lookup is evidence; Main decides. `strong` means the leading candidate clearly outscores the rest, not that the request belongs to it — confirm with the user whenever the answer changes what gets built. `none` means the word search found nothing, not that the request is new. [Lookup](reference/lookup.md) gives the scoring rule and what each decision promises.
 
@@ -35,7 +35,7 @@ The lookup is evidence; Main decides. `strong` means the leading candidate clear
 | The run is archived | `sync <project>/<feature>` again |
 | A Quick change, with no run | `note <REQ> --outcome …` |
 
-`link`, `sync` and `note` are the whole Workloop integration. Each writes only the ledger; `link` and `sync` take their facts from the run's `state.json`. [Authorization](reference/authorization.md) covers their rules, including the one controlled way to correct a wrong association.
+`link`, `sync` and `note` are the whole Workloop integration: each writes only the ledger, and `link` and `sync` take their facts from the run's `state.json`. [Authorization](reference/authorization.md) covers their rules, including the one controlled way to correct a wrong association.
 
 ## Read the context before designing
 

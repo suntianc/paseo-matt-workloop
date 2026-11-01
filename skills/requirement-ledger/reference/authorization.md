@@ -12,7 +12,7 @@ The ledger is a sibling skill, `skills/requirement-ledger/`. Workloop's state ma
 | Run, ticket, attempt, review, verdict, completion and archive time | Workloop only |
 | Which requirement a run delivered, and that delivery's projection | the ledger, read from the run's `state.json` |
 
-The ledger has no write path into Workloop. It never reopens, retries, retitles, cancels or archives a run. It pushes no code, opens no pull request, merges nothing and deploys nothing.
+The ledger has no write path into Workloop: it never reopens, retries, retitles, cancels or archives a run.
 
 ## The main flow
 
@@ -58,7 +58,7 @@ A run is addressed as `<project>/<feature>`, the way Workloop's `--run` addresse
 - History is append-only. Re-syncing the same old snapshot does not add it twice: entries are deduplicated by `final_tip` and `superseded_at`.
 - After archival the window closes. Workloop refuses its own commands and freezes `completion`, so `delivered` and the final SHA stop moving.
 
-**`finish` followed by `sync` is one step, not two.** A snapshot can only preserve what a sync has seen. `finish`, then no sync, then `import` leaves the ledger with nothing to move into history — and v1 does not reconstruct it by guesswork. Only verifiable Workloop evidence (the retained `state.json`, `events.jsonl`, a commit SHA) can restore it. That is why the sync after `finish` is a fixed step of the workflow rather than a tidying-up.
+**`finish` followed by `sync` is one step, not two.** A snapshot can only preserve what a sync has seen: `finish`, then no sync, then `import` leaves the ledger with nothing to move into history, and only verifiable Workloop evidence (the retained `state.json`, `events.jsonl`, a commit SHA) can restore it. That is why the sync after `finish` is a fixed step rather than a tidying-up.
 
 ## `note`
 
