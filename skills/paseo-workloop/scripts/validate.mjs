@@ -61,7 +61,20 @@ const inside = (root, path) => {
   return part === "" || (!isAbsolute(part) && part !== ".." && !part.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`));
 };
 
+const USAGE = `Usage: node validate.mjs --repo <worktree> --expect-sha <full-sha> --expect-branch <branch>
+         --output <new directory outside the worktree>
+         [--preflight <cmd>]... [--check <cmd>]... [--repeat-check <cmd>]...
+         [--reuse-identical] [--timeout <minutes, default 30, at most 1440>]
+
+Runs each command against the expected candidate on a clean attached branch, fails one
+that leaves HEAD, the branch, the index or the tracked and non-ignored files changed,
+and writes receipt.json and every command's full output to --output.`;
+
 export async function main(argv) {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(USAGE);
+    return 0;
+  }
   const { values: opts } = parseArgs({ args: argv, options: {
     repo: { type: "string" }, output: { type: "string" },
     "expect-sha": { type: "string" }, "expect-branch": { type: "string" },

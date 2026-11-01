@@ -2,16 +2,16 @@
 
 [English](CHANGELOG.md) · **简体中文**
 
-## 未发布
+## [3.2.0] - 2026-11-01
 
 ### 摘要
 
-跨多次 run 持续演进的项目现在可以维护需求台账：每条长期需求一份记录，新请求可以按原话找回它，并指向其背后的 run、规格、ADR 和交付记录，设计时从之前 run 已经得出的结论出发。Reviewer 现在通过守卫执行命令：命令改动了被测候选版本时判为失败，并保存每条命令的回执和完整输出。版本号、日期和发布验证在发布时补齐。
+跨多次 run 持续演进的项目现在可以维护需求台账：每条长期需求一份记录，新请求可以按原话找回它，并指向其背后的 run、规格、ADR 和交付记录，设计时从之前 run 已经得出的结论出发。审查循环在仍未收口的地方有了边界：终审后续轮次与 ticket 复审一样收窄，其返修周期与返修轮次共用上限；每次返修发给执行者的消息都附带与复审对应的返修方法。新增的只读 `workloop-audit` 技能对照工作流规则检查各次 run 的记录，可用于复盘，也可跨多次 run 使用。Reviewer 通过守卫执行命令：命令改动了被测候选版本时判为失败。
 
 ### 变更
 
 - **新增：** `requirement-ledger` 技能及其命令行 `scripts/req.mjs`。每个项目的台账位于仓库之外的 `$WORKLOOP_ROOT/<project>/.requirements/`，每个 `REQ-<n>` 一份 Markdown 记录；编号永不复用，退役的需求保留文件。`lookup` 用请求中的拉丁词和中文二字组对标题、别名、摘要和引用打分，返回带 `strong`、`ambiguous` 或 `none` 判定的候选，只作为证据，不代为认定归属。`context` 按固定顺序列出需求的各项指针，并区分已完成、已归档、已归档但证据缺失三种交付状态。`link`、`sync`、`note` 是与 Workloop 的全部接口，只读取 run 的 `state.json`、从不写入；`sync` 会把被重新打开的 run 取代的交付保存在 `delivery_history` 中。`link --correct --reason` 是把 run 改挂到另一条需求的唯一方式；纠错中断时 run 会同时出现在两条记录中，`context`、`sync`、`link` 拒绝执行，`list`、`show`、`lookup`、`doctor` 会标注出来。`doctor [--repair-log]` 检查编号、重复、run、引用、仓库归属和审计日志。
-- **新增：** `paseo-workloop/scripts/validate.mjs` 在干净的 worktree 上，按预期的 SHA 和分支执行命令。命令执行后若 HEAD、分支、index、已跟踪文件或未被忽略的文件发生变化，即使退出码为 0 也判为失败，并保留改动后的工作树供检查。每次执行在 worktree 之外的新目录中写入 `receipt.json` 和每条命令的完整输出；`--preflight` 检查先执行，相同命令的成功结果只有在指定 `--reuse-identical` 时才复用，`--repeat-check` 每次都执行。[Validation](skills/paseo-workloop/reference/validation.md) 还说明了如何校准 API 替身、如何诊断浏览器启动失败；新增的中断交接模板用于在平台拒绝某一步时记录已执行的内容。
+- **新增：** `paseo-workloop/scripts/validate.mjs` 在干净的 worktree 上，按预期的 SHA 和分支执行命令。命令执行后若 HEAD、分支、index、已跟踪文件或未被忽略的文件发生变化，即使退出码为 0 也判为失败，并保留改动后的工作树供检查。每次执行在 worktree 之外的新目录中写入 `receipt.json` 和每条命令的完整输出；`--preflight` 检查先执行，相同命令的成功结果只有在指定 `--reuse-identical` 时才复用，`--repeat-check` 每次都执行；`--help` 打印用法。[Validation](skills/paseo-workloop/reference/validation.md) 还说明了如何校准 API 替身、如何诊断浏览器启动失败；新增的中断交接模板用于在平台拒绝某一步时记录已执行的内容。
 - **新增：** 写完报告的终审轮次之后，下一轮与 ticket 复审一样收窄：简报写明该报告、它的集成提交和 `git diff <previousTip>..<tip>`，只确认上一轮边界内的阻塞性发现、核对验收映射、重跑检查和回归集、复评每条豁免，并检查上次提交以来改动中的底线问题。同一提交上的另一轮（`final-review --prepare --again`）复审同一提交；没有编号标准的 run 仍使用原来的简报。
 - **新增：** 终审返修周期与返修轮次一样设上限：已写出报告的轮次之后，每个新的集成提交算一个返修周期；超过上限（默认两轮，可用 `config --max-rework-rounds <n>` 调整）时 `final-review --prepare` 拒绝启动，`--extra-round --reason "<用户的决定>"` 随该轮记录用户决定。`finish` 把它与超过上限的 ticket 轮次一起列出，`status` 会提示下一周期将超限，因此写返修 ticket 之前就会先问用户。
 - **新增：** `workloop-audit` 技能及其 `scripts/audit.mjs`，对已往 run 做只读体检。`audit.mjs run <project>/<feature>` 统计 run 记录反映的事实——ticket、审查、返修轮次及超过上限的轮次、终审轮次、按类型统计的豁免、失败和冲突的集成、重试、接管，以及集成检查的耗时——用 workloop 自己的解析器读取报告，把每轮复审的阻塞性发现归入 `carried`、`in-change`、`late`、`outside-repo`、`unplaced` 或 `out`，并标出规则预期与记录相矛盾之处：`late` 的发现、没有 `## Findings` 的返修报告、已完成却没有复盘的 run、漏做 `sync` 的台账。`audit.mjs all [--project <p>] [--json] [--save]` 在多次 run 之间做同样的事，与上次保存的检查对比，并把下次对比的基准保存在 `$WORKLOOP_ROOT/.workloop-audit/` 下。它不写入任何 run、仓库或台账，workloop 也不依赖它；安装后 `retro` 以它开始。ticket 复审和终审复审的简报现在要求新发现接着上一轮的最高编号排，使一个 ID 在整个任务中只对应一条发现；只有当复审简报包含这一要求时，审计才把重复的 ID 视为同一条发现。
@@ -23,13 +23,21 @@
 
 ### 升级说明
 
-无需迁移。台账是可选的，首次执行 `req new` 之前不会创建任何内容；没有台账的项目行为不变。进行中的 run 不受影响；更新后派出的审查使用新简报。需要 Node.js 20+、npm 和 Git。固定版本的安装和更新命令在本版本发布时补充。
+无需迁移。台账和审计都是可选的：首次执行 `req new` 之前不会创建任何内容，审计只在安装了该技能时由 `retro` 运行。进行中的 run 继续运行；更新后发出的审查、终审轮次和返修消息使用新的简报和返修方法；在有编号标准的 run 中，超过返修周期上限的终审轮次需要 `final-review --prepare --extra-round --reason "<用户的决定>"`。需要 Node.js 20+、npm 和 Git。
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.2.0 install
+```
+
+已有托管安装使用同一目标目录执行 `npx --yes github:suntianc/paseo-matt-workloop#v3.2.0 update`；`update` 拉取当前 `main`，固定安装器 tag 不会固定更新内容。项目安装在命令末尾添加 `--target <项目 skills 目录>`。
 
 ### 验证
 
-- 全部 375 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景，经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它的测试，终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试，返修消息的测试（附加的返修方法、`--prepare` 消息的 prompt，以及不带该方法的消息），以及审计的测试（发现落点、复审分类、标记与只读行为）。
-- `npm run check:links` 能解析所有相对链接和 `skill://` 引用。
-- 打包后的 npx 安装、tarball 内容，以及 Windows 和 Linux 上的运行尚未检查，将在发布时完成。
+- 全部 376 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景；经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它，以及它的 `--help`；终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试；返修消息的测试（附加的返修方法、`--prepare` 消息的 prompt，以及不带该方法的消息）；以及审计的测试（发现落点、复审分类、标记、台账检查与只读行为）。
+- `npm run check:links` 在 66 个 Markdown 文件中解析了所有相对链接和 `skill://` 引用。
+- v3.2.0 tarball（132 个文件）经 npx 安装到一个路径含空格、经 macOS `/tmp` 符号链接访问的临时目录，安装了 21 个技能；安装后的链接检查（67 个 Markdown 文件）通过，`workloop.mjs`、`validate.mjs`、`tidy-docs.mjs`、`req.mjs` 和 `audit.mjs` 均打印出用法。本地的 `Agent.md`、`AGENTS.md` 以及台账的 ticket 草稿不在制品中。
+- `audit.mjs all` 在维护者机器上约一秒读完 17 次 run 且未写入任何内容，它对 `browser-mcp-lab/task-isolation` 的分类与人工核对的回放一致。
+- 本次发布未在本地运行 Windows 和 Linux。
 
 ## [3.1.0] - 2026-10-28
 
@@ -177,3 +185,5 @@ npx --yes github:suntianc/paseo-matt-workloop#main update
 [3.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.0.0
 
 [3.1.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.1.0
+
+[3.2.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.0

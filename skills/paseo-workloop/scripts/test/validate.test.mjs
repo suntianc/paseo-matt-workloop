@@ -213,3 +213,10 @@ test("snapshots a repository with a submodule, and still detects superproject dr
   assert.equal(drifted.receipt().checks[0].drift.includes("contents"), true, "a tracked file changing is drift");
 });
 
+
+test("--help prints the usage and runs nothing", () => {
+  const r = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^Usage: node validate\.mjs --repo <worktree> --expect-sha <full-sha> --expect-branch <branch>/);
+  assert.match(r.stdout, /--reuse-identical/);
+});

@@ -2,16 +2,16 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
-## Unreleased
+## [3.2.0] - 2026-11-01
 
 ### Summary
 
-A project that evolves over many runs can now keep a requirement ledger: one record per long-lived requirement, found again from the words of a new request and pointing at the runs, specs, ADRs and deliveries behind it, so design work starts from what earlier runs learned. Reviewers now run their commands through a guard that fails when a command changes the candidate it measures, and keeps a receipt and the full output of every command. Version, date and release verification are completed at release.
+Projects that evolve over many runs can now keep a requirement ledger: one record per long-lived requirement, found again from the words of a new request and pointing at the runs, specs, ADRs and deliveries behind it, so design work starts from what earlier runs learned. The review loop is bounded where it was still open: later final review rounds are narrowed like ticket re-reviews and their repair cycles share the rework cap, and every rework reaches the executor with a method that mirrors the re-review. The new read-only `workloop-audit` skill checks what the runs' records show against the workflow's rules, at retro and across runs. Reviewers run their commands through a guard that fails when a command changes the candidate it measures.
 
 ### Changes
 
 - **Added:** The `requirement-ledger` skill and its CLI, `scripts/req.mjs`. Each project's ledger lives under `$WORKLOOP_ROOT/<project>/.requirements/`, outside the repository, as one Markdown record per `REQ-<n>`; numbers are never reused, and a retired requirement keeps its file. `lookup` scores the request's Latin words and Chinese character pairs against titles, aliases, summaries and refs, and returns candidates with a `strong`, `ambiguous` or `none` decision as evidence, never as an owner. `context` lists a requirement's pointers in a fixed order and tells a finished, an archived and an archived-without-evidence delivery apart. `link`, `sync` and `note` are the whole Workloop integration and read a run's `state.json` without writing it; `sync` keeps a delivery that a reopened run superseded in `delivery_history`. `link --correct --reason` is the one way to move a run to another requirement, and an interrupted correction leaves the run in both records, which `context`, `sync` and `link` refuse and `list`, `show`, `lookup` and `doctor` mark. `doctor [--repair-log]` checks numbering, duplicates, runs, refs, the repository binding and the audit log.
-- **Added:** `paseo-workloop/scripts/validate.mjs` runs commands against an expected SHA and branch on a clean worktree. It fails a command that leaves HEAD, the branch, the index or tracked and non-ignored files changed, even with exit 0, and leaves the changed tree for inspection. Each run writes `receipt.json` and every command's full output to a new directory outside the worktree; `--preflight` checks run first, identical successes are reused only with `--reuse-identical`, and `--repeat-check` always executes. [Validation](skills/paseo-workloop/reference/validation.md) also covers calibrating API fakes and diagnosing a browser that fails to start, and a new interruption handoff template records what ran when a platform refuses a step.
+- **Added:** `paseo-workloop/scripts/validate.mjs` runs commands against an expected SHA and branch on a clean worktree. It fails a command that leaves HEAD, the branch, the index or tracked and non-ignored files changed, even with exit 0, and leaves the changed tree for inspection. Each run writes `receipt.json` and every command's full output to a new directory outside the worktree; `--preflight` checks run first, identical successes are reused only with `--reuse-identical`, and `--repeat-check` always executes; `--help` prints its usage. [Validation](skills/paseo-workloop/reference/validation.md) also covers calibrating API fakes and diagnosing a browser that fails to start, and a new interruption handoff template records what ran when a platform refuses a step.
 - **Added:** A final review round that follows one which wrote its report is narrow, like a ticket's re-review: its brief names that report, its integration tip and `git diff <previousTip>..<tip>`, and it confirms the previous in-boundary blocking findings, verifies the acceptance mapping, re-runs the checks and the regression set, re-assesses every waiver, and looks for floor-class problems in the change since. A round at the same tip (`final-review --prepare --again`) re-reviews the same tip, and a run without numbered criteria keeps the brief it always had.
 - **Added:** Final repair cycles are capped like rework rounds: every new integration tip after a reported round is one repair cycle, `final-review --prepare` refuses a cycle past the cap (two by default, `config --max-rework-rounds <n>`), and `--extra-round --reason "<the user's decision>"` records the decision with the round it opens. `finish` lists it with the ticket rounds past the cap, and `status` says when the next cycle would pass it, so the user is asked before repair tickets are written.
 - **Added:** The `workloop-audit` skill and `scripts/audit.mjs`, a read-only health check of past runs. `audit.mjs run <project>/<feature>` counts what a run's records show — tickets, reviews, rework rounds and the rounds past the cap, final review rounds, waivers by kind, failed and conflicting integrations, retries, takeovers, and how long the integration checks took — places every blocking finding of every re-review as `carried`, `in-change`, `late`, `outside-repo`, `unplaced` or `out`, reading the report with the workloop's own parsers, and flags what the rules expect but the records contradict: a `late` finding, a rework report without its `## Findings` section, a finished run with no retro, a ledger that missed a `sync`. `audit.mjs all [--project <p>] [--json] [--save]` does the same across runs, compares with the last saved check and keeps the next comparison's point under `$WORKLOOP_ROOT/.workloop-audit/`. It writes to no run, repository or ledger, and nothing in the workloop depends on it; `retro` starts with it when it is installed. Re-review briefs, for a ticket and for a final round, now ask new findings to be numbered after the previous review's highest number, so an ID names one finding for the whole task; the audit reads a repeated ID as the same finding only when the re-review's brief asked for that.
@@ -23,13 +23,21 @@ A project that evolves over many runs can now keep a requirement ledger: one rec
 
 ### Upgrade
 
-No migration is needed. The ledger is optional and nothing is created until the first `req new`; projects without one behave as before. Runs in progress are unaffected; reviews dispatched after updating receive the new brief. Requires Node.js 20+, npm and Git. The pinned install and update commands are added when this version is released.
+No migration is needed. The ledger and the audit are optional: nothing is created until the first `req new`, and only `retro` runs the audit, when the skill is installed. Runs in progress continue; reviews, final review rounds and rework messages issued after updating use the new briefs and method, and in a run with numbered criteria a final review round past the repair-cycle cap needs `final-review --prepare --extra-round --reason "<the user's decision>"`. Requires Node.js 20+, npm and Git.
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.2.0 install
+```
+
+For an existing managed installation, run `npx --yes github:suntianc/paseo-matt-workloop#v3.2.0 update` with the same target. `update` fetches current `main`; pinning the installer tag does not pin the update payload. For a project installation, append `--target <project skills directory>`.
 
 ### Verification
 
-- All 375 local tests pass (`npm test`), including the ledger's E1–E11 acceptance scenarios, tests that reach `validate.mjs` through a symlinked directory and run it in a repository with a submodule, the final-review tests for a narrowed later round, the repair-cycle cap and `--extra-round`, the rework-message tests for the appended method, a prepared send's prompt and the sends that carry none, and the audit's tests for where a finding lands, how a re-review is classified, its flags and its read-only behaviour.
-- `npm run check:links` resolves every relative link and `skill://` reference.
-- The packaged npx install, the tarball contents and Windows and Linux runs have not been checked yet; that happens at release.
+- All 376 local tests pass (`npm test`), including the ledger's E1–E11 acceptance scenarios; `validate.mjs` reached through a symlinked directory, run in a repository with a submodule, and its `--help`; the final-review tests for a narrowed later round, the repair-cycle cap and `--extra-round`; the rework-message tests for the appended method, a prepared send's prompt and the sends that carry none; and the audit's tests for where a finding lands, how a re-review is classified, its flags, its ledger check and its read-only behaviour.
+- `npm run check:links` resolves every relative link and `skill://` reference across 66 markdown files.
+- The v3.2.0 tarball (132 files) installed 21 skills through npx into a temporary path containing spaces and reached through the macOS `/tmp` symlink; the installed link check (67 markdown files) passed, and `workloop.mjs`, `validate.mjs`, `tidy-docs.mjs`, `req.mjs` and `audit.mjs` printed their usage. The local `Agent.md` and `AGENTS.md` and the ledger's ticket drafts are not in the artifact.
+- `audit.mjs all` read the 17 runs on the maintainer's machine in about a second without writing to them, and its classification of `browser-mcp-lab/task-isolation` matched a hand-verified replay of that run.
+- Windows and Linux were not run locally for this release.
 
 ## [3.1.0] - 2026-10-28
 
@@ -177,3 +185,5 @@ A fixed installer tag pins `install`; `update` always fetches current `main`. Ru
 [3.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.0.0
 
 [3.1.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.1.0
+
+[3.2.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.0
