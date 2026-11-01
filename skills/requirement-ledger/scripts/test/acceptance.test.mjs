@@ -10,7 +10,7 @@
 // disk, exactly as the interruption would leave it.
 // Run: node --test skills/requirement-ledger/scripts/test/acceptance.test.mjs
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnBounded } from "./spawn.mjs";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync,
 } from "node:fs";
@@ -49,7 +49,7 @@ function sandbox(t, projects = ["myapp"]) {
     const path = join(root, name);
     mkdirSync(path, { recursive: true });
     const git = (...args) => {
-      const result = spawnSync("git", ["-C", path, ...args], { env, encoding: "utf8" });
+      const result = spawnBounded("git", ["-C", path, ...args], { env, encoding: "utf8" });
       assert.equal(result.status, 0, `git ${name} ${args.join(" ")}: ${result.stderr}`);
       return result.stdout.trim();
     };
@@ -66,7 +66,7 @@ function sandbox(t, projects = ["myapp"]) {
   const dir = dirOf();
   const runDir = (feature = "feat", project = main) => join(root, "wl", project, feature);
 
-  const run = (args, options = {}) => spawnSync(process.execPath, [CLI, ...args], {
+  const run = (args, options = {}) => spawnBounded(process.execPath, [CLI, ...args], {
     cwd: options.cwd ?? repos[main].path, env: { ...env, ...options.env }, encoding: "utf8",
   });
   const ok = (args, options) => {

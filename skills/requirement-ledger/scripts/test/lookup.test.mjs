@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnBounded } from "./spawn.mjs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -29,11 +29,11 @@ function sandbox(t, projects = ["myapp"]) {
   for (const name of projects) {
     const repo = join(root, name);
     mkdirSync(repo, { recursive: true });
-    spawnSync("git", ["-C", repo, "init", "-q"], { encoding: "utf8" });
+    spawnBounded("git", ["-C", repo, "init", "-q"], { encoding: "utf8" });
     repos[name] = repo;
   }
   const main = projects[0];
-  const run = (args, options = {}) => spawnSync(process.execPath, [CLI, ...args], {
+  const run = (args, options = {}) => spawnBounded(process.execPath, [CLI, ...args], {
     cwd: options.cwd ?? repos[main], env: { ...env, ...options.env }, encoding: "utf8",
   });
   const dirOf = (project) => join(root, "wl", project, ".requirements");

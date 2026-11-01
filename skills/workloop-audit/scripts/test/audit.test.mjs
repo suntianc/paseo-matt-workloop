@@ -51,7 +51,7 @@ function sandbox() {
   // audit.mjs reads WORKLOOP_ROOT and runs git with this process's environment.
   Object.assign(process.env, env);
   const git = (cwd, ...args) => {
-    const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", env });
+    const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", env, timeout: 120_000 });
     assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
     return r.stdout.trim();
   };
@@ -480,7 +480,7 @@ test("auditRun: a ledger record whose delivery is pending for a completed run fl
   writeFileSync(join(join(sb.wl, "repo", "feat"), "state.json"), JSON.stringify(state, null, 2));
 
   const req = (...args) => {
-    const r = spawnSync(process.execPath, [REQ, ...args, "--project", "repo"], { cwd: sb.repo, env: sb.env, encoding: "utf8" });
+    const r = spawnSync(process.execPath, [REQ, ...args, "--project", "repo"], { cwd: sb.repo, env: sb.env, encoding: "utf8", timeout: 120_000 });
     assert.equal(r.status, 0, `${args.join(" ")}: ${r.stdout}${r.stderr}`);
     return r.stdout;
   };

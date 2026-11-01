@@ -2,7 +2,8 @@
 // allocation, atomic replacement, the project lock, the audit log and `doctor`.
 // Run: node --test skills/requirement-ledger/scripts/test/store.test.mjs
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { spawnBounded } from "./spawn.mjs";
 import {
   chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync,
   realpathSync, renameSync, rmSync, unlinkSync, writeFileSync,
@@ -26,13 +27,13 @@ function sandbox(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "req-test-")));
   const repo = join(root, "myapp");
   mkdirSync(repo, { recursive: true });
-  const git = (...args) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  const git = (...args) => spawnBounded("git", ["-C", repo, ...args], { encoding: "utf8" });
   git("init", "-q");
   const env = { ...process.env, WORKLOOP_ROOT: join(root, "wl"), GIT_CONFIG_NOSYSTEM: "1" };
   delete env.WORKLOOP_RUN;
   delete env.REQ_LOCK_WAIT_MS;
   const dir = join(root, "wl", "myapp", ".requirements");
-  const run = (args, options = {}) => spawnSync(process.execPath, [CLI, ...args], {
+  const run = (args, options = {}) => spawnBounded(process.execPath, [CLI, ...args], {
     cwd: options.cwd ?? repo, env: { ...env, ...options.env }, encoding: "utf8",
   });
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -59,7 +60,7 @@ function twoCheckouts(t) {
   const s = sandbox(t);
   const other = join(s.root, "other", "myapp");
   mkdirSync(other, { recursive: true });
-  spawnSync("git", ["-C", other, "init", "-q"], { encoding: "utf8" });
+  spawnBounded("git", ["-C", other, "init", "-q"], { encoding: "utf8" });
   return { ...s, other: realpathSync(other) };
 }
 
@@ -268,7 +269,7 @@ test("a lock whose holder cannot be identified is refused, not taken over", (t) 
 
 test("a lock left by a dead process is taken over", (t) => {
   const s = sandbox(t);
-  const dead = spawnSync(process.execPath, ["-e", ""]);
+  const dead = spawnBounded(process.execPath, ["-e", ""]);
   mkdirSync(s.dir, { recursive: true });
   writeFileSync(join(s.dir, ".lock"), JSON.stringify({ pid: dead.pid, at: NOW }));
   const result = s.run(["new", "User login"], { env: { REQ_LOCK_WAIT_MS: "50" } });
@@ -279,7 +280,7 @@ test("a lock left by a dead process is taken over", (t) => {
 
 test("a stale lock another contender took first is not deleted from under it", (t) => {
   const s = sandbox(t);
-  const dead = spawnSync(process.execPath, ["-e", ""]);
+  const dead = spawnBounded(process.execPath, ["-e", ""]);
   mkdirSync(s.dir, { recursive: true });
   const lock = join(s.dir, ".lock");
   writeFileSync(lock, JSON.stringify({ pid: dead.pid, at: NOW }));
@@ -305,7 +306,7 @@ test("a stale lock another contender took first is not deleted from under it", (
 
 test("a break guard left by a dead process is reported, and the stale lock is left alone", (t) => {
   const s = sandbox(t);
-  const dead = spawnSync(process.execPath, ["-e", ""]);
+  const dead = spawnBounded(process.execPath, ["-e", ""]);
   mkdirSync(s.dir, { recursive: true });
   const lock = join(s.dir, ".lock");
   const stale = JSON.stringify({ pid: dead.pid, at: NOW });

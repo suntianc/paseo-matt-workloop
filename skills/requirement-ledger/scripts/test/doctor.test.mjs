@@ -6,7 +6,7 @@
 // WORKLOOP_ROOT; the developer's ~/.workloop is never touched.
 // Run: node --test skills/requirement-ledger/scripts/test/doctor.test.mjs
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnBounded } from "./spawn.mjs";
 import {
   copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync,
 } from "node:fs";
@@ -40,7 +40,7 @@ function sandbox(t) {
   delete env.WORKLOOP_RUN;
   delete env.REQ_LOCK_WAIT_MS;
   const git = (...args) => {
-    const result = spawnSync("git", ["-C", repo, ...args], { env, encoding: "utf8" });
+    const result = spawnBounded("git", ["-C", repo, ...args], { env, encoding: "utf8" });
     assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.trim();
   };
@@ -51,7 +51,7 @@ function sandbox(t) {
   const baseSha = git("rev-parse", "HEAD");
 
   const dir = join(root, "wl", "myapp", ".requirements");
-  const run = (args, options = {}) => spawnSync(process.execPath, [CLI, ...args], {
+  const run = (args, options = {}) => spawnBounded(process.execPath, [CLI, ...args], {
     cwd: options.cwd ?? repo, env: { ...env, ...options.env }, encoding: "utf8",
   });
   const ok = (args, options) => {
