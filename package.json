@@ -11,6 +11,7 @@
     "lib/",
     "skills/",
     "docs/",
+    "!docs/requirement-ledger-v1-tickets/",
     "README.zh-CN.md",
     "CHANGELOG.md",
     "CHANGELOG.zh-CN.md",
