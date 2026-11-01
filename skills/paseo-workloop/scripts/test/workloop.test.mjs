@@ -1224,6 +1224,63 @@ function reworkable() {
   return sb;
 }
 
+// The message file the send under test wrote, for the only attempt these tests make.
+const sentMessage = (sb, n = 1) => readFileSync(join(sb.runDir, "messages", `01-a1-${n}.md`), "utf8");
+
+// A rework's method sits at the top of the footer: after the divider, before "This
+// continues task", naming the review it answers and the candidate it was written for.
+function assertReworkMethod(text, sha, review) {
+  const divider = text.indexOf("\n---\n");
+  const method = text.indexOf("## Rework");
+  const footer = text.indexOf("This continues task #01");
+  assert.ok(divider > 0, `the footer divider: ${text}`);
+  assert.ok(method > divider, `## Rework comes after the divider: ${text}`);
+  assert.ok(footer > method, `## Rework comes before the footer text: ${text}`);
+  assert.ok(text.includes(`at \`${review}\``), `the review's path: ${text}`);
+  assert.ok(text.includes(`written for your commit \`${sha}\``), `the full candidate SHA: ${text}`);
+  assert.ok(text.includes(`git diff ${sha}..HEAD`), `the candidate's full SHA in the diff command: ${text}`);
+  assert.ok(text.includes(`fails on \`${sha.slice(0, 8)}\``), `the short candidate SHA: ${text}`);
+  assert.match(text, /Reproduce before you fix\./);
+}
+
+test("rework: the send message carries the method after the divider, with the review and the candidate", () => {
+  const sb = reworkable();
+  const { candidateSha: sha, review } = sb.state().tasks["01"];
+  sb.ok("send", "01", "--text", "Fix S1 and S3, per the review.");
+  assertReworkMethod(sentMessage(sb), sha, review.path);
+});
+
+test("rework: a prepared send's prompt carries the same method", () => {
+  const sb = reworkable();
+  const { candidateSha: sha, review } = sb.state().tasks["01"];
+  const action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1 and S3, per the review."));
+  assert.equal(action.tool, "send_agent_prompt");
+  assertReworkMethod(action.arguments.prompt, sha, review.path);
+});
+
+test("rework: a merge-tip send, a send after a pass and a send while running carry no method", () => {
+  // A merge-tip send answers a moved integration branch, not the review.
+  const mergeTip = reworkable();
+  mergeTip.ok("send", "01", "--merge-tip");
+  assert.doesNotMatch(sentMessage(mergeTip), /## Rework/);
+
+  // A nudge after a pass is not a rework.
+  const passed = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n\n- [ ] AC1: one\n" } });
+  passed.ok("dispatch", "01");
+  passed.work("01");
+  passed.ok("review", "01");
+  passed.reviewed("01");
+  passed.ok("send", "01", "--text", "Also mention the flag in the README.");
+  assert.doesNotMatch(sentMessage(passed), /## Rework/);
+
+  // Nor is a send while the task runs, whatever the last review said.
+  const running = reworkable();
+  running.ok("send", "01", "--text", "Fix S1 and S3, per the review.");
+  running.setAgent(running.state().tasks["01"].agentId, "idle");
+  running.ok("send", "01", "--text", "Also update the README.");
+  assert.doesNotMatch(sentMessage(running, 2), /## Rework/);
+});
+
 test("waiver: a rework send must name or waive every blocking finding of the review", () => {
   const sb = reworkable();
   // Nothing named: refused, listing both blocking IDs and how to account for them.

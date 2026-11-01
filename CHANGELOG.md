@@ -18,6 +18,7 @@ A project that evolves over many runs can now keep a requirement ledger: one rec
 - **Changed:** Reviewer and final-reviewer briefs name the candidate's branch and ask the reviewer to run commands through `validate.mjs`, keeping its receipts outside the worktree.
 - **Changed:** In a project with a ledger, `paseo-workloop` looks up the request before clarifying it, records the owner with `req link` after `WL init`, and runs `req sync` as a fixed step after `WL finish`.
 - **Changed:** The Main-facing references of `paseo-workloop` and `requirement-ledger` are tightened with no behaviour change: a rule stated in several places is stated once, a sentence whose refusal message already names the fix is shorter, the dated Paseo compatibility history moved to `paseo-workloop/reference/paseo-compat-history.md`, and five documentation errors are corrected (a second primary requirement, the `sync` owed after archive, the recorded review decision, `config` in a live versus an interrupted check phase, and launch settings on a remote daemon).
+- **Changed:** A rework `send` — after a `changes_requested` review, by CLI or `--prepare` alike — appends the review's path, the reviewed candidate's full and short SHA and `git diff <candidateSha>..HEAD` to the executor's message after the footer's `---` line, together with a method that mirrors the re-reviewer's: reproduce each finding first, fix its cause, then check the change since the review as the re-review will. A replay of 17 past runs found that 71% of the blocking findings re-reviews raised were a fix that fell short or broke something in its own change. A `--merge-tip` send, a send after a `pass` and a send while the task is running carry none of it.
 
 ### Upgrade
 
@@ -25,7 +26,7 @@ No migration is needed. The ledger is optional and nothing is created until the 
 
 ### Verification
 
-- All 362 local tests pass (`npm test`), including the ledger's E1–E11 acceptance scenarios, tests that reach `validate.mjs` through a symlinked directory and run it in a repository with a submodule, and the final-review tests for a narrowed later round, the repair-cycle cap and `--extra-round`.
+- All 365 local tests pass (`npm test`), including the ledger's E1–E11 acceptance scenarios, tests that reach `validate.mjs` through a symlinked directory and run it in a repository with a submodule, the final-review tests for a narrowed later round, the repair-cycle cap and `--extra-round`, and the rework-message tests for the appended method, a prepared send's prompt and the sends that carry none.
 - `npm run check:links` resolves every relative link and `skill://` reference.
 - The packaged npx install, the tarball contents and Windows and Linux runs have not been checked yet; that happens at release.
 

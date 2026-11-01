@@ -18,6 +18,7 @@
 - **调整：** Reviewer 和终审 reviewer 的简报写明候选版本所在分支，并要求通过 `validate.mjs` 执行命令，回执保存在 worktree 之外。
 - **调整：** 在维护台账的项目中，`paseo-workloop` 在澄清需求前先执行检索，`WL init` 之后用 `req link` 记录归属，`WL finish` 之后固定执行 `req sync`。
 - **调整：** 收紧了 `paseo-workloop` 与 `requirement-ledger` 面向编排者的参考文档，行为不变：同一规则的重复表述只保留一处，拒绝信息已写明修改办法的句子更短，带日期的 Paseo 兼容性观察记录移到 `paseo-workloop/reference/paseo-compat-history.md`，并修正了五处文档错误（第二条主需求、归档后应做的 `sync`、记录复核决定、检查阶段中的 `config`、远程 daemon 上的启动设置）。
+- **调整：** 返修 `send`（`changes_requested` 审查之后，命令行和 `--prepare` 方式相同）会在发给执行者的消息中、页脚 `---` 线之后附上审查报告路径、被审候选版本的完整和短 SHA 及 `git diff <candidateSha>..HEAD`，并给出与复审一致的返修方法：先复现每条发现，再修其根因，最后按复审的方式检查本次改动。回放 17 次已往 run 发现，复审提出的阻塞性发现中有 71% 是修复不彻底，或改坏了自己这次改动中的其他部分。`--merge-tip` 的消息、`pass` 之后的消息，以及任务运行中的消息都不含这些内容。
 
 ### 升级说明
 
@@ -25,7 +26,7 @@
 
 ### 验证
 
-- 全部 362 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景，经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它的测试，以及终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试。
+- 全部 365 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景，经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它的测试，终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试，以及返修消息的测试（附加的返修方法、`--prepare` 消息的 prompt，以及不带该方法的消息）。
 - `npm run check:links` 能解析所有相对链接和 `skill://` 引用。
 - 打包后的 npx 安装、tarball 内容，以及 Windows 和 Linux 上的运行尚未检查，将在发布时完成。
 

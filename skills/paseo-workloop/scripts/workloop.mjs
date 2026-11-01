@@ -2414,7 +2414,13 @@ function cmdSend(dir, s, id, opts) {
   // Reports are overwritten by the executor; keep each previous round for retro.
   if (existsSync(reportPath(dir, t))) writeAtomic(join(dir, "reports", `${t.id}-${t.attempt}-before-${n}.md`), readFileSync(reportPath(dir, t), "utf8"));
   const file = join(dir, "messages", `${t.id}-${t.attempt}-${n}.md`);
-  const footer = `\n\n---\nThis continues task #${t.id} (brief: ${pathArg(briefPath(dir, t))}). When you stop, overwrite ${pathArg(reportPath(dir, t))} as the brief describes (first line \`Status: done | question | blocked\`). End with exactly three lines: Result: <done | question | blocked>, Report: ${pathArg(reportPath(dir, t))}, Summary: <one sentence>. Then end your turn.\n`;
+  // A rework names the review it answers and how to answer it: reproduce each finding,
+  // fix its cause, and check the change since as the re-review will. Most findings that
+  // re-reviews block on are a fix that fell short or broke something nearby.
+  const method = rework ? `${render("executor-rework.md", {
+    reviewPath: pathArg(t.review.path), candidateSha: t.candidateSha, candidateShort: short(t.candidateSha),
+  }).trimEnd()}\n\n` : "";
+  const footer = `\n\n---\n${method}This continues task #${t.id} (brief: ${pathArg(briefPath(dir, t))}). When you stop, overwrite ${pathArg(reportPath(dir, t))} as the brief describes (first line \`Status: done | question | blocked\`). End with exactly three lines: Result: <done | question | blocked>, Report: ${pathArg(reportPath(dir, t))}, Summary: <one sentence>. Then end your turn.\n`;
   writeFileSync(file, body + footer);
   const sentAt = now(); // before sending: a fast agent may rewrite its report right away
   if (opts.prepare) return prepareAction(dir, s, t, "send", "send_agent_prompt", {
