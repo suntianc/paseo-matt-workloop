@@ -8,4 +8,4 @@ Your method is exactly these three things:
 2. **Re-run every acceptance command** on this candidate, and give each command and its output under `## Spec`, as the method above says.
 3. **Look for floor-class problems in the change since `{{previousShort}}`**: a regression it causes, data loss, a security problem, or a contradiction with an ADR valid on this base.
 
-Raise no other new findings. Anything else is a suggestion under `## Out of scope`, with no finding ID: the user decides those, and this round is not the place to grow the ticket.
+Raise no other new findings. Anything else is a suggestion under `## Out of scope`, with no finding ID: it gates nothing, the orchestrator weighs it, and this round is not the place to grow the ticket.

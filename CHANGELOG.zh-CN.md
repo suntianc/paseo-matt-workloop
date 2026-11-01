@@ -12,6 +12,9 @@
 
 - **新增：** `requirement-ledger` 技能及其命令行 `scripts/req.mjs`。每个项目的台账位于仓库之外的 `$WORKLOOP_ROOT/<project>/.requirements/`，每个 `REQ-<n>` 一份 Markdown 记录；编号永不复用，退役的需求保留文件。`lookup` 用请求中的拉丁词和中文二字组对标题、别名、摘要和引用打分，返回带 `strong`、`ambiguous` 或 `none` 判定的候选，只作为证据，不代为认定归属。`context` 按固定顺序列出需求的各项指针，并区分已完成、已归档、已归档但证据缺失三种交付状态。`link`、`sync`、`note` 是与 Workloop 的全部接口，只读取 run 的 `state.json`、从不写入；`sync` 会把被重新打开的 run 取代的交付保存在 `delivery_history` 中。`link --correct --reason` 是把 run 改挂到另一条需求的唯一方式；纠错中断时 run 会同时出现在两条记录中，`context`、`sync`、`link` 拒绝执行，`list`、`show`、`lookup`、`doctor` 会标注出来。`doctor [--repair-log]` 检查编号、重复、run、引用、仓库归属和审计日志。
 - **新增：** `paseo-workloop/scripts/validate.mjs` 在干净的 worktree 上，按预期的 SHA 和分支执行命令。命令执行后若 HEAD、分支、index、已跟踪文件或未被忽略的文件发生变化，即使退出码为 0 也判为失败，并保留改动后的工作树供检查。每次执行在 worktree 之外的新目录中写入 `receipt.json` 和每条命令的完整输出；`--preflight` 检查先执行，相同命令的成功结果只有在指定 `--reuse-identical` 时才复用，`--repeat-check` 每次都执行。[Validation](skills/paseo-workloop/reference/validation.md) 还说明了如何校准 API 替身、如何诊断浏览器启动失败；新增的中断交接模板用于在平台拒绝某一步时记录已执行的内容。
+- **新增：** 写完报告的终审轮次之后，下一轮与 ticket 复审一样收窄：简报写明该报告、它的集成提交和 `git diff <previousTip>..<tip>`，只确认上一轮边界内的阻塞性发现、核对验收映射、重跑检查和回归集、复评每条豁免，并检查上次提交以来改动中的底线问题。同一提交上的另一轮（`final-review --prepare --again`）复审同一提交；没有编号标准的 run 仍使用原来的简报。
+- **新增：** 终审返修周期与返修轮次一样设上限：已写出报告的轮次之后，每个新的集成提交算一个返修周期；超过上限（默认两轮，可用 `config --max-rework-rounds <n>` 调整）时 `final-review --prepare` 拒绝启动，`--extra-round --reason "<用户的决定>"` 随该轮记录用户决定。`finish` 把它与超过上限的 ticket 轮次一起列出，`status` 会提示下一周期将超限，因此写返修 ticket 之前就会先问用户。
+- **调整：** 迟到的发现——针对本轮未改动代码中某条已确认标准的缺陷——先由编排者判定：确认该缺陷后以返修轮次或返修 ticket 修掉，并计入上限；或写明为何不成立。只有编排者无法判定的问题（例如对标准含义的争议）才交给用户；其余建议和产品决定仍由用户决定。
 - **调整：** Reviewer 和终审 reviewer 的简报写明候选版本所在分支，并要求通过 `validate.mjs` 执行命令，回执保存在 worktree 之外。
 - **调整：** 在维护台账的项目中，`paseo-workloop` 在澄清需求前先执行检索，`WL init` 之后用 `req link` 记录归属，`WL finish` 之后固定执行 `req sync`。
 
@@ -21,7 +24,7 @@
 
 ### 验证
 
-- 全部 357 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景，以及经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它的测试。
+- 全部 362 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景，经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它的测试，以及终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试。
 - `npm run check:links` 能解析所有相对链接和 `skill://` 引用。
 - 打包后的 npx 安装、tarball 内容，以及 Windows 和 Linux 上的运行尚未检查，将在发布时完成。
 

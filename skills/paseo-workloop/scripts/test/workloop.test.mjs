@@ -3427,6 +3427,25 @@ function finalRun(ticket = "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — ch
   return sb;
 }
 
+// The brief a final round was started with.
+function finalBrief(sb, round) {
+  return readFileSync(join(sb.runDir, "briefs", `final-${round.round}-${round.tip.slice(0, 8)}.md`), "utf8");
+}
+
+// The repair a final round asked for, done the way the run reference says: a repair
+// ticket, executed and integrated, so the integration tip moves under the next round.
+function repairTicket(sb, id, blockedBy) {
+  writeFileSync(join(sb.runDir, "issues", `${id}-fix.md`),
+    `# ${id}: Fix\n\nBlocked by: ${blockedBy}\n\n- [ ] AC1: still works — check: \`node --version\`\n`);
+  sb.ok("import");
+  sb.ok("dispatch", id);
+  sb.work(id);
+  sb.ok("review", id);
+  sb.reviewed(id);
+  sb.ok("integrate", id);
+  return sb.state().integration.tip;
+}
+
 test("final review: prepare refuses in a direct run, with an open ticket, pending document work, during a check phase, and without a current mapping", async () => {
   const direct = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\nScope: f01.txt\n" } });
   rmSync(join(direct.runDir, "spec.md"));
@@ -3554,6 +3573,108 @@ test("final review: a second round at the same tip needs --again, earlier rounds
   assert.equal(third.round, 3);
   assert.equal(third.tip, sb.state().integration.tip);
   assert.deepEqual(sb.state().finalReviews.map((r) => r.round), [1, 2]);
+});
+
+test("final review: a round after a reported one adds that report, its tip and the change since", () => {
+  const sb = finalRun();
+  const first = sb.finalReview({ verdict: "changes_requested", findings: [{ id: "X1", blocking: true, basis: "M1: spec item M1" }] });
+  // Nothing came before it, so there is nothing to re-review.
+  assert.doesNotMatch(finalBrief(sb, first), /## Re-review/);
+
+  const tip = repairTicket(sb, "02", "01");
+  assert.notEqual(tip, first.tip);
+  const second = sb.finalReview({ verdict: "pass" });
+  const brief = finalBrief(sb, second);
+  assert.match(brief, /## Re-review\n/);
+  assert.ok(brief.indexOf("## Re-review") < brief.indexOf("## Boundary"), "the re-review narrows the method before the boundary");
+  assert.ok(brief.includes(slash(first.path)), `the previous round's report\n${brief}`);
+  assert.ok(brief.includes(`written for integration tip \`${first.tip}\``), `the previous tip\n${brief}`);
+  assert.ok(brief.includes(`git diff ${first.tip}..${tip}`), `the change since\n${brief}`);
+  assert.equal(brief.match(/## Re-review/g).length, 1, "one previous round, named once");
+});
+
+test("final review: --again at the same tip re-reviews that tip on both sides of the diff", () => {
+  const sb = finalRun();
+  const first = sb.finalReview({ verdict: "changes_requested", findings: [{ id: "X1", blocking: true, basis: "M1: spec item M1" }] });
+  const second = sb.finalReview({ again: true, report: false });
+  assert.equal(second.tip, first.tip);
+  const brief = finalBrief(sb, second);
+  assert.match(brief, /## Re-review\n/);
+  assert.ok(brief.includes(slash(first.path)), brief);
+  assert.ok(brief.includes(`git diff ${first.tip}..${first.tip}`), `the same tip on both sides\n${brief}`);
+  assert.match(brief, /When the two tips are the same, nothing has changed since\./);
+});
+
+test("final review: a round with no report is neither a reviewed tip nor the previous round", () => {
+  const sb = finalRun();
+  sb.ok("config", "--max-rework-rounds", "1");
+  const first = sb.finalReview({ verdict: "changes_requested", findings: [{ id: "X1", blocking: true, basis: "M1: spec item M1" }] });
+  const tip2 = repairTicket(sb, "02", "01");
+  const second = sb.finalReview({ report: false }); // round 2: nothing written
+  // It still follows the last round that reported, as a ticket re-review would.
+  assert.ok(finalBrief(sb, second).includes(slash(first.path)));
+  const third = sb.finalReview({ again: true, report: false }); // round 3: also silent
+  const brief = finalBrief(sb, third);
+  assert.ok(brief.includes(slash(first.path)), `the last round that reported\n${brief}`);
+  assert.ok(brief.includes(`git diff ${first.tip}..${tip2}`), `its tip, not the silent round's\n${brief}`);
+  assert.doesNotMatch(brief, /final-2-/, "the silent round is not the previous round");
+  // And it spent no repair cycle: a new tip is still cycle 1, within the cap of 1.
+  repairTicket(sb, "03", "02");
+  const fourth = sb.finalReview({ report: false });
+  assert.equal(fourth.round, 4);
+  assert.notEqual(fourth.tip, tip2);
+});
+
+test("final review: a run without numbered criteria gets no re-review section and no repair-cycle cap", () => {
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: works\n" } });
+  sb.complete("01");
+  sb.legacy();
+  sb.ok("config", "--max-rework-rounds", "0");
+  const first = sb.finalReview({ verdict: "changes_requested", findings: [{ id: "X1", blocking: true, basis: "M1: spec item M1" }] });
+  repairTicket(sb, "02", "01");
+  sb.finalMapping();
+  // No boundary means no cap: the round after a reported one waits for nothing.
+  sb.no(/this run predates the review boundary and its cap, so final-review --extra-round does not apply/, "final-review", "--prepare", "--extra-round", "--reason", "the user said so");
+  const second = sb.finalReview({ report: false });
+  assert.doesNotMatch(finalBrief(sb, second), /## Re-review/);
+  assert.doesNotMatch(finalBrief(sb, first), /## Re-review/);
+});
+
+test("final review: a repair cycle past the cap waits for the user; --extra-round --reason records it and finish lists it", () => {
+  const sb = finalRun();
+  sb.ok("config", "--max-rework-rounds", "0");
+  // The first round is not a repair cycle, whatever the cap.
+  sb.finalReview({ verdict: "changes_requested", findings: [{ id: "X1", blocking: true, basis: "M1: spec item M1" }] });
+  assert.match(sb.ok("status"), /The next round would be repair cycle 1, past the run's cap of 0: ask the user before writing repair tickets, then start it with `final-review --prepare --extra-round --reason/);
+
+  repairTicket(sb, "02", "01");
+  sb.finalMapping();
+  sb.no(/final review round 2 would be repair cycle 1, past the run's cap of 0\. The run waits for the user/, "final-review", "--prepare");
+  sb.no(/final-review --extra-round needs --reason/, "final-review", "--prepare", "--extra-round");
+  sb.no(/final-review --reason belongs to --waive <IDs>/, "final-review", "--prepare", "--reason", "the cap was reached");
+  assert.equal(sb.state().extraRounds, undefined, "a refused prepare records nothing");
+
+  // The user decided to go on: the round starts and their decision is recorded with it.
+  const action = JSON.parse(sb.ok("final-review", "--prepare", "--extra-round", "--reason", "the user chose one more repair cycle"));
+  const round = sb.ackFinal(action);
+  writeFileSync(round.path, `Verdict: changes_requested\nIntegration tip: ${round.tip}\n${findingsTable([{ id: "X2", blocking: true, basis: "M1: the row still does not hold" }])}`);
+  const s = sb.state();
+  assert.deepEqual(s.extraRounds.map(({ task, round, cycle, cap, reason }) => ({ task, round, cycle, cap, reason })),
+    [{ task: "final", round: 2, cycle: 1, cap: 0, reason: "the user chose one more repair cycle" }]);
+  assert.deepEqual(sb.events("extra_round").map((e) => [e.task, e.round, e.cycle, e.cap]), [["final", 2, 1, 0]]);
+
+  // At the same tip nothing is repaired, so --again needs no decision.
+  sb.no(/--extra-round goes past the cap at a new tip; --again at the same tip repairs nothing and needs no decision/, "final-review", "--prepare", "--again", "--extra-round", "--reason", "x");
+
+  // A cap the next cycle stays within makes --extra-round the wrong flag.
+  sb.ok("config", "--max-rework-rounds", "5");
+  repairTicket(sb, "03", "02");
+  sb.finalMapping();
+  sb.no(/final review round 3 is repair cycle 2, within the run's cap of 5, so --extra-round is not needed/, "final-review", "--prepare", "--extra-round", "--reason", "unneeded");
+  const third = sb.finalReview({ verdict: "pass" });
+  assert.equal(third.round, 3);
+  const out = sb.ok("finish");
+  assert.match(out, /rework past the cap — the user decided each one:\n- final review round 2, repair cycle 1 of cap 0: the user chose one more repair cycle/);
 });
 
 test("final review: action final shows the request, and ack final refuses a receipt for the wrong labels, worktree or parent", () => {

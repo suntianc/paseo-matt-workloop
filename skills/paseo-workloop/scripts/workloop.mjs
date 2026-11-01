@@ -633,7 +633,9 @@ function boundaryReport(s) {
   }
   return [
     extras.length
-      ? ["rework past the cap — the user decided each one:", ...extras.map((e) => `- #${e.task} round ${e.round} of cap ${e.cap}: ${e.reason}`)].join("\n")
+      ? ["rework past the cap — the user decided each one:", ...extras.map((e) => (e.task === "final"
+        ? `- final review round ${e.round}, repair cycle ${e.cycle} of cap ${e.cap}: ${e.reason}`
+        : `- #${e.task} round ${e.round} of cap ${e.cap}: ${e.reason}`))].join("\n")
       : "rework past the cap: none",
     out.length
       ? ["out-of-boundary findings — raised outside the confirmed criteria and floor classes; the user decides:",
@@ -924,15 +926,58 @@ function finalSteps(dir, s) {
     return ["finish — the final review's blocking findings are all waived"];
   }
   const ids = open.map((f) => f.id).join(", ");
+  // Repairs now would put the next round past the cap: the user decides first, as
+  // they do for a ticket's rework round past it.
+  const capped = numberedCriteria(s) && reviewedTips(s) > reworkCap(s)
+    ? ` The next round would be repair cycle ${reviewedTips(s)}, past the run's cap of ${reworkCap(s)}: ask the user before writing repair tickets, then start it with \`final-review --prepare --extra-round --reason "<their decision>"\`.`
+    : "";
   return [`final review changes requested (${ids}): read ${round.path}, then write repair tickets and integrate them (a new round follows at the new tip), `
-    + `or \`final-review --waive ${ids} --reason "<why>"\`; \`final-review --prepare --again\` reviews this tip once more`];
+    + `or \`final-review --waive ${ids} --reason "<why>"\`; \`final-review --prepare --again\` reviews this tip once more.${capped}`];
+}
+
+// The distinct tips a final reviewer has reported on. Each was followed by repairs,
+// or the run would have finished, so a round at a new tip is repair cycle `n`.
+const reviewedTips = (s) => new Set(finalRounds(s).filter((r) => finalReport(r)).map((r) => r.tip)).size;
+
+// The round a final re-review follows: the most recent one whose reviewer wrote its
+// report, the current round first (`--again` replaces it), then the earlier ones.
+function previousFinalRound(s) {
+  return finalRounds(s).reverse().find((r) => r.tip && finalReport(r)) ?? null;
+}
+
+// A final round at a new tip past the run's cap waits for the user, as a rework round
+// does: the orchestrator asks, then records their decision with --extra-round --reason,
+// which `finish` lists. A round at the same tip (`--again`) repairs nothing and never
+// counts. Null when the round is within the cap, or when the run predates the cap.
+function finalExtraRound(s, sameTip, round, opts) {
+  const asked = opts["extra-round"];
+  if (sameTip) {
+    if (asked) fail("final-review --extra-round goes past the cap at a new tip; --again at the same tip repairs nothing and needs no decision");
+    return null;
+  }
+  if (!numberedCriteria(s)) {
+    if (asked) fail("this run predates the review boundary and its cap, so final-review --extra-round does not apply");
+    return null;
+  }
+  const cycle = reviewedTips(s);
+  const cap = reworkCap(s);
+  if (cycle <= cap) {
+    if (asked) fail(`final review round ${round} is repair cycle ${cycle}, within the run's cap of ${cap}, so --extra-round is not needed`);
+    return null;
+  }
+  if (!asked) {
+    fail(`final review round ${round} would be repair cycle ${cycle}, past the run's cap of ${cap}. The run waits for the user: decide with them whether to go on, `
+      + `then \`final-review --prepare --extra-round --reason "<the user's decision>"\`; or waive what stands with \`final-review --waive\``);
+  }
+  if (!opts.reason?.trim()) fail(`final-review --extra-round needs --reason "<the user's decision>": repair cycle ${cycle} goes past the cap of ${cap}, and finish lists it`);
+  return { task: "final", round, cycle, cap, reason: opts.reason.trim() };
 }
 
 // `final-review --prepare` creates the round's worktree through Paseo, writes the
 // brief, and prepares the guarded `create_agent` request `action final` prints.
 function cmdFinalReview(dir, s, opts) {
   if (opts.waive) return cmdFinalWaive(dir, s, opts);
-  if (opts.reason) fail("final-review --reason belongs to --waive <IDs>: it records why a blocking finding was let through");
+  if (opts.reason && !opts["extra-round"]) fail("final-review --reason belongs to --waive <IDs>, which records why a blocking finding was let through, or to --extra-round, which records the user's decision to go past the cap");
   if (!opts.prepare) fail("final-review starts an independent final reviewer; pass --prepare (add --again for a second round at the same tip)");
   if (isDirect(s)) fail("a direct run has no final review: its reviewer already re-ran the acceptance commands, so go to `finish`");
   const open = tasksOf(s).filter((t) => !["done", "cancelled"].includes(t.status));
@@ -946,12 +991,15 @@ function cmdFinalReview(dir, s, opts) {
   if (!sameTip && opts.again) fail(`--again starts a second round at the same tip, and no round covers the current tip ${short(s.integration.tip)}; run \`final-review --prepare\``);
   const problem = mappingProblem(dir, s);
   if (problem) fail(problem);
+  const round = (current?.round ?? s.finalReviews?.at(-1)?.round ?? 0) + 1;
+  const extra = finalExtraRound(s, sameTip, round, opts);
   // Read before anything is created, so a missing profile cannot leave a worktree behind.
   const launch = launchSettings(s.config, "reviewer", opts);
   if (sameTip && current.agentId) requireIdle(current.agentId, "final reviewer");
   checkIntegration(s);
-  const round = (current?.round ?? s.finalReviews?.at(-1)?.round ?? 0) + 1;
   const tip = s.integration.tip;
+  // A round after one whose report was written follows it, as a ticket re-review does.
+  const prev = numberedCriteria(s) ? previousFinalRound(s) : null;
   const branch = `wl-${s.feature}-final-${round}`;
   const path = join(dir, "reviews", `final-${round}-${short(tip)}.md`);
 
@@ -991,6 +1039,9 @@ function cmdFinalReview(dir, s, opts) {
     // A run created before the boundary has no confirmed criteria to cite, so it keeps
     // the brief it always had: every blocking finding stands.
     boundary: numberedCriteria(s) ? `\n${render("final-reviewer-boundary.md", { floorClasses: floorClasses() })}` : "",
+    reReview: prev ? `\n${render("final-reviewer-re-review.md", {
+      previousReview: pathArg(prev.path), previousTip: prev.tip, previousShort: short(prev.tip), tip,
+    })}` : "",
     notes: notesFrom(opts),
   };
   const brief = join(dir, "briefs", `final-${round}-${short(tip)}.md`);
@@ -998,11 +1049,13 @@ function cmdFinalReview(dir, s, opts) {
   const labels = { workloop: s.runKey, task: "final", attempt: `r${round}`, role: "reviewer" };
   const existing = listAgents(labels, { all: true });
   if (existing.length) fail(`a final reviewer for round ${round} is already registered (${existing[0].id}) with no acknowledged MCP action; reconcile it before preparing another`);
+  // The user's decision is recorded with the round it opens, in the same save.
+  const past = extra && extraRoundsAdd(s, extra);
   return prepareAction(dir, s, s.finalReview, "final-review", "create_agent",
     createArguments(s.finalReview, launch, labels, `wl ${s.feature} final r${round} ${short(tip)}`,
       `Read the final review brief at ${pathArg(brief)} and follow it. Review only; change nothing; never ask the user anything.`),
     { launch: describe(launch) },
-    [["final_review", { round, branch, worktree: wt, tip }]]);
+    [["final_review", { round, branch, worktree: wt, tip }], ...(past ? [["extra_round", past]] : [])]);
 }
 
 // `final-review --waive <IDs> --reason "<why>"`: the blocking findings of the
@@ -3036,7 +3089,9 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
   cancel <NN> --reason r
   note [<NN>] --text t
   final-review --prepare [--again]     start an independent final reviewer at the integration
-                                       tip: new worktree, brief, and a guarded create_agent
+                                       tip: new worktree, brief, and a guarded create_agent; after
+                                       a reported round the brief adds it and the change since
+       [--extra-round --reason r]      a repair cycle past the cap goes on, with the user's decision
   final-review --waive ID,ID --reason r  record the final findings the user lets through
   finish                               run the checks and the regression set outside the run lock;
                                        only on the final reviewer's pass for the current tip

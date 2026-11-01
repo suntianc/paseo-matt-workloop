@@ -28,7 +28,7 @@ These are given here. Don't ask for them.
   - the finding still holds and its reason no longer does: a blocking `Waiver` finding citing the entry, `Waiver L3: <why the reason no longer covers it>`;
   - the finding is already fixed on this tree: a note that it is fixed, with what shows it, and no finding.
 - **Run the changed surface for real** where that is feasible: a command, a build, a test that exercises the run's behaviour end to end.
-{{boundary}}
+{{reReview}}{{boundary}}
 ## Rules
 
 - **Read-only.** Don't edit, commit, check out, stash or reset anything. Before running commands, read `{{skillsRoot}}/paseo-workloop/reference/validation.md` and use its guard with the expected tip and branch above. Store receipts outside the worktree. A drift failure preserves the changed tree for the orchestrator; do not repair it yourself. Preserve every required regression occurrence unless the run explicitly permits sharing results.
