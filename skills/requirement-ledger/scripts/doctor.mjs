@@ -9,10 +9,11 @@
 // half-finished `link --correct`, a stale ADR reference — is reported and left for
 // the user to settle; `doctor` does not pick an owner, delete a relation or guess a
 // replacement.
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
-import { bodyDigest, idFor, numberIn, recordProblems, slugify } from "./record.mjs";
+import { bodyDigest, idFor, numberIn, recordProblems } from "./record.mjs";
+import { DOC_DIRS, resolveDocRef } from "./refs.mjs";
 import { ambiguousRuns, lastCorrection, runsOf } from "./relations.mjs";
 import {
   appendLog, highestNumber, ledgerDir, listRequirementFiles, nextSeq, readLog, readMeta, readRequirements,
@@ -143,9 +144,8 @@ function checkRepoBinding({ parsed, findings, repo, remote }) {
 // `refs` are citations, and a citation that no longer resolves is a fact about the
 // repository, not a reason to edit what the user wrote. An ADR is a file under
 // `docs/adr/`; a pitfall is an entry in a topic page under `docs/pitfalls/`, named
-// by the slug of its heading (or by a page of its own).
-const REF_DIRS = { adr: "docs/adr", pitfalls: "docs/pitfalls" };
-
+// by the slug of its heading (or by a page of its own). `refs.mjs` owns the rule,
+// and `context` reads a reference through the same resolver.
 function checkRefs({ parsed, findings }) {
   for (const requirement of parsed) {
     const { id, repo_path: repoPath, refs } = requirement.frontmatter;
@@ -153,7 +153,7 @@ function checkRefs({ parsed, findings }) {
     // A repository that is gone is the repo check's finding; resolving citations
     // inside it would report every one of them as dangling for one cause.
     if (typeof repoPath !== "string" || !repoPath || !existsSync(repoPath)) continue;
-    for (const [kind, where] of Object.entries(REF_DIRS)) {
+    for (const [kind, where] of Object.entries(DOC_DIRS)) {
       const entries = refs[kind];
       if (entries === undefined) continue;
       if (!Array.isArray(entries)) {
@@ -176,7 +176,7 @@ function checkRefs({ parsed, findings }) {
           continue;
         }
         const name = entry.trim();
-        if (resolvesRef(repoPath, kind, name)) continue;
+        if (resolveDocRef(repoPath, kind, name).status === "ok") continue;
         findings.push({
           code: "dangling-ref",
           id,
@@ -188,44 +188,6 @@ function checkRefs({ parsed, findings }) {
       }
     }
   }
-}
-
-function resolvesRef(repoPath, kind, name) {
-  const dir = join(repoPath, REF_DIRS[kind]);
-  if (!existsSync(dir)) return false;
-  const stem = name.replace(/\.md$/, "");
-  const files = markdownFiles(dir, 3);
-  if (files.some((file) => basename(file, ".md") === stem)) return true;
-  if (kind !== "pitfalls") return false;
-  // Copied retro evidence is not an entry, so its headings do not count.
-  return files.some((file) => headingsOf(readFileSync(file, "utf8")).some((heading) => slugify(heading) === stem));
-}
-
-function markdownFiles(dir, depth) {
-  if (depth < 0) return [];
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const files = [];
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name !== "evidence") files.push(...markdownFiles(path, depth - 1));
-      continue;
-    }
-    if (entry.isFile() && entry.name.endsWith(".md")) files.push(path);
-  }
-  return files;
-}
-
-function headingsOf(text) {
-  return text.split("\n")
-    .map((line) => /^#{1,6}\s+(.*?)\s*$/.exec(line)?.[1] ?? null)
-    .filter(Boolean)
-    .map((heading) => heading.replace(/\s+#+$/, ""));
 }
 
 const isMapping = (value) => value !== null && typeof value === "object" && !Array.isArray(value);

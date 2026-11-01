@@ -254,9 +254,14 @@ export function lookupRequirements({
   lead = LOOKUP_DEFAULTS.lead,
   limit = LOOKUP_DEFAULTS.limit,
   dir = ledgerDir(project),
+  onUnreadable = null,
 }) {
   const analysed = analyseQuery(query);
   const requirements = readRequirements(dir);
+  // The answer is unchanged, but a record the CLI cannot read is reported to the
+  // caller rather than silently dropped: `decision: none` must not be able to stand
+  // while a matching record exists and could not be searched.
+  for (const requirement of requirements) if (requirement.error) onUnreadable?.(requirement);
   // §6.5: a run two records claim is an ownership question, not a settled fact.
   // The predicate is `relations.mjs`', the same one `list`, `show` and `doctor`
   // mark from; lookup still answers, and only says the ownership is unresolved.

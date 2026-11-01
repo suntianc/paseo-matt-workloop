@@ -68,6 +68,8 @@ Dated milestones, each naming the run that delivered it.
 
 `refs` holds citations only: ADR numbers, pitfall names, a spec path, CodeGraph hints. The prose behind each stays where it lives.
 
+`refs.adr` resolves under `docs/adr/` and `refs.pitfalls` under `docs/pitfalls/`: as an explicit or repository-relative path, `<dir>/<name>` or `<dir>/<name>.md`, a unique `<name>-*.md`, or — for a pitfall — the slug of a heading on one of the directory's pages. An exact page name wins over a `<name>-*.md` prefix sibling, and several files matching on the same rule is ambiguous and reported, never chosen between; `context` and `doctor` apply the same rule.
+
 ## Identity allocation
 
 - The allocator reads `_meta.json.lastIssued`.

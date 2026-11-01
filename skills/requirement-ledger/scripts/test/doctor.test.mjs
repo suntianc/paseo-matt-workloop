@@ -331,6 +331,35 @@ test("refs that no longer resolve are reported and left exactly as written", (t)
   assert.deepEqual(s.record(1).refs, refs);
 });
 
+// `context` and `doctor` used to resolve refs by different rules: an ADR number was
+// dangling here, and a pitfall cited by its heading was dangling in `context`. One
+// resolver now answers both, so both cases must resolve in this command too.
+test("an ADR by number and a pitfall by heading resolve here, as in context", (t) => {
+  const s = sandbox(t);
+  s.ok(["new", "User login"]);
+  s.editRecord(1, (frontmatter) => ({ ...frontmatter, refs: { adr: ["0007"], pitfalls: ["auth-cookie-domain"] } }));
+  s.writeDoc("docs/adr/0007-session-tokens.md", "# 0007 Session tokens\n");
+  s.writeDoc("docs/pitfalls/auth.md", "# Auth pitfalls\n\n## Auth cookie domain\n\n- **Trigger:** a cookie set on the API host\n");
+
+  const report = s.run(["doctor"]);
+  assert.equal(report.status, 0, report.stdout + report.stderr);
+  assert.doesNotMatch(report.stdout, /refs\.(adr|pitfalls)/);
+});
+
+// An exact page name beats a prefix sibling here too: `auth` is `auth.md` even
+// with `auth-cookie.md` beside it, which `context` now also resolves.
+test("an exact pitfall page name wins over a prefix sibling", (t) => {
+  const s = sandbox(t);
+  s.ok(["new", "User login"]);
+  s.editRecord(1, (frontmatter) => ({ ...frontmatter, refs: { pitfalls: ["auth"] } }));
+  s.writeDoc("docs/pitfalls/topic/auth.md", "# Auth\n\n## Auth cookie domain\n");
+  s.writeDoc("docs/pitfalls/topic/auth-cookie.md", "# Auth cookie\n\n## Cookie domain\n");
+
+  const report = s.run(["doctor"]);
+  assert.equal(report.status, 0, report.stdout + report.stderr);
+  assert.doesNotMatch(report.stdout, /refs\.pitfalls/);
+});
+
 // ------------------------------------------------------- --repair-log (AC4)
 
 test("--repair-log fills an audit gap and leaves bodies and delivery SHAs byte-identical", (t) => {

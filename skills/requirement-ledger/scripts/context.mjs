@@ -5,9 +5,10 @@
 // pitfalls and history come last, and only when asked for.
 //
 // Read only. The ledger stores hints, never a graph, and never edits Workloop.
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
+import { resolveDocRef } from "./refs.mjs";
 import { runsOf } from "./relations.mjs";
 import { deliveryFrom, readRun, runDirOf } from "./runstate.mjs";
 
@@ -90,40 +91,10 @@ function latestChange(body, frontmatter) {
 // ---------------------------------------------------------------- references
 
 // ADRs and pitfalls are named, not embedded: `0007-session-tokens` is an ADR number
-// and slug, `auth-cookie-domain` is a pitfall file's name. A name that resolves to
-// no file is reported as dangling — never deleted from the record, never replaced
-// with a plausible-looking neighbour.
-const DOC_DIRS = { adr: ["docs/adr"], pitfalls: ["docs/pitfalls"] };
-
-function resolveDocRef(repo, kind, ref) {
-  const entry = { ref, path: null, status: "dangling" };
-  if (!repo) return { ...entry, reason: "the record has no repo_path, so no document can be resolved" };
-
-  // An explicit path beats any convention, and the convention ("docs/adr/<ref>.md")
-  // beats nothing at all.
-  const candidates = [];
-  if (isAbsolute(ref)) candidates.push(ref);
-  else if (ref.includes("/") || /\.md$/i.test(ref)) candidates.push(resolve(repo, ref));
-  for (const base of DOC_DIRS[kind]) candidates.push(join(repo, base, ref), join(repo, base, `${ref}.md`));
-  for (const path of candidates) if (existsSync(path)) return { ...entry, path, status: "ok" };
-
-  // A bare number (`0007`) finds `0007-session-tokens.md`, but only when exactly one
-  // file carries it: two matches are a question, and this never answers one by
-  // choosing.
-  const matches = [];
-  for (const base of DOC_DIRS[kind]) {
-    let names;
-    try { names = readdirSync(join(repo, base)); } catch { continue; }
-    for (const name of names) if (name.startsWith(`${ref}-`) && name.endsWith(".md")) matches.push(join(repo, base, name));
-  }
-  if (matches.length === 1) return { ...entry, path: matches[0], status: "ok" };
-  return {
-    ...entry,
-    reason: matches.length > 1
-      ? `several files match: ${matches.map((path) => basename(path)).join(", ")}`
-      : `no ${kind === "adr" ? "ADR" : "pitfall"} under ${join(repo, DOC_DIRS[kind][0])} matches ${ref}`,
-  };
-}
+// and slug, `auth-cookie-domain` is a pitfall file's name or a heading's slug. A
+// name that resolves to no file is reported as dangling — never deleted from the
+// record, never replaced with a plausible-looking neighbour. How a name resolves is
+// `refs.mjs`'s rule, shared with `doctor` so the two commands cannot disagree.
 
 // Any pointer the record holds as a path: the spec hint, a run's spec, its tickets.
 // Existence is reported beside it, because a path the reader will try to open is

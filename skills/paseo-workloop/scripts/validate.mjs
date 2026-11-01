@@ -5,9 +5,8 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { runOneCheck } from "./workloop.mjs";
+import { isMain, runOneCheck } from "./workloop.mjs";
 
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 function git(cwd, ...args) {
@@ -16,12 +15,27 @@ function git(cwd, ...args) {
   return r.stdout;
 }
 
+// The paths `git ls-files --stage` records as gitlinks: a submodule is a directory
+// in this worktree but an entry of another repository, so its content is not read.
+// Which commit it points at is part of the `index` digest already.
+function gitlinks(repo) {
+  const links = new Set();
+  for (const entry of git(repo, "ls-files", "--stage", "-z").split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab < 0 || !entry.startsWith("160000 ")) continue;
+    links.add(entry.slice(tab + 1));
+  }
+  return links;
+}
+
 export function snapshot(repo) {
   const contents = createHash("sha256");
   const files = git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0").filter(Boolean);
+  const submodules = gitlinks(repo);
   for (const name of [...new Set(files)].sort()) {
     const path = join(repo, name);
     contents.update(name).update("\0");
+    if (submodules.has(name)) { contents.update("submodule\0"); continue; }
     if (!existsSync(path) && !isSymlink(path)) { contents.update("missing\0"); continue; }
     const stat = lstatSync(path);
     contents.update(String(stat.mode)).update("\0");
@@ -122,6 +136,6 @@ export async function main(argv) {
   return receipt.ok ? 0 : 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }).catch((error) => { console.error(error.message); process.exitCode = 1; });
 }

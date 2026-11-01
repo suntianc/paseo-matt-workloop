@@ -101,6 +101,15 @@ test("a title with YAML punctuation keeps its exact text", () => {
   }
 });
 
+// The flow parser stops at any colon, so a value emitted into `[a, b]` has to be
+// quoted for the colon even when it is not followed by a space.
+test("a value with a colon round-trips inside a flow list", () => {
+  for (const value of ["AuthService::login", "crate::checkout::pay", "https://x", "12:30"]) {
+    const frontmatter = { aliases: [value], refs: { adr: [value] } };
+    assert.deepEqual(parseYaml(stringifyYaml(frontmatter)), frontmatter, `${value} round-tripped`);
+  }
+});
+
 test("a file without a frontmatter block is rejected as a record, not silently accepted", () => {
   assert.throws(() => parseRecord("# just prose\n"), /frontmatter/);
   assert.throws(() => parseRecord("---\nid: REQ-001\n"), /not closed/);
@@ -403,6 +412,96 @@ test("list on a project with no ledger says so instead of failing", (t) => {
   const result = s.run(["list"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /no requirements/);
+});
+
+// `new` used to succeed and leave a record its own `list` called unreadable: the
+// alias was emitted bare into a flow list, and the flow parser stopped at "::".
+test("new with an alias the flow parser stops on keeps the record readable", (t) => {
+  const s = sandbox(t);
+  const created = s.run(["new", "Auth service", "--alias", "AuthService::login", "--alias", "登录"]);
+  assert.equal(created.status, 0, created.stderr);
+  assert.equal(created.stderr, "", "the record is written and read back before anything is said");
+
+  const listed = s.run(["list"]);
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.doesNotMatch(listed.stdout, /unreadable/);
+  assert.match(listed.stdout, /^REQ-001\s+active\b.*Auth service$/m);
+
+  const { frontmatter } = parseRecord(readFileSync(join(s.dir, requirementFiles(s.dir)[0]), "utf8"));
+  assert.deepEqual(frontmatter.aliases, ["AuthService::login", "登录"]);
+});
+
+// A CLI write re-emits the frontmatter it read: a hand-written block list with a
+// "::" in it became a flow list, and the record could no longer be read.
+test("a CLI write re-emits a hand-written block ref list and the record stays readable", (t) => {
+  const s = sandbox(t);
+  assert.equal(s.run(["new", "Checkout"]).status, 0);
+  const file = join(s.dir, requirementFiles(s.dir)[0]);
+  writeFileSync(file, readFileSync(file, "utf8").replace("refs: {}", "refs:\n  adr:\n    - crate::checkout::pay"));
+
+  const noted = s.run(["note", "REQ-001", "hand-written refs kept"]);
+  assert.equal(noted.status, 0, noted.stderr);
+
+  const listed = s.run(["list"]);
+  assert.doesNotMatch(listed.stdout, /unreadable/);
+  const { frontmatter } = parseRecord(readFileSync(file, "utf8"));
+  assert.deepEqual(frontmatter.refs, { adr: ["crate::checkout::pay"] });
+});
+
+// `lookup` did not fail on a record it could not read — it silently stopped
+// counting it, so `decision: none` could stand while a matching record existed.
+test("lookup and list name an unreadable record on stderr and keep their answer", (t) => {
+  const s = sandbox(t);
+  assert.equal(s.run(["new", "User login"]).status, 0);
+  writeFileSync(join(s.dir, "REQ-002-broken.md"), "---\nid: [\n---\n## Summary\n");
+
+  const listed = s.run(["list"]);
+  assert.equal(listed.status, 0, "an unreadable file does not change the exit code");
+  assert.match(listed.stdout, /^REQ-001\s+active\b/m, "the readable record is still listed");
+  assert.match(listed.stdout, /REQ-002-broken\.md\s+unreadable/);
+  assert.match(listed.stderr, /REQ-002-broken\.md/);
+
+  const lookup = s.run(["lookup", "user login"]);
+  assert.equal(lookup.status, 0);
+  assert.match(lookup.stderr, /REQ-002-broken\.md/);
+  assert.match(lookup.stdout, /decision: strong/);
+
+  // The answer's shape is unchanged by the warning.
+  const json = JSON.parse(s.run(["lookup", "user login", "--json"]).stdout);
+  assert.deepEqual(Object.keys(json), ["query", "project", "decision", "candidates"]);
+  assert.equal(json.decision, "strong");
+});
+
+// `relations.mjs` snapshots a hand-written delivery as `{ delivered_at: undefined }`
+// when the record never carried that field. The emitter skips undefined keys on
+// purpose, so the read-back check has to compare the shape the emitter preserves —
+// otherwise a legitimate `sync` is refused for a key that was never going to exist.
+test("a write that supersedes a delivery with no delivered_at still lands", (t) => {
+  const s = sandbox(t);
+  assert.equal(s.run(["new", "Login"]).status, 0);
+  const baseSha = "0123456789abcdef0123456789abcdef01234567";
+  const runDir = join(s.root, "wl", "myapp", "feat");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "state.json"), `${JSON.stringify({ project: "myapp", feature: "feat", baseSha, completion: null })}\n`);
+  assert.equal(s.run(["link", "myapp/feat", "REQ-001"]).status, 0);
+
+  // A record written by hand, or by an older tool: delivered, and with no
+  // delivered_at for the superseded snapshot to copy.
+  const file = join(s.dir, requirementFiles(s.dir)[0]);
+  const { frontmatter, body } = parseRecord(readFileSync(file, "utf8"));
+  const runs = frontmatter.runs.map((run) => ({ ...run, delivery: { state: "delivered", final_tip: baseSha } }));
+  writeFileSync(file, emitRecord({ ...frontmatter, runs }, body));
+
+  const synced = s.run(["sync", "myapp/feat"]);
+  assert.equal(synced.status, 0, synced.stderr);
+  assert.match(synced.stdout, /superseded/);
+
+  const after = parseRecord(readFileSync(file, "utf8")).frontmatter;
+  assert.equal(after.runs[0].delivery.state, "pending");
+  assert.equal(after.runs[0].delivery_history.length, 1);
+  assert.equal(after.runs[0].delivery_history[0].final_tip, baseSha);
+  assert.equal(typeof after.runs[0].delivery_history[0].superseded_at, "string");
+  assert.doesNotMatch(s.run(["list"]).stdout, /unreadable/);
 });
 
 test("show prints the requirement file itself, and an unknown number is an error", (t) => {

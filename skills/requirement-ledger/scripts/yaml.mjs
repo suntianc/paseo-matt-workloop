@@ -243,7 +243,7 @@ function emitMapping(object, indent, out) {
     if (raw === undefined) continue;
     if (Array.isArray(raw)) {
       if (!raw.length) out.push(`${pad}${key}: []`);
-      else if (raw.every(isScalar) && flowWidth(raw) <= 72) out.push(`${pad}${key}: [${raw.map(emitScalar).join(", ")}]`);
+      else if (raw.every(isScalar) && flowWidth(raw) <= 72) out.push(`${pad}${key}: [${raw.map(flowScalar).join(", ")}]`);
       else {
         out.push(`${pad}${key}:`);
         emitList(raw, indent + 2, out);
@@ -283,6 +283,9 @@ function emitList(list, indent, out) {
 
 const FLOW_UNSAFE = /[#,[\]{}&*!|>'"%@`]/;
 
+// A scalar on a `key: value` line: the block parser reads the whole rest of the
+// line, so a colon inside the text (`12:30`, `crate::checkout`) is not a separator
+// and needs no quoting.
 function emitScalar(value) {
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
@@ -301,6 +304,16 @@ function emitScalar(value) {
   return unsafe ? JSON.stringify(text) : text;
 }
 
+// A scalar inside `[a, b]` / `{k: v}`: the flow parser stops at any colon, so a
+// string it must read back whole is quoted for that too. Top-level values keep
+// their bare form — a timestamp reads back unquoted where it is written.
+function flowScalar(value) {
+  const text = emitScalar(value);
+  // `emitScalar` leaves a plain string bare; inside a flow collection a colon must
+  // be quoted as well, because `bare()` stops there.
+  return typeof value === "string" && text === value && value.includes(":") ? JSON.stringify(value) : text;
+}
+
 const isScalar = (value) => value === null || ["string", "number", "boolean"].includes(typeof value);
 const isMapping = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-const flowWidth = (list) => list.reduce((n, item) => n + emitScalar(item).length + 2, 0);
+const flowWidth = (list) => list.reduce((n, item) => n + flowScalar(item).length + 2, 0);

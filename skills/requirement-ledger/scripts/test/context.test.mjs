@@ -114,8 +114,9 @@ function sandbox(t) {
     writeFileSync(join(runDir(feature), "reviews", name), text);
   }
   function writeDoc(kind, ref, text) {
-    mkdirSync(join(repo, "docs", kind), { recursive: true });
-    writeFileSync(join(repo, "docs", kind, ref), text);
+    const path = join(repo, "docs", kind, ref);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
   }
 
   // A record written by hand: `refs`, `runs` and the prose are what this ticket
@@ -522,6 +523,48 @@ test("pitfalls are read only when asked for, and a dangling one is marked then",
   assert.match(text, /# 6 pitfalls/);
   assert.match(text, /deleted-rule  dangling/);
   assert.doesNotMatch(text, /PITFALL BODY/);
+});
+
+// `context` and `doctor` used to resolve refs by different rules: an ADR number was
+// dangling in `doctor`, and a pitfall cited by its heading was dangling here. One
+// resolver now answers both, so both cases must resolve in this command too.
+test("context resolves an ADR by number and a pitfall by heading, as doctor does", (t) => {
+  const s = sandbox(t);
+  s.writeDoc("adr", "0007-session-tokens.md", ADR_BODY);
+  s.writeDoc("pitfalls", "auth.md", "# Auth pitfalls\n\n## Auth cookie domain\n\n- **Trigger:** a cookie set on the API host\n");
+  s.writeRecord(1, { refs: { adr: ["0007"], pitfalls: ["auth-cookie-domain"] } });
+
+  const json = s.contextJson(["REQ-001", "--include", "pitfalls"]);
+  assert.deepEqual(json.adrs, [{ ref: "0007", path: join(s.repo, "docs", "adr", "0007-session-tokens.md"), status: "ok" }]);
+  assert.deepEqual(json.pitfalls, [{ ref: "auth-cookie-domain", path: join(s.repo, "docs", "pitfalls", "auth.md"), status: "ok" }]);
+});
+
+// An exact page name beats the prefix rule: `auth` is `auth.md` even when
+// `auth-cookie.md` sits beside it. With no exact page, `auth` means the unique
+// `auth-*.md`; several matches on either rule stay a question.
+test("an exact pitfall page name wins over a prefix sibling", (t) => {
+  const s = sandbox(t);
+  s.writeDoc("pitfalls", "topic/auth.md", PITFALL_BODY);
+  s.writeDoc("pitfalls", "topic/auth-cookie.md", PITFALL_BODY);
+  s.writeRecord(1, { refs: { pitfalls: ["auth"] } });
+
+  const [exact] = s.contextJson(["REQ-001", "--include", "pitfalls"]).pitfalls;
+  assert.equal(exact.status, "ok");
+  assert.equal(exact.path, join(s.repo, "docs", "pitfalls", "topic", "auth.md"));
+
+  s.writeDoc("pitfalls", "topic/session-tokens.md", PITFALL_BODY);
+  s.writeDoc("pitfalls", "topic/session-cookies.md", PITFALL_BODY);
+  s.writeRecord(2, { refs: { pitfalls: ["session"] } });
+  const [prefixed] = s.contextJson(["REQ-002", "--include", "pitfalls"]).pitfalls;
+  assert.equal(prefixed.status, "dangling");
+  assert.match(prefixed.reason, /several files match: session-cookies\.md, session-tokens\.md/);
+
+  // Two pages that are exactly the name are ambiguous as well, and the report
+  // tells them apart by their paths rather than printing the name twice.
+  s.writeDoc("pitfalls", "other/auth.md", PITFALL_BODY);
+  const [duplicate] = s.contextJson(["REQ-001", "--include", "pitfalls"]).pitfalls;
+  assert.equal(duplicate.status, "dangling");
+  assert.match(duplicate.reason, /several files match: other\/auth\.md, topic\/auth\.md/);
 });
 
 // ------------------------------------------------------------- AC5: CodeGraph hints

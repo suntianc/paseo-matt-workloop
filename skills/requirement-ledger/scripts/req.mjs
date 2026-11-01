@@ -185,6 +185,9 @@ function cmdList({ flags }) {
   for (const requirement of requirements) {
     if (requirement.error) {
       say(`${requirement.file.padEnd(width)}  unreadable  ${requirement.error}`);
+      // The listing still shows the file where it is, and the caveat names it on
+      // stderr so a reader of stdout alone is not the only one told.
+      warn(`${requirement.file} cannot be read (${requirement.error})`);
       continue;
     }
     const { id, status, updated_at: updatedAt, title } = requirement.frontmatter;
@@ -222,7 +225,12 @@ function cmdLookup({ positional, flags }) {
     lead: numberFlag(flags, "lead", LOOKUP_DEFAULTS.lead, (n) => n >= 1, "of at least 1"),
     limit: numberFlag(flags, "limit", LOOKUP_DEFAULTS.limit, (n) => Number.isInteger(n) && n > 0, "a whole number above 0"),
   };
-  const answer = lookupRequirements({ project: at.project, dir: at.dir, query, ...options });
+  const answer = lookupRequirements({
+    project: at.project, dir: at.dir, query, ...options,
+    // Readable on stdout, a caveat on stderr: the report keeps its shape and its
+    // exit code, and says which record it could not search.
+    onUnreadable: (requirement) => warn(`${requirement.file} cannot be read (${requirement.error}); its terms are not searched`),
+  });
   if (flags.json) {
     process.stdout.write(`${JSON.stringify(answer, null, 2)}\n`);
     return;

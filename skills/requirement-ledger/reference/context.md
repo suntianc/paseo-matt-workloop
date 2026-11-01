@@ -15,6 +15,8 @@ node scripts/req.mjs context <REQ> [--json] [--include <sections>]
 5. CodeGraph hints from `refs.codegraph` — `symbols` and `paths`. Whether to run a query is the agent's call.
 6. Retrospectives, pitfalls and superseded ADRs, when the question reaches back that far.
 
+A reference resolves the same way here and in `doctor`: an explicit or repository-relative path; `<dir>/<name>` or `<dir>/<name>.md` under the kind's directory (`docs/adr/` or `docs/pitfalls/`); or a unique `<name>-*.md` there, tried only when no page is exactly `<name>.md`; or, for a pitfall, the slug of a heading on one of its pages. An exact page name wins over a prefix sibling, and several files matching on the same rule is a question, reported as dangling rather than answered by choosing.
+
 ## On-demand sections
 
 The reply stops at step 5 unless `--include` names what to add: `retro` appends each run's retrospective pointer, `pitfalls` the pitfalls the record cites, and `history` its prose changes, Quick outcomes and any delivery a reopened run superseded. Names are comma- or space-separated and may come in any order; an unknown name is refused rather than ignored, so a typo cannot silently drop a section.

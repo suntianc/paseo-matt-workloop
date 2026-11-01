@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { bodyDigest, emitRecord, fileNameFor, idFor, newRecord, parseRecord, RecordError } from "./record.mjs";
 import { nowIso, sleepSync } from "./time.mjs";
@@ -406,17 +407,50 @@ export function createRequirement({ project, repoPath, repoRemote = null, title,
     const record = newRecord({ id: idFor(n), title, aliases, repoPath, repoRemote, now });
     const body = `## Summary\n\n## History\n\n## Notes\n`;
     const file = fileNameFor(record.id, title);
-    writeFileAtomic(requirementPath(dir, file), emitRecord(record, body), io);
+    writeFileAtomic(requirementPath(dir, file), emitVerified(record, body), io);
     const audit = appendLog(dir, auditEntry({ dir, op: "new", record, body, file, now }));
     return { id: record.id, dir, file, path: requirementPath(dir, file), record, body, audit };
   });
+}
+
+// Defence in depth: a record the ledger writes must be one it can read back. The
+// emitted text is parsed and compared before anything is replaced, so an emitter
+// bug fails the write — with the old file, the meta and the log untouched — instead
+// of leaving a record whose next `list` calls it unreadable.
+function emitVerified(record, body) {
+  const text = emitRecord(record, body);
+  const refuse = (why) => new RecordError(`refusing to write ${record.id}: ${why}`, "unwritable-record");
+  let parsed;
+  try {
+    parsed = parseRecord(text).frontmatter;
+  } catch (error) {
+    throw refuse(`the emitted frontmatter does not parse back (${error.message})`);
+  }
+  if (!isDeepStrictEqual(parsed, emittedShape(record))) {
+    throw refuse("the emitted frontmatter does not read back as the same record");
+  }
+  return text;
+}
+
+// What `emitRecord` is meant to preserve: `emitMapping` skips a key whose value is
+// `undefined`, so the round trip is the record minus those keys. A list keeps its
+// length — the emitter writes an `undefined` item as text rather than dropping it,
+// so an array member is compared as it stands.
+function emittedShape(value) {
+  if (Array.isArray(value)) return value.map(emittedShape);
+  if (value !== null && typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) if (item !== undefined) out[key] = emittedShape(item);
+    return out;
+  }
+  return value;
 }
 
 // Any later CLI write to a record: bump the CLI-managed revision, stamp the time,
 // replace the file, then record the write. The caller holds the lock.
 export function saveRequirement({ dir, file, record, body, op, now = nowIso(), io = realIO, extra = {}, previous = null }) {
   const next = { ...record, rev: record.rev + 1, updated_at: now };
-  writeFileAtomic(requirementPath(dir, file), emitRecord(next, body), io);
+  writeFileAtomic(requirementPath(dir, file), emitVerified(next, body), io);
   const audit = appendLog(dir, auditEntry({ dir, op, record: next, body, file, now, extra: { ...(previous ? { previous } : {}), ...extra } }));
   return { record: next, audit };
 }

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { winQuote } from "../workloop.mjs";
 import { fileURLToPath } from "node:url";
@@ -153,3 +153,63 @@ test("records timeout and owned-process identity as failure", (t) => {
   assert.match(receipt.checks[0].token, /^wl-check-/);
   assert.match(readFileSync(receipt.checks[0].log, "utf8"), /started/);
 });
+
+// Reached through a symlinked skills directory (or macOS /tmp, which is
+// /private/tmp) the entry path and the module URL spell the same file two ways.
+// Comparing them without resolving symlinks made the command do nothing and exit 0:
+// a false pass with no receipt.
+test("runs through a symlinked skills directory instead of passing silently", (t) => {
+  const f = fixture(t);
+  const linked = join(f.root, "linked-skills");
+  try {
+    symlinkSync(dirname(dirname(dirname(CLI))), linked, "dir");
+  } catch (error) {
+    t.skip(`symlinks are unavailable: ${error.code}`);
+    return;
+  }
+  const entry = join(linked, "paseo-workloop", "scripts", "validate.mjs");
+  const r = spawnSync(process.execPath, [entry, "--repo", f.repo, "--output", f.output, "--check", node("process.exit(3)")], { encoding: "utf8" });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stdout, /failed:/);
+  const receipt = f.receipt();
+  assert.equal(receipt.complete, true);
+  assert.equal(receipt.ok, false);
+  assert.equal(receipt.checks[0].result.exitCode, 3);
+});
+
+// A submodule is a gitlink (mode 160000): `ls-files` lists its path, but the path
+// is a directory belonging to another repository, so reading it as a tracked file
+// threw. The recorded commit is already part of the index digest.
+test("snapshots a repository with a submodule, and still detects superproject drift", (t) => {
+  const addSubmodule = (f) => {
+    const dependency = join(f.root, "dependency");
+    assert.equal(spawnSync("git", ["init", "-q", "-b", "main", dependency], { encoding: "utf8" }).status, 0);
+    const depGit = (...args) => {
+      const r = spawnSync("git", ["-C", dependency, ...args], { encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    depGit("config", "user.email", "test@example.invalid");
+    depGit("config", "user.name", "Test");
+    writeFileSync(join(dependency, "dep.txt"), "dependency\n");
+    depGit("add", ".");
+    depGit("commit", "-qm", "dependency");
+    f.git("-c", "protocol.file.allow=always", "submodule", "add", dependency, "vendor/dependency");
+    f.git("commit", "-qm", "add submodule");
+  };
+
+  const clean = fixture(t);
+  addSubmodule(clean);
+  const passed = clean.run("--check", node("process.exit(0)"));
+  assert.equal(passed.status, 0, passed.stdout + passed.stderr);
+  const receipt = clean.receipt();
+  assert.equal(receipt.checks[0].before.contents, receipt.checks[0].after.contents);
+  assert.equal(receipt.checks[0].before.index, receipt.checks[0].after.index);
+
+  const drifted = fixture(t);
+  addSubmodule(drifted);
+  const changed = drifted.run("--check", node("require('fs').writeFileSync('source.txt','changed')"));
+  assert.equal(changed.status, 1, changed.stdout + changed.stderr);
+  assert.equal(drifted.receipt().checks[0].drift.includes("contents"), true, "a tracked file changing is drift");
+});
+
