@@ -3,7 +3,7 @@
 // and for a health check across runs. It reads run directories and Git and never
 // writes either; `all --save` writes only its own report under
 // $WORKLOOP_ROOT/.workloop-audit/. Nothing in the workloop depends on it.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
@@ -38,6 +38,10 @@ const REPORT_FINDINGS = /^## Findings\b/m;
 const NEAR = 3;
 // Finished runs since the last saved cross-run check that make one worth suggesting.
 const CHECK_AFTER = 3;
+// A run directory kept this large after archive is holding something it should not.
+const SIZE_MB = 200;
+const MB = 1024 * 1024;
+const inMb = (bytes) => Math.round((bytes / MB) * 10) / 10;
 
 const short = (sha) => String(sha ?? "").slice(0, 8);
 const readText = (path) => (path && existsSync(path) ? readFileSync(path, "utf8") : null);
@@ -291,6 +295,54 @@ async function ledgerAudit(project, feature, s) {
   };
 }
 
+// ------------------------------------------------- how much a run keeps
+//
+// A run directory is meant to hold records, not code. Sizes are read here rather
+// than from `du`, so the audit runs on Windows too: symbolic links are not followed
+// (a link into a repository must not pull the repository in), and anything that
+// disappears or cannot be read is skipped instead of failing the run.
+function bytesIn(dir, { skip = null } = {}) {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return 0; }
+  let total = 0;
+  for (const entry of entries) {
+    if (skip && entry.name === skip) continue;
+    const path = join(dir, entry.name);
+    let stat;
+    try { stat = lstatSync(path); } catch { continue; }
+    if (stat.isSymbolicLink()) continue;
+    if (stat.isDirectory()) total += bytesIn(path);
+    else if (stat.isFile()) total += stat.size;
+  }
+  return total;
+}
+
+// The biggest `count` direct children of `dir`, by the bytes under each.
+function largestIn(dir, count) {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  const items = [];
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    let stat;
+    try { stat = lstatSync(path); } catch { continue; }
+    if (stat.isSymbolicLink()) continue;
+    const bytes = stat.isDirectory() ? bytesIn(path) : stat.size;
+    items.push({ path: `${basename(dir)}/${entry.name}`, bytes });
+  }
+  return items.sort((a, b) => b.bytes - a.bytes).slice(0, count).map(({ path, bytes }) => ({ path, mb: inMb(bytes) }));
+}
+
+// What the run directory holds: everything but `scratch/` (which archive deletes),
+// how much `scratch/` still holds, and the largest things under `evidence/`.
+function diskFacts(dir) {
+  return {
+    mb: inMb(bytesIn(dir, { skip: "scratch" })),
+    scratchMb: inMb(bytesIn(join(dir, "scratch"))),
+    largest: largestIn(join(dir, "evidence"), 3),
+  };
+}
+
 export async function auditRun(project, feature) {
   const dir = join(workloopRoot(), project, feature);
   const s = readJson(join(dir, "state.json"));
@@ -312,7 +364,7 @@ export async function auditRun(project, feature) {
     suggestions: tickets.reduce((n, t) => n + reviewsOf(s.tasks[t.id]).reduce((m, r) => m + outOfScope(readText(r.path) ?? "").length, 0), 0),
   };
   const ledger = await ledgerAudit(project, feature, s);
-  const result = { ...facts, ledger, tickets, final };
+  const result = { ...facts, ledger, disk: diskFacts(dir), tickets, final };
   result.flags = flagsFor(result);
   return result;
 }
@@ -351,6 +403,19 @@ export function flagsFor(run) {
   if (run.final.rounds > 1) add("final-rounds", "info", "run", `${run.final.rounds} final review rounds`);
   if (run.waivers.override) add("override", "info", "run", `${run.waivers.override} candidate(s) integrated over an in-boundary blocking finding`);
   if (run.localRework) add("local-rework", "info", "run", `the orchestrator reworked ${run.localRework} candidate(s) itself`);
+  // An archived run should keep its records and little else. `run.disk` is absent
+  // from a hand-built run, which simply has nothing measured to flag.
+  if (run.disk && run.archived) {
+    if (run.disk.mb > SIZE_MB) {
+      const largest = (run.disk.largest || []).map((e) => `${e.path} ${e.mb} MB`).join(", ");
+      add("size", "check", "run", `archived, but the run directory still holds ${run.disk.mb} MB`
+        + (largest ? `; largest under evidence/: ${largest}` : "")
+        + ": other commits' trees, installs, caches and test artifacts no report cites belong in the scratch folder the brief names, which `archive` deletes");
+    }
+    if (run.disk.scratchMb > 0) {
+      add("size", "check", "run", `scratch/ still holds ${run.disk.scratchMb} MB after archive: archive could not delete it; delete it by hand`);
+    }
+  }
   const signals = run.extraRounds + run.waivers.override + run.waivers.rework + run.waivers.final + flags.filter((f) => f.level === "check").length;
   if (run.finished && run.retro !== "done" && signals) {
     add("retro", "check", "run", `retro is ${run.retro}, though the run has ${signals} signal(s) above worth assessing`);
@@ -411,6 +476,7 @@ function printRun(run) {
   const minutes = run.checkMinutes.map((c) => c.minutes);
   if (minutes.length) lines.push(`integration checks: ${minutes.length}, longest ${Math.max(...minutes)} min, total ${Math.round(minutes.reduce((a, b) => a + b, 0))} min`);
   if (run.ledger) lines.push(`ledger: ${!run.ledger.checked ? `not checked (${run.ledger.reason})` : run.ledger.linked ? `${run.ledger.requirement}, finish ${run.ledger.syncedFinish ? "synced" : "NOT synced"}, archive ${run.ledger.syncedArchive ? "synced" : "NOT synced"}` : "this run is not linked to a requirement"}`);
+  if (run.disk) lines.push(`disk: ${run.disk.mb} MB (scratch ${run.disk.scratchMb} MB)`);
   const t = totals([run]);
   if (t.reReviewFindings) {
     lines.push("", `re-review blocking findings: ${t.reReviewFindings} — ${CATEGORIES.filter((c) => t.byCategory[c]).map((c) => `${c} ${t.byCategory[c]}`).join(", ")}`);

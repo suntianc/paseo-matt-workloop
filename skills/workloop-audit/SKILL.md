@@ -21,7 +21,7 @@ The [retro](../retro/SKILL.md) skill starts a run's assessment with `AUDIT run <
   - `outside-repo` — it names only files outside the repository, such as run-directory evidence, so where it lands cannot be checked.
   - `unplaced` / `unverifiable` — its location names no file, or a commit is gone.
   - `out` — outside the review boundary: a suggestion, which gates nothing.
-- **Flags.** A `check` flag is a contradiction to explain: a `late` finding, a rework report without its `## Findings` section, a retro skipped despite signals, a ledger that missed a `sync`. An `info` flag is context: a finding blocked again, a new finding where the previous round already blocked, rounds past the cap, an override, the orchestrator reworking a candidate itself.
+- **Flags.** A `check` flag is a contradiction to explain: a `late` finding, a rework report without its `## Findings` section, a retro skipped despite signals, a ledger that missed a `sync`, a run directory still over 200 MB after archive, or a `scratch/` that archive did not delete. An `info` flag is context: a finding blocked again, a new finding where the previous round already blocked, rounds past the cap, an override, the orchestrator reworking a candidate itself.
 
 Answer each `check` flag in the retro with its cause or why it was expected. A flag is a question, not a verdict: open the report it names before concluding.
 

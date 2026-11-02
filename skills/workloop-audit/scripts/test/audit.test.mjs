@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { test } from "node:test";
@@ -205,6 +205,23 @@ function snapshot(dir) {
   return files;
 }
 
+// Every byte under a directory, the way the audit measures it: links are not
+// followed and a link counts for nothing.
+function bytes(dir) {
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) continue;
+    if (stat.isDirectory()) total += bytes(path);
+    else if (stat.isFile()) total += stat.size;
+  }
+  return total;
+}
+
+const MB = 1024 * 1024;
+const mb = (n) => Math.round((n / MB) * 10) / 10;
+
 test("placesIn: paths with lines, ranges, continuations, absolute worktree paths and Chinese separators", () => {
   assert.deepEqual(placesIn("src/x.ts:12"), [{ file: "src/x.ts", from: 12, to: 12 }]);
   assert.deepEqual(placesIn("src/x.ts:12-20"), [{ file: "src/x.ts", from: 12, to: 20 }]);
@@ -361,6 +378,56 @@ test("auditRun: facts, categories and the flags one run raises", async () => {
   assert.deepEqual(flagsFor(run), run.flags);
 });
 
+test("auditRun: measures the run directory without scratch/ and the largest evidence items", async () => {
+  const sb = sandbox();
+  const { dir } = smallRun(sb);
+  mkdirSync(join(dir, "evidence", "a"), { recursive: true });
+  mkdirSync(join(dir, "evidence", "b"), { recursive: true });
+  mkdirSync(join(dir, "scratch", "brief"), { recursive: true });
+  writeFileSync(join(dir, "evidence", "a", "tree.bin"), Buffer.alloc(3000, 1));
+  writeFileSync(join(dir, "evidence", "b", "log.bin"), Buffer.alloc(1000, 2));
+  writeFileSync(join(dir, "scratch", "brief", "build.bin"), Buffer.alloc(2000, 3));
+
+  const run = await auditRun("repo", "feat");
+  // The largest direct children of evidence/, by the bytes under each, biggest first.
+  assert.deepEqual(run.disk.largest, [
+    { path: "evidence/a", mb: mb(3000) },
+    { path: "evidence/b", mb: mb(1000) },
+  ]);
+  assert.equal(run.disk.scratchMb, mb(2000));
+  // The run directory's size leaves scratch/ out: a scratch that archive will delete
+  // must not keep the run looking large.
+  assert.equal(run.disk.mb, mb(bytes(dir) - 2000));
+  // Nothing measured is flagged while the run is not archived.
+  assert.deepEqual(run.flags.filter((f) => f.kind === "size"), []);
+
+  // A link is not followed: a run that links a repository in does not weigh it.
+  try {
+    symlinkSync(sb.repo, join(dir, "evidence", "repo-link"), "dir");
+    const linked = await auditRun("repo", "feat");
+    assert.deepEqual(linked.disk.largest.map((e) => e.path), ["evidence/a", "evidence/b"]);
+    assert.equal(linked.disk.mb, run.disk.mb);
+  } catch {
+    // A platform that refuses symlinks still has the measurements above.
+  }
+
+  // At the one-decimal precision the audit prints, a scratch that matters is still
+  // excluded from `mb` and reported in `scratchMb`.
+  writeFileSync(join(dir, "scratch", "brief", "deps.bin"), Buffer.alloc(400 * 1024, 4));
+  const after = await auditRun("repo", "feat");
+  assert.equal(after.disk.mb, mb(bytes(dir) - 400 * 1024 - 2000));
+  assert.equal(after.disk.scratchMb, mb(400 * 1024 + 2000));
+});
+
+test("auditRun: a run with no evidence/ or scratch/ measures zero", async () => {
+  const sb = sandbox();
+  smallRun(sb);
+  const run = await auditRun("repo", "feat");
+  assert.deepEqual(run.disk.largest, []);
+  assert.equal(run.disk.scratchMb, 0);
+  assert.equal(run.disk.mb, mb(bytes(join(sb.wl, "repo", "feat"))));
+});
+
 test("auditRun: a carried finding is untrusted when its brief predates the numbering rule", async () => {
   const sb = sandbox();
   const { dir } = smallRun(sb);
@@ -383,6 +450,7 @@ test("main run: prints the counts, the categories, the flags and the JSON of one
   assert.match(out, /^tickets 2 · reviews 3 · most rework rounds 1 · past the cap 1 · final rounds 2$/m);
   assert.match(out, /^waivers rework 0 \/ override 0 \/ final 0 · integrate failures 1 · conflicts 1 · retries 1 · takeovers 1 · retro none$/m);
   assert.match(out, /^integration checks: 1, longest 12 min, total 12 min$/m);
+  assert.match(out, /^disk: [\d.]+ MB \(scratch [\d.]+ MB\)$/m);
   assert.match(out, /^re-review blocking findings: 3 — carried 2, late 1$/m);
   assert.match(out, /^flags:$/m);
   assert.match(out, /^- \[check\] narrowing · #01 review 2 L1:/m);
@@ -468,6 +536,43 @@ test("flagsFor: a linked ledger behind the run's finish or archive is a check fl
   // Synced on both ends, or no ledger at all: nothing to flag.
   assert.deepEqual(flagsFor(run({ checked: true, linked: true, requirement: "REQ-001", syncedFinish: true, syncedArchive: true })), []);
   assert.deepEqual(flagsFor(run(null)), []);
+});
+
+// What `flagsFor` must do with the disk facts `auditRun` measures: an archived run
+// still holding too much, or a scratch/ that archive could not delete.
+test("flagsFor: an archived run over 200 MB, or with scratch/ left, is a check flag", () => {
+  const disk = (over) => ({ mb: 0, scratchMb: 0, largest: [], ...over });
+  const run = (over) => ({
+    run: "repo/feat", tickets: [], final: { reReviews: [], rounds: 0 }, extraRounds: 0,
+    waivers: { rework: 0, override: 0, final: 0 }, localRework: 0,
+    finished: "2024-01-05T00:00:00.000Z", archived: "2024-01-06T00:00:00.000Z", retro: "done",
+    ...over,
+  });
+
+  const big = flagsFor(run({ disk: disk({ mb: 512.5, largest: [{ path: "evidence/node_modules", mb: 500 }, { path: "evidence/repo", mb: 12.4 }] }) }));
+  assert.equal(big.length, 1, JSON.stringify(big));
+  assert.deepEqual({ kind: big[0].kind, level: big[0].level, where: big[0].where }, { kind: "size", level: "check", where: "run" });
+  // How much is kept, and the largest of what evidence/ holds.
+  assert.match(big[0].text, /still holds 512\.5 MB; largest under evidence\/: evidence\/node_modules 500 MB, evidence\/repo 12\.4 MB/);
+  assert.match(big[0].text, /belong in the scratch folder the brief names, which `archive` deletes/);
+
+  // Not archived: the run may still be working, and evidence or a worktree may be expected.
+  assert.deepEqual(flagsFor(run({ disk: disk({ mb: 512.5 }), archived: null })), []);
+  // 200 MB is the threshold, not over it.
+  assert.deepEqual(flagsFor(run({ disk: disk({ mb: 200 }) })), []);
+  // `archive` deletes scratch/, so anything left there is a deletion that failed.
+  const scratch = flagsFor(run({ disk: disk({ mb: 1.5, scratchMb: 2.5 }) }));
+  assert.equal(scratch.length, 1, JSON.stringify(scratch));
+  assert.match(scratch[0].text, /^scratch\/ still holds 2\.5 MB after archive: archive could not delete it; delete it by hand$/);
+
+  // Both at once are two flags, and a hand-built run with no disk facts raises none.
+  assert.equal(flagsFor(run({ disk: disk({ mb: 300, scratchMb: 1 }) })).filter((f) => f.kind === "size").length, 2);
+  assert.deepEqual(flagsFor(run({ disk: undefined })), []);
+
+  // A size flag counts as a signal for the retro, like every other check flag.
+  const retro = flagsFor(run({ disk: disk({ mb: 300 }), retro: "none" }));
+  assert.deepEqual(retro.map((f) => f.kind), ["size", "retro"]);
+  assert.match(retro[1].text, /retro is none, though the run has 1 signal\(s\)/);
 });
 
 // BUG (reported, not fixed): audit.mjs reads `r.record.runs`, but store.mjs's
