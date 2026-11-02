@@ -20,6 +20,7 @@
 - **调整：** 在维护台账的项目中，`paseo-workloop` 在澄清需求前先执行检索，`WL init` 之后用 `req link` 记录归属，`WL finish` 之后固定执行 `req sync`。
 - **调整：** 收紧了 `paseo-workloop` 与 `requirement-ledger` 面向编排者的参考文档，行为不变：同一规则的重复表述只保留一处，拒绝信息已写明修改办法的句子更短，带日期的 Paseo 兼容性观察记录移到 `paseo-workloop/reference/paseo-compat-history.md`，并修正了五处文档错误（第二条主需求、归档后应做的 `sync`、记录复核决定、检查阶段中的 `config`、远程 daemon 上的启动设置）。
 - **调整：** 返修 `send`（`changes_requested` 审查之后，命令行和 `--prepare` 方式相同）会在发给执行者的消息中、页脚 `---` 线之后附上审查报告路径、被审候选版本的完整和短 SHA 及 `git diff <candidateSha>..HEAD`，并给出与复审一致的返修方法：先复现每条发现，再修其根因，最后按复审的方式检查本次改动。回放 17 次已往 run 发现，复审提出的阻塞性发现中有 71% 是修复不彻底，或改坏了自己这次改动中的其他部分。`--merge-tip` 的消息、`pass` 之后的消息，以及任务运行中的消息都不含这些内容。
+- **调整：** 两份 README 和两张流程图都画出了有边界的循环：返修方法及其两轮上限、full run 终审的返修循环及其两个返修周期、run 旁边可选的需求台账，以及安装审计时 retro 从体检开始。流程图仍是可编辑的 Excalidraw 场景，导出时内嵌 Virgil 字体。
 
 ### 升级说明
 
@@ -33,11 +34,13 @@ npx --yes github:suntianc/paseo-matt-workloop#v3.2.0 install
 
 ### 验证
 
-- 全部 376 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景；经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它，以及它的 `--help`；终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试；返修消息的测试（附加的返修方法、`--prepare` 消息的 prompt，以及不带该方法的消息）；以及审计的测试（发现落点、复审分类、标记、台账检查与只读行为）。
+- 全部 377 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景；经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它，以及它的 `--help`；终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试；返修消息的测试（附加的返修方法、`--prepare` 消息的 prompt，以及不带该方法的消息）；以及审计的测试（发现落点、复审分类、标记、台账检查与只读行为）。
 - `npm run check:links` 在 66 个 Markdown 文件中解析了所有相对链接和 `skill://` 引用。
 - v3.2.0 tarball（132 个文件）经 npx 安装到一个路径含空格、经 macOS `/tmp` 符号链接访问的临时目录，安装了 21 个技能；安装后的链接检查（67 个 Markdown 文件）通过，`workloop.mjs`、`validate.mjs`、`tidy-docs.mjs`、`req.mjs` 和 `audit.mjs` 均打印出用法。本地的 `Agent.md`、`AGENTS.md` 以及台账的 ticket 草稿不在制品中。
 - `audit.mjs all` 在维护者机器上约一秒读完 17 次 run 且未写入任何内容，它对 `browser-mcp-lab/task-isolation` 的分类与人工核对的回放一致。
-- 本次发布未在本地运行 Windows 和 Linux。
+- 发布提交在 Ubuntu 和 Windows、Node 20 和 22 上的 CI 全部通过。Windows 起初在 CI 中挂起：另一个进程读取记录时，Windows 拒绝了台账的写入，异常在测试能够让读取进程停止之前抛出。台账写入现在会像 Workloop 自己的写入一样，对这类拒绝重试约一秒；测试中假定路径分隔符为 `/` 的匹配已修正，台账和审计测试启动的每个子进程都有两分钟上限。
+- 两张 SVG 均由 Excalidraw 0.18 从更新后的场景导出，并在浏览器中渲染检查；所有节点、箭头和文字互不遮挡。
+- 本次发布未在本地运行 Windows 和 Linux，由 CI 覆盖。
 
 ## [3.1.0] - 2026-10-28
 

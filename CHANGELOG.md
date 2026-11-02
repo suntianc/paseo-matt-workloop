@@ -20,6 +20,7 @@ Projects that evolve over many runs can now keep a requirement ledger: one recor
 - **Changed:** In a project with a ledger, `paseo-workloop` looks up the request before clarifying it, records the owner with `req link` after `WL init`, and runs `req sync` as a fixed step after `WL finish`.
 - **Changed:** The Main-facing references of `paseo-workloop` and `requirement-ledger` are tightened with no behaviour change: a rule stated in several places is stated once, a sentence whose refusal message already names the fix is shorter, the dated Paseo compatibility history moved to `paseo-workloop/reference/paseo-compat-history.md`, and five documentation errors are corrected (a second primary requirement, the `sync` owed after archive, the recorded review decision, `config` in a live versus an interrupted check phase, and launch settings on a remote daemon).
 - **Changed:** A rework `send` — after a `changes_requested` review, by CLI or `--prepare` alike — appends the review's path, the reviewed candidate's full and short SHA and `git diff <candidateSha>..HEAD` to the executor's message after the footer's `---` line, together with a method that mirrors the re-reviewer's: reproduce each finding first, fix its cause, then check the change since the review as the re-review will. A replay of 17 past runs found that 71% of the blocking findings re-reviews raised were a fix that fell short or broke something in its own change. A `--merge-tip` send, a send after a `pass` and a send while the task is running carry none of it.
+- **Changed:** Both READMEs and both workflow diagrams show the bounded loops: the rework method and its two-round cap, a full run's final review loop with its two repair cycles, the optional requirement ledger beside the run, and retro starting from the audit when it is installed. The diagrams remain editable Excalidraw scenes exported with the Virgil font embedded.
 
 ### Upgrade
 
@@ -33,11 +34,13 @@ For an existing managed installation, run `npx --yes github:suntianc/paseo-matt-
 
 ### Verification
 
-- All 376 local tests pass (`npm test`), including the ledger's E1–E11 acceptance scenarios; `validate.mjs` reached through a symlinked directory, run in a repository with a submodule, and its `--help`; the final-review tests for a narrowed later round, the repair-cycle cap and `--extra-round`; the rework-message tests for the appended method, a prepared send's prompt and the sends that carry none; and the audit's tests for where a finding lands, how a re-review is classified, its flags, its ledger check and its read-only behaviour.
+- All 377 local tests pass (`npm test`), including the ledger's E1–E11 acceptance scenarios; `validate.mjs` reached through a symlinked directory, run in a repository with a submodule, and its `--help`; the final-review tests for a narrowed later round, the repair-cycle cap and `--extra-round`; the rework-message tests for the appended method, a prepared send's prompt and the sends that carry none; and the audit's tests for where a finding lands, how a re-review is classified, its flags, its ledger check and its read-only behaviour.
 - `npm run check:links` resolves every relative link and `skill://` reference across 66 markdown files.
 - The v3.2.0 tarball (132 files) installed 21 skills through npx into a temporary path containing spaces and reached through the macOS `/tmp` symlink; the installed link check (67 markdown files) passed, and `workloop.mjs`, `validate.mjs`, `tidy-docs.mjs`, `req.mjs` and `audit.mjs` printed their usage. The local `Agent.md` and `AGENTS.md` and the ledger's ticket drafts are not in the artifact.
 - `audit.mjs all` read the 17 runs on the maintainer's machine in about a second without writing to them, and its classification of `browser-mcp-lab/task-isolation` matched a hand-verified replay of that run.
-- Windows and Linux were not run locally for this release.
+- CI passes on Ubuntu and Windows with Node 20 and 22 on the release commit. Windows first hung there: a ledger write that Windows refused while another process read the record threw before a test could stop that reader. Ledger writes now retry such a refusal for about a second, as Workloop's own writes do; test patterns that assumed `/` in paths were corrected, and every child process the ledger and audit tests start has a two-minute ceiling.
+- Both SVGs were exported from their updated scenes by Excalidraw 0.18 and rendered in a browser; every node, arrow and label is clear of the others.
+- Windows and Linux were not run locally for this release; CI covers both.
 
 ## [3.1.0] - 2026-10-28
 
