@@ -36,7 +36,7 @@ npx --yes github:suntianc/paseo-matt-workloop#v3.2.0 install
 
 - 全部 377 个本地测试通过（`npm test`），包括台账的 E1–E11 验收场景；经符号链接目录调用 `validate.mjs`、在带 submodule 的仓库中运行它，以及它的 `--help`；终审后续轮次收窄、返修周期上限和 `--extra-round` 的测试；返修消息的测试（附加的返修方法、`--prepare` 消息的 prompt，以及不带该方法的消息）；以及审计的测试（发现落点、复审分类、标记、台账检查与只读行为）。
 - `npm run check:links` 在 66 个 Markdown 文件中解析了所有相对链接和 `skill://` 引用。
-- v3.2.0 tarball（132 个文件）经 npx 安装到一个路径含空格、经 macOS `/tmp` 符号链接访问的临时目录，安装了 21 个技能；安装后的链接检查（67 个 Markdown 文件）通过，`workloop.mjs`、`validate.mjs`、`tidy-docs.mjs`、`req.mjs` 和 `audit.mjs` 均打印出用法。本地的 `Agent.md`、`AGENTS.md` 以及台账的 ticket 草稿不在制品中。
+- v3.2.0 tarball（133 个文件）经 npx 安装到一个路径含空格、经 macOS `/tmp` 符号链接访问的临时目录，安装了 21 个技能；安装后的链接检查（67 个 Markdown 文件）通过，`workloop.mjs`、`validate.mjs`、`tidy-docs.mjs`、`req.mjs` 和 `audit.mjs` 均打印出用法。本地的 `Agent.md`、`AGENTS.md` 以及台账的 ticket 草稿不在制品中。
 - `audit.mjs all` 在维护者机器上约一秒读完 17 次 run 且未写入任何内容，它对 `browser-mcp-lab/task-isolation` 的分类与人工核对的回放一致。
 - 发布提交在 Ubuntu 和 Windows、Node 20 和 22 上的 CI 全部通过。Windows 起初在 CI 中挂起：另一个进程读取记录时，Windows 拒绝了台账的写入，异常在测试能够让读取进程停止之前抛出。台账写入现在会像 Workloop 自己的写入一样，对这类拒绝重试约一秒；测试中假定路径分隔符为 `/` 的匹配已修正，台账和审计测试启动的每个子进程都有两分钟上限。
 - 两张 SVG 均由 Excalidraw 0.18 从更新后的场景导出，并在浏览器中渲染检查；所有节点、箭头和文字互不遮挡。
