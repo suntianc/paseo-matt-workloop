@@ -412,9 +412,11 @@ export function sanitiseRemote(url) {
 // `repo_path` may name a symlinked or not-yet-created path: the comparison is on
 // the canonical form when both resolve, and on the normalised text otherwise.
 export function sameRepoPath(a, b) {
+  // The native realpath also expands a Windows short name (`RUNNER~1`) to the long
+  // one Git prints, so one directory never reads as two.
   const canonical = (path) => {
     try {
-      return realpathSync(path);
+      return realpathSync.native(path);
     } catch {
       return resolve(path);
     }

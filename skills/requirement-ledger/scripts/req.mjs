@@ -119,7 +119,7 @@ function parse(argv, command) {
 function locate(flags) {
   const cwd = process.cwd();
   const head = spawnSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-  const repo = head.status === 0 && head.stdout.trim() ? realpathSync(head.stdout.trim()) : null;
+  const repo = head.status === 0 && head.stdout.trim() ? realpathSync.native(head.stdout.trim()) : null;
   const project = flags.project ?? (repo ? projectKey(repo) : null);
   if (!project) throw new UsageError("not inside a git repository: the ledger keys a project by its repository's directory name (or pass --project <slug>)");
   // The key becomes a directory name, so it takes Workloop's feature-name rule.
@@ -409,7 +409,7 @@ function repoWarnings(at, record, run) {
   const repo = run.state.repo;
   if (typeof recorded !== "string" || typeof repo !== "string" || !recorded || !repo) return [];
   try {
-    if (realpathSync(recorded) === realpathSync(repo)) return [];
+    if (realpathSync.native(recorded) === realpathSync.native(repo)) return [];
   } catch {
     return [];
   }

@@ -38,7 +38,7 @@ npx --yes github:suntianc/paseo-matt-workloop#v3.2.0 install
 - `npm run check:links` 在 66 个 Markdown 文件中解析了所有相对链接和 `skill://` 引用。
 - v3.2.0 tarball（133 个文件）经 npx 安装到一个路径含空格、经 macOS `/tmp` 符号链接访问的临时目录，安装了 21 个技能；安装后的链接检查（67 个 Markdown 文件）通过，`workloop.mjs`、`validate.mjs`、`tidy-docs.mjs`、`req.mjs` 和 `audit.mjs` 均打印出用法。本地的 `Agent.md`、`AGENTS.md` 以及台账的 ticket 草稿不在制品中。
 - `audit.mjs all` 在维护者机器上约一秒读完 17 次 run 且未写入任何内容，它对 `browser-mcp-lab/task-isolation` 的分类与人工核对的回放一致。
-- 发布提交在 Ubuntu 和 Windows、Node 20 和 22 上的 CI 全部通过。Windows 起初在 CI 中挂起：另一个进程读取记录时，Windows 拒绝了台账的写入，异常在测试能够让读取进程停止之前抛出。台账写入现在会像 Workloop 自己的写入一样，对这类拒绝重试约一秒；测试中假定路径分隔符为 `/` 的匹配已修正，台账和审计测试启动的每个子进程都有两分钟上限。
+- 发布提交在 Ubuntu 和 Windows、Node 20 和 22 上的 CI 全部通过。Windows 起初在 CI 中挂起：另一个进程读取记录时，Windows 拒绝了台账的写入，异常在测试能够让读取进程停止之前抛出。台账写入现在会像 Workloop 自己的写入一样，对这类拒绝重试约一秒。台账和 `validate.mjs` 现在按原生 realpath 比较路径，Windows 短文件名（`RUNNER~1`）与 Git 输出的长路径视为同一目录：此前 `new` 会拒绝自己的台账，`validate.mjs` 也识别不出位于 worktree 内的输出目录。测试中假定路径分隔符为 `/` 的匹配已修正，台账和审计测试启动的每个子进程都有两分钟上限。
 - 两张 SVG 均由 Excalidraw 0.18 从更新后的场景导出，并在浏览器中渲染检查；所有节点、箭头和文字互不遮挡。
 - 本次发布未在本地运行 Windows 和 Linux，由 CI 覆盖。
 

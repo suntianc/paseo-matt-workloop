@@ -24,7 +24,8 @@ const NOW = "2026-11-01T10:00:00+08:00";
 // Every test works in a throwaway repo plus a throwaway WORKLOOP_ROOT, so the
 // real ~/.workloop is never touched.
 function sandbox(t) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "req-test-")));
+  // Native, like the CLI's own paths: on Windows it expands the temp dir's short name.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "req-test-")));
   const repo = join(root, "myapp");
   mkdirSync(repo, { recursive: true });
   const git = (...args) => spawnBounded("git", ["-C", repo, ...args], { encoding: "utf8" });

@@ -86,8 +86,10 @@ export async function main(argv) {
   if (!opts.output) throw new Error("--output needs a new directory outside the worktree (its parent must exist)");
   const minutes = Number(opts.timeout ?? 30);
   if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 1440) throw new Error("--timeout takes minutes > 0 and <= 1440");
-  const repo = realpathSync(git(resolve(opts.repo ?? "."), "rev-parse", "--show-toplevel").trim());
-  const output = join(realpathSync(dirname(resolve(opts.output))), basename(resolve(opts.output)));
+  // Native realpaths on both sides: on Windows they expand a short name (`RUNNER~1`)
+  // the way Git's path already is, so an output inside the worktree is recognised.
+  const repo = realpathSync.native(git(resolve(opts.repo ?? "."), "rev-parse", "--show-toplevel").trim());
+  const output = join(realpathSync.native(dirname(resolve(opts.output))), basename(resolve(opts.output)));
   if (inside(repo, output)) throw new Error("--output must be outside the worktree");
   const entries = [
     ...(opts.preflight ?? []).map((cmd) => ({ cmd, phase: "preflight" })),

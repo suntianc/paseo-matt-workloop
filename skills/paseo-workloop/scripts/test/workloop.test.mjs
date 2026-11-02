@@ -1247,7 +1247,7 @@ test("rework: the send message carries the method after the divider, with the re
   const sb = reworkable();
   const { candidateSha: sha, review } = sb.state().tasks["01"];
   sb.ok("send", "01", "--text", "Fix S1 and S3, per the review.");
-  assertReworkMethod(sentMessage(sb), sha, review.path);
+  assertReworkMethod(sentMessage(sb), sha, slash(review.path));
 });
 
 test("rework: a prepared send's prompt carries the same method", () => {
@@ -1255,7 +1255,7 @@ test("rework: a prepared send's prompt carries the same method", () => {
   const { candidateSha: sha, review } = sb.state().tasks["01"];
   const action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1 and S3, per the review."));
   assert.equal(action.tool, "send_agent_prompt");
-  assertReworkMethod(action.arguments.prompt, sha, review.path);
+  assertReworkMethod(action.arguments.prompt, sha, slash(review.path));
 });
 
 test("rework: a merge-tip send, a send after a pass and a send while running carry no method", () => {

@@ -327,7 +327,7 @@ test("refs that no longer resolve are reported and left exactly as written", (t)
   rmSync(join(s.repo, "docs", "pitfalls", "auth.md"));
   const both = s.run(["doctor"]);
   assert.match(both.stdout, /refs\.adr cites "0007-session-tokens"/);
-  assert.match(both.stdout, /refs\.pitfalls cites "auth-cookie-domain", which no longer resolves in .*docs\/pitfalls/);
+  assert.match(both.stdout, /refs\.pitfalls cites "auth-cookie-domain", which no longer resolves in .*docs[\\/]pitfalls/);
   assert.deepEqual(s.record(1).refs, refs);
 });
 
