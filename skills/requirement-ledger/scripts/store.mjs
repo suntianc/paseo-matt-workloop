@@ -45,6 +45,21 @@ export const requirementPath = (dir, file) => join(dir, file);
 // rename and the directory after it, so the rename cannot reach the disk ahead of
 // the data it points at. (A directory cannot be fsynced on Windows; atomicity
 // there rests on the rename alone.)
+// Windows refuses for a moment to replace a file another process has open — a
+// reader, an antivirus scan, the indexer. Retry briefly, as the workloop's own
+// atomic write does; any other error, or one that outlasts the retries, stands.
+function renameReplacing(io, from, to) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      io.renameSync(from, to);
+      return;
+    } catch (error) {
+      if (attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(error.code)) throw error;
+      sleepSync(50);
+    }
+  }
+}
+
 export function writeFileAtomic(path, text, io = realIO) {
   const dir = dirname(path);
   const tmp = join(dir, `.${basename(path)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
@@ -59,7 +74,7 @@ export function writeFileAtomic(path, text, io = realIO) {
   }
   io.closeSync(fd);
   try {
-    io.renameSync(tmp, path);
+    renameReplacing(io, tmp, path);
   } catch (error) {
     try { io.unlinkSync(tmp); } catch {}
     throw error;

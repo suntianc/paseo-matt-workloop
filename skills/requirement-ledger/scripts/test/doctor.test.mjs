@@ -199,9 +199,9 @@ test("doctor names every inconsistency of the eight checks in one pass", (t) => 
   assert.match(output, /REQ-004-broken\.md: the frontmatter/);
   assert.match(output, /lastIssued 1 is below the highest requirement number 5 \(repaired to 5\)/);
   assert.match(output, /REQ-005: the audit log has no line/);
-  assert.match(output, /REQ-001: run myapp\/gone has no state\.json at .*myapp\/gone\/state\.json/);
+  assert.match(output, /REQ-001: run myapp\/gone has no state\.json at .*myapp[\\/]gone[\\/]state\.json/);
   assert.match(output, /myapp\/twin is the primary of REQ-001 and REQ-002/);
-  assert.match(output, /REQ-003: repo_path .*elsewhere\/myapp is not the repository this ledger is read from/);
+  assert.match(output, /REQ-003: repo_path .*elsewhere[\\/]myapp is not the repository this ledger is read from/);
   assert.match(output, /REQ-003: repo_remote github\.com\/other\/myapp differs from this repository's github\.com\/owner\/myapp/);
   assert.match(output, /REQ-001: refs\.adr cites "9999-gone"/);
   assert.match(output, /REQ-001: refs\.pitfalls cites "no-such-pitfall"/);
@@ -283,7 +283,7 @@ test("a changed repository is reported by its sanitised remote, never its creden
   // A record bound to another checkout is a separate mismatch, and also only a report.
   s.editRecord(2, (frontmatter) => ({ ...frontmatter, repo_path: join(s.root, "elsewhere", "myapp") }));
   const moved = s.run(["doctor"]);
-  assert.match(moved.stdout, /REQ-002: repo_path .*elsewhere\/myapp is not the repository this ledger is read from/);
+  assert.match(moved.stdout, /REQ-002: repo_path .*elsewhere[\\/]myapp is not the repository this ledger is read from/);
   assert.match(moved.stdout, /reported, not rewritten/);
 });
 
@@ -319,7 +319,7 @@ test("refs that no longer resolve are reported and left exactly as written", (t)
   rmSync(join(s.repo, "docs", "adr", "0007-session-tokens.md"));
   const report = s.run(["doctor"]);
   assert.equal(report.status, 1, report.stdout + report.stderr);
-  assert.match(report.stdout, /REQ-001: refs\.adr cites "0007-session-tokens", which no longer resolves in .*docs\/adr/);
+  assert.match(report.stdout, /REQ-001: refs\.adr cites "0007-session-tokens", which no longer resolves in .*docs[\\/]adr/);
   assert.doesNotMatch(report.stdout, /refs\.pitfalls/, "a reference that still resolves is not reported");
   assert.deepEqual(s.record(1).refs, refs, "the reference is neither deleted nor replaced");
 

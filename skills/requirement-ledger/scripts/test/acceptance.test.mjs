@@ -378,7 +378,7 @@ test("E7: a moved state.json, a duplicated id and a missing audit line are repor
   const first = s.run(["doctor"]);
   assert.equal(first.status, 1, "findings still need a human");
   const report = `${first.stdout}${first.stderr}`;
-  assert.match(report, /has no state\.json at .*feat\/state\.json/);
+  assert.match(report, /has no state\.json at .*feat[\\/]state\.json/);
   assert.match(report, /duplicate id REQ-003/);
   assert.match(report, /REQ-002: the audit log has no line for this file/);
   assert.doesNotMatch(report, /\[repaired\]/, "a plain doctor repairs nothing");

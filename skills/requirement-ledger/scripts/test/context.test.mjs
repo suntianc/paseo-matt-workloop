@@ -486,7 +486,7 @@ test("a broken ADR reference is reported as dangling: not deleted, not replaced"
   assert.equal(json.adrs[0].path, join(s.repo, "docs", "adr", "0007-session-tokens.md"));
   assert.equal(json.adrs[1].status, "dangling");
   assert.equal(json.adrs[1].path, null, "no path is invented for a reference that does not resolve");
-  assert.match(json.adrs[1].reason, /docs\/adr/);
+  assert.match(json.adrs[1].reason, /docs[\\/]adr/);
 
   const text = s.context(["REQ-001"]);
   assert.match(text, /0099-retired-sessions  dangling/);
@@ -564,7 +564,7 @@ test("an exact pitfall page name wins over a prefix sibling", (t) => {
   s.writeDoc("pitfalls", "other/auth.md", PITFALL_BODY);
   const [duplicate] = s.contextJson(["REQ-001", "--include", "pitfalls"]).pitfalls;
   assert.equal(duplicate.status, "dangling");
-  assert.match(duplicate.reason, /several files match: other\/auth\.md, topic\/auth\.md/);
+  assert.match(duplicate.reason, /several files match: other[\\/]auth\.md, topic[\\/]auth\.md/);
 });
 
 // ------------------------------------------------------------- AC5: CodeGraph hints

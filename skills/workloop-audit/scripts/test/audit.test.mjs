@@ -411,7 +411,7 @@ test("main all: --save writes one report, the next all compares, and run reminds
   const saved = await capture(() => main(["all", "--save"]));
   assert.match(saved, /^3 runs · 3 re-review blocking findings:/m);
   assert.match(saved, /^flags: narrowing 1, not-fixed 2, rework-method 1, past-cap 1, final-rounds 1, retro 1$/m);
-  assert.match(saved, new RegExp(`saved under ${sb.wl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.workloop-audit`));
+  assert.match(saved, new RegExp(`saved under ${sb.wl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\\\/]\\.workloop-audit`));
   const dir = join(sb.wl, ".workloop-audit");
   const files = readdirSync(dir);
   assert.deepEqual(files.filter((f) => f.endsWith(".json")).length, 1);

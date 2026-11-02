@@ -197,6 +197,34 @@ test("replacing a file fsyncs the temp copy before the rename and the directory 
   assert.deepEqual(readdirSync(root), ["_meta.json"], "no temp file is left behind");
 });
 
+test("a rename Windows refuses for a moment is retried; another error is not", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "req-atomic-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const target = join(root, "_meta.json");
+  writeFileSync(target, "{}\n");
+  const refusing = (codes) => {
+    const { io, events } = recordingIO();
+    const rename = io.renameSync;
+    io.renameSync = (from, to) => {
+      const code = codes.shift();
+      if (code) { events.push({ call: "renameSync", from, to, code }); throw Object.assign(new Error(code), { code }); }
+      return rename(from, to);
+    };
+    return { io, events };
+  };
+  // A file held open by a reader or a scanner: refused twice, then replaced.
+  const held = refusing(["EPERM", "EBUSY"]);
+  writeFileAtomic(target, '{"lastIssued":1}\n', held.io);
+  assert.equal(held.events.filter((e) => e.call === "renameSync").length, 3);
+  assert.equal(readFileSync(target, "utf8"), '{"lastIssued":1}\n');
+  // Anything else is not waited out: the original stays and the temp file goes.
+  const other = refusing(["EXDEV"]);
+  assert.throws(() => writeFileAtomic(target, '{"lastIssued":2}\n', other.io), { code: "EXDEV" });
+  assert.equal(other.events.filter((e) => e.call === "renameSync").length, 1);
+  assert.equal(readFileSync(target, "utf8"), '{"lastIssued":1}\n');
+  assert.deepEqual(readdirSync(root), ["_meta.json"]);
+});
+
 test("a failed rename leaves the original file whole and no temp file behind", (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "req-atomic-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -223,7 +251,9 @@ test("a reader never sees a partly written file while it is being replaced", asy
     let reads = 0, bad = 0, missing = 0, sample = null;
     while (!existsSync(stop)) {
       let text;
-      try { text = readFileSync(target, "utf8"); } catch { missing += 1; continue; }
+      // Windows may refuse a read for a moment while the file is replaced; that is
+      // not an absent file, so only ENOENT counts as missing.
+      try { text = readFileSync(target, "utf8"); } catch (error) { if (error.code === "ENOENT") missing += 1; continue; }
       reads += 1;
       if (!/^(a+|b+)$/.test(text)) { bad += 1; if (!sample) sample = text.slice(0, 40); }
     }
@@ -235,8 +265,14 @@ test("a reader never sees a partly written file while it is being replaced", asy
     child.stdout.on("data", (chunk) => { out += chunk; });
     child.on("close", () => resolve(JSON.parse(out || "{}")));
   });
-  for (let i = 0; i < 300; i += 1) writeFileAtomic(target, (i % 2 ? "b" : "a").repeat(size));
-  writeFileSync(stop, "");
+  // The reader stops only when it sees the stop file, so write it whatever happens:
+  // a writer that throws must not leave the reader, and this test file, running.
+  try {
+    for (let i = 0; i < 300; i += 1) writeFileAtomic(target, (i % 2 ? "b" : "a").repeat(size));
+  } finally {
+    writeFileSync(stop, "");
+    setTimeout(() => child.kill(), 30_000).unref();
+  }
   const result = await done;
   assert.ok(result.reads > 0, "the reader observed the file");
   assert.equal(result.bad, 0, `every read saw a whole file (first bad: ${result.sample})`);
