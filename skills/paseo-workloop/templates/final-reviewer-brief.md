@@ -31,7 +31,7 @@ These are given here. Don't ask for them.
 {{reReview}}{{boundary}}
 ## Rules
 
-- **Read-only.** Don't edit, commit, check out, stash or reset anything. Before running commands, read `{{skillsRoot}}/paseo-workloop/reference/validation.md` and use its guard with the expected tip and branch above. Store receipts outside the worktree. A drift failure preserves the changed tree for the orchestrator; do not repair it yourself. Preserve every required regression occurrence unless the run explicitly permits sharing results.
+- **Read-only.** Don't edit, commit, check out, stash or reset anything. Before running commands, read `{{skillsRoot}}/paseo-workloop/reference/validation.md` and use its guard with the expected tip and branch above. Write receipts and the files your findings cite under `{{evidenceDir}}`, which stays with the run. Put what you can regenerate under `{{scratchDir}}`, which archive deletes: another commit's tree (`git archive <sha> | tar -x -C <folder>`), installs, caches, test artifacts you don't cite. A drift failure preserves the changed tree for the orchestrator; do not repair it yourself. Preserve every required regression occurrence unless the run explicitly permits sharing results.
 - Never ask the user anything and never wait for input.
 - Review against this run: its spec, tickets, mapping and ledger. Older specs, plans or notes in the repo are history, not requirements.
 

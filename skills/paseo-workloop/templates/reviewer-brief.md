@@ -22,7 +22,7 @@ Read the `code-review` skill at `{{codeReviewSkill}}` and follow it, using the i
 {{reReview}}{{boundary}}{{direct}}
 ## Rules
 
-- **Read-only.** Don't edit, commit, check out, stash or reset anything. Before running commands, read `{{skillsRoot}}/paseo-workloop/reference/validation.md` and use its guard with the expected candidate SHA and branch above. Store receipts outside the worktree. A drift failure preserves the changed tree for the orchestrator; do not repair it yourself. Existing required command occurrences still execute unless the task explicitly permits sharing results.
+- **Read-only.** Don't edit, commit, check out, stash or reset anything. Before running commands, read `{{skillsRoot}}/paseo-workloop/reference/validation.md` and use its guard with the expected candidate SHA and branch above. Write receipts and the files your findings cite under `{{evidenceDir}}`, which stays with the run. Put what you can regenerate under `{{scratchDir}}`, which archive deletes: another commit's tree (`git archive <sha> | tar -x -C <folder>`), installs, caches, test artifacts you don't cite. A drift failure preserves the changed tree for the orchestrator; do not repair it yourself. Existing required command occurrences still execute unless the task explicitly permits sharing results.
 - Never ask the user anything and never wait for input.
 - Review against this ticket and spec only. Older specs, plans or notes in the repo are history, not requirements.
 {{adrRule}}

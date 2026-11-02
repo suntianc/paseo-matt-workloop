@@ -13,6 +13,7 @@ You are the executor for one ticket in a Paseo workloop run. This brief is your 
 - Branch: `{{branch}}`
 - Base: `{{baseSha}}`, the tip of `{{integrationBranch}}` when you were dispatched
 - Work only inside this worktree. Leave other worktrees, other branches and the main checkout alone.
+- Outside it, write only to two run folders: `{{evidenceDir}}` for output your report cites, which stays with the run, and `{{scratchDir}}` for what you can regenerate, which archive deletes: another commit's tree (`git archive <sha> | tar -x -C <folder>`), installs, caches.
 - Expected starting HEAD: `{{startSha}}`. If HEAD differs, reconcile with the orchestrator before editing. A recovery handoff may include uncommitted work to continue.
 {{setup}}
 

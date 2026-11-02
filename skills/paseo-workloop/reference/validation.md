@@ -4,7 +4,7 @@ Use this when a validator or reviewer must measure committed work without changi
 
 ## Guard the candidate
 
-Run commands through `../scripts/validate.mjs` with the expected full SHA and branch from the brief. Choose a new evidence directory outside the worktree; its parent must already exist. For example, with paths and commands supplied by the task:
+Run commands through `../scripts/validate.mjs` with the expected full SHA and branch from the brief. Choose a new evidence directory inside the evidence folder your brief names (without a brief, the run's `evidence/`); its parent must already exist. For example, with paths and commands supplied by the task:
 
 ```sh
 node <skill>/scripts/validate.mjs \

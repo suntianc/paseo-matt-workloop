@@ -10,8 +10,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
-  appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync,
-  readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
+  appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync,
+  readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -419,6 +419,27 @@ function task(s, id) {
 }
 const reportPath = (dir, t) => join(dir, "reports", `${t.id}-${t.attempt}.md`);
 const briefPath = (dir, t) => join(dir, "briefs", `${t.id}-${t.attempt}.md`);
+
+// Each brief names two folders for its agent: `evidence/<brief>` for what its report
+// cites, kept with the run, and `scratch/<brief>` for what it can regenerate (another
+// commit's tree, installs, caches), which archive deletes. Without a scratch folder,
+// reviewers comparing commits left whole trees in evidence: gigabytes per run.
+function workFolders(dir, brief, make = true) {
+  const name = basename(brief, ".md");
+  const folders = { evidenceDir: join(dir, "evidence", name), scratchDir: join(dir, "scratch", name) };
+  if (make) for (const f of Object.values(folders)) mkdirSync(f, { recursive: true });
+  return { evidenceDir: pathArg(folders.evidenceDir), scratchDir: pathArg(folders.scratchDir) };
+}
+
+function dirBytes(path) {
+  let st;
+  try { st = lstatSync(path); } catch { return 0; }
+  if (!st.isDirectory()) return st.size;
+  let names = [];
+  try { names = readdirSync(path); } catch { return 0; }
+  return names.reduce((n, name) => n + dirBytes(join(path, name)), 0);
+}
+const megabytes = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
 
 // First "Key: value" line of a report, tolerant of markdown emphasis.
 export function header(text, key) {
@@ -1031,7 +1052,9 @@ function cmdFinalReview(dir, s, opts) {
       criteria: Object.fromEntries(tasksOf(s).map((t) => [t.id, confirmedIds(t)])),
     },
   };
+  const brief = join(dir, "briefs", `final-${round}-${short(tip)}.md`);
   const vars = {
+    ...workFolders(dir, brief),
     feature: s.feature, round, tip, tipShort: short(tip), baseSha: s.baseSha, worktree: wt, branch,
     specPath: pathArg(s.spec), ticketsDir: pathArg(s.tickets), mappingPath: pathArg(mappingPath(dir)),
     reviewPath: pathArg(path), checks: list(s.config.checks), regressionSet: regressionText(s),
@@ -1044,7 +1067,6 @@ function cmdFinalReview(dir, s, opts) {
     })}` : "",
     notes: notesFrom(opts),
   };
-  const brief = join(dir, "briefs", `final-${round}-${short(tip)}.md`);
   writeFileSync(brief, render("final-reviewer-brief.md", vars));
   const labels = { workloop: s.runKey, task: "final", attempt: `r${round}`, role: "reviewer" };
   const existing = listAgents(labels, { all: true });
@@ -2196,6 +2218,7 @@ function cmdDispatch(dir, s, id, opts) {
   const branch = t.reuseWorktree ? t.branch : `wl-${s.feature}-${t.id}-${t.attempt}`;
 
   const vars = {
+    ...workFolders(dir, briefPath(dir, t), false),
     task: t.id, title: t.title, attempt: t.attempt, ticketPath: pathArg(t.file), specPath: pathArg(isDirect(s) ? t.file : s.spec),
     branch, baseSha: tip, startSha: tip, worktree: "(set at dispatch)", reportPath: pathArg(reportPath(dir, t)),
     skillsRoot: pathArg(SKILLS_ROOT), implementSkill: skillPath("implement"), tddSkill: skillPath("tdd"),
@@ -2230,6 +2253,7 @@ function cmdDispatch(dir, s, id, opts) {
   Object.assign(t, { status: "running", branch, worktree: wt, baseSha: tip, promptedAt: now() });
   vars.worktree = pathArg(wt);
   vars.startSha = h;
+  workFolders(dir, briefPath(dir, t));
   writeFileSync(briefPath(dir, t), render("executor-brief.md", vars));
   record(dir, s, "worktree", { task: t.id, attempt: t.attempt, branch, worktree: wt, sha: tip });
 
@@ -2333,7 +2357,9 @@ function cmdReview(dir, s, id, opts) {
   const bounded = numberedCriteria(s);
   const ids = bounded ? confirmedIds(t) : null;
   const parts = briefParts(bounded);
+  const brief = join(dir, "briefs", `${t.id}-review-${short(t.candidateSha)}.md`);
   const vars = {
+    ...workFolders(dir, brief),
     task: t.id, title: t.title, worktree: pathArg(t.worktree), branch: t.branch, candidateSha: t.candidateSha, candidateShort: short(t.candidateSha),
     fixedPoint: t.fixedPoint, ticketPath: pathArg(t.file), specPath: pathArg(isDirect(s) ? t.file : s.spec), executorReport: pathArg(reportPath(dir, t)),
     reviewPath: pathArg(path), skillsRoot: pathArg(SKILLS_ROOT), codeReviewSkill: skillPath("code-review"), notes: notesFrom(opts),
@@ -2344,7 +2370,6 @@ function cmdReview(dir, s, id, opts) {
     boundary: parts.boundary, adrRule: parts.adrRule, findingsExample: parts.findingsExample,
     outOfScopeExample: parts.outOfScopeExample, verdictRule: parts.verdictRule,
   };
-  const brief = join(dir, "briefs", `${t.id}-review-${short(t.candidateSha)}.md`);
   writeFileSync(brief, render("reviewer-brief.md", vars));
   const labels = { workloop: s.runKey, task: t.id, attempt: t.attempt, role: "reviewer", candidate: short(t.candidateSha) };
   const startedAt = now();
@@ -2854,12 +2879,20 @@ function cmdArchive(dir, s) {
     // From the integration worktree, so `-d` checks against the branch that contains the tip.
     if (branchExists(s.repo, r.branch)) gitTry(s.integration.worktree, "branch", "-d", r.branch); // -d refuses unmerged work
   }
+  // Before the prune, so a worktree an agent added under scratch is unregistered too.
+  // A failed delete costs disk, not evidence: reported, not blocking.
+  const scratch = join(dir, "scratch");
+  let freed = existsSync(scratch) ? dirBytes(scratch) : 0;
+  try { rmSync(scratch, { recursive: true, force: true, maxRetries: 5 }); } catch (e) {
+    freed = 0;
+    say(`could not delete ${scratch} (${e.code || e.message}); delete it yourself`);
+  }
   gitTry(s.repo, "worktree", "prune");
   if (existsSync(s.integration.worktree)) git(s.repo, "worktree", "remove", s.integration.worktree);
   s.finishedAt = now();
   s.retainedWorktrees = [...retained.values()];
-  record(dir, s, "archive", { retainedWorktrees: s.retainedWorktrees });
-  say(`archived. ${s.integration.branch} stays at ${short(s.integration.tip)}; evidence and retro remain in ${dir}`);
+  record(dir, s, "archive", { retainedWorktrees: s.retainedWorktrees, scratchFreed: freed });
+  say(`archived. ${s.integration.branch} stays at ${short(s.integration.tip)}; evidence and retro remain in ${dir} (${megabytes(dirBytes(dir))}${freed ? `, after deleting ${megabytes(freed)} of scratch` : ""})`);
   if (retained.size) say(`unmerged or dirty work retained for your decision:\n${[...retained.values()].map((a) => `  ${a.worktree} (${a.branch})`).join("\n")}`);
 }
 

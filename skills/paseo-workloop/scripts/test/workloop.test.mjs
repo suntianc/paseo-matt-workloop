@@ -2719,6 +2719,33 @@ test("finish needs every ticket closed and a passing final review of the current
   sb.no(/finished/, "dispatch", "02");
 });
 
+test("each brief names its agent's evidence and scratch folders; archive deletes scratch and keeps evidence", () => {
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n" } });
+  sb.complete("01");
+  const t = sb.state().tasks["01"];
+  sb.finalReview();
+  const final = readdirSync(join(sb.runDir, "briefs")).find((f) => f.startsWith("final-")).slice(0, -3);
+  const names = [`01-${t.attempt}`, `01-review-${t.candidateSha.slice(0, 8)}`, final];
+  for (const name of names) {
+    const brief = readFileSync(join(sb.runDir, "briefs", `${name}.md`), "utf8");
+    for (const kind of ["evidence", "scratch"]) {
+      const folder = join(sb.runDir, kind, name);
+      assert.ok(brief.includes(`\`${slash(folder)}\``), `${name} names its ${kind} folder`);
+      assert.ok(existsSync(folder), `${folder} exists before the agent starts`);
+    }
+  }
+  // Another commit's tree is what a reviewer can regenerate; its receipt is evidence.
+  mkdirSync(join(sb.runDir, "scratch", names[1], "base"), { recursive: true });
+  writeFileSync(join(sb.runDir, "scratch", names[1], "base", "big.bin"), Buffer.alloc(1048576));
+  writeFileSync(join(sb.runDir, "evidence", names[1], "receipt.json"), "{}\n");
+  sb.ok("finish");
+  sb.ok("retro", "--skip", "--reason", "No recurring problem in this fixture");
+  assert.match(sb.ok("archive"), /after deleting 1\.0 MB of scratch/);
+  assert.equal(existsSync(join(sb.runDir, "scratch")), false);
+  assert.ok(existsSync(join(sb.runDir, "evidence", names[1], "receipt.json")));
+  assert.equal(sb.events("archive")[0].scratchFreed, 1048576);
+});
+
 test("review refuses files outside the ticket's Scope, renames and deletions included; a widened Scope applies at once", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n\n**Scope:** `f01.txt`, docs/\n" } });
   sb.ok("dispatch", "01");
