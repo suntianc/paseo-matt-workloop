@@ -2,6 +2,35 @@
 
 [English](CHANGELOG.md) · **简体中文**
 
+## [3.2.1] - 2026-11-02
+
+### 摘要
+
+运行目录不再随每次审查持续膨胀。对比不同提交的 reviewer 和执行者会把整棵代码树解包到 run 的 `evidence/` 中，而 `archive` 会一直保留它们：在维护者机器上，一个项目的 run 占用 5.05 GB，其中 4.06 GB 是这类副本。现在每份简报都会指定一个 scratch 文件夹，用来存放该 Agent 可以重新生成的内容，`archive` 会删除它；`workloop-audit` 会标记归档后仍超过 200 MB 的 run。
+
+### 变更
+
+- **修复：** reviewer 在自己的 worktree 中是只读的，因此要在 base 或上一版候选上运行检查时，只能把那个提交的代码树解包到别处，而简报只要求把 receipt 放在 worktree 之外。这些代码树连同依赖安装和缓存都进入了 run 的 `evidence/`，`archive` 又会保留整个运行目录。现在 `dispatch`、`review` 和 `final-review --prepare` 会在运行目录中创建 `evidence/<简报名>` 和 `scratch/<简报名>`，并在简报中写明两者：receipt 和报告引用的内容放 evidence，随 run 保留；其他提交的代码树（`git archive <sha> | tar -x -C <文件夹>`）、依赖安装、缓存和报告没有引用的测试产物放 scratch。`archive` 在清理 worktree 登记之前删除 `scratch/`，因此 Agent 在其中添加的 worktree 也会被注销，并报告运行目录的大小和释放的空间；删除未能完成时只提示，不阻塞归档。[验证参考](skills/paseo-workloop/reference/validation.md)和两份 README 也做了相同说明。
+- **新增：** `workloop-audit` 测量每个运行目录（不跟随符号链接），并输出 `disk: <n> MB (scratch <n> MB)`。新的 `size` 检查标记会指出归档后仍超过 200 MB 的 run（附 `evidence/` 下最大的三项），或 `archive` 未删除的 `scratch/`。
+
+### 升级说明
+
+无需迁移。进行中的 run 继续运行：更新后写出的简报会写明两个文件夹，`archive` 只在存在 `scratch/` 时删除它。已归档的 run 不受影响；其 `evidence/` 中已有的代码树需要手动删除，`audit.mjs all` 会列出超过 200 MB 的 run。需要 Node.js 20+、npm 和 Git。
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.2.1 install
+```
+
+已有托管安装使用同一目标目录执行 `npx --yes github:suntianc/paseo-matt-workloop#v3.2.1 update`；`update` 拉取当前 `main`，固定安装器 tag 不会固定更新内容。项目安装在命令末尾添加 `--target <项目 skills 目录>`。
+
+### 验证
+
+- 全部 381 个本地测试通过（`npm test`），包括：一个 run 的执行者、reviewer 和终审 reviewer 简报所写的文件夹在 Agent 启动前已经存在，其 `archive` 删除了 1 MB 的 scratch 并保留了旁边的 receipt；以及审计的测试（测量 run 时排除 scratch、不跟随符号链接，200 MB 阈值，归档后残留的 scratch，以及没有测量数据的 run）。
+- `npm run check:links` 在 66 个 Markdown 文件中解析了所有相对链接和 `skill://` 引用。
+- v3.2.1 tarball（133 个文件）经 npx 安装到一个路径含空格、经 macOS `/tmp` 符号链接访问的临时目录，安装了 21 个技能；安装后的链接检查（67 个 Markdown 文件）通过，安装后的简报写明了两个文件夹，`workloop.mjs`、`validate.mjs`、`tidy-docs.mjs`、`req.mjs` 和 `audit.mjs` 均打印出用法。本地的 `Agent.md` 和 `AGENTS.md` 不在制品中。
+- 安装后的 `audit.mjs all` 在两秒内读完维护者机器上的 17 次 run，并标记了一个：一个归档后仍保留 486 MB 的 run，主要是 Playwright trace。
+- 发布提交在 Ubuntu 和 Windows、Node 20 和 22 上的 CI 全部通过；本次发布未在本地运行 Windows 和 Linux。
+
 ## [3.2.0] - 2026-11-01
 
 ### 摘要
@@ -190,3 +219,5 @@ npx --yes github:suntianc/paseo-matt-workloop#main update
 [3.1.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.1.0
 
 [3.2.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.0
+
+[3.2.1]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.1

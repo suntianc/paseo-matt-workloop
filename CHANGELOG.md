@@ -2,6 +2,35 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
+## [3.2.1] - 2026-11-02
+
+### Summary
+
+Run directories stop growing with every review. Reviewers and executors that compared commits extracted whole trees of them into the run's `evidence/`, where `archive` kept them: on the maintainer's machine one project's runs held 5.05 GB, 4.06 GB of it such copies. Each brief now names a scratch folder for what its agent can regenerate, `archive` deletes it, and `workloop-audit` flags an archived run that still keeps more than 200 MB.
+
+### Changes
+
+- **Fixed:** A reviewer is read-only in its worktree, so to run a check on the base or a previous candidate it extracted that commit's tree elsewhere, and the brief said only to keep receipts outside the worktree. The trees, with their dependency installs and caches, went into the run's `evidence/`, and `archive` kept the whole run directory. `dispatch`, `review` and `final-review --prepare` now create `evidence/<brief>` and `scratch/<brief>` in the run directory and name both in the brief: receipts and what a report cites go to evidence, which stays with the run; another commit's tree (`git archive <sha> | tar -x -C <folder>`), installs, caches and test artifacts no report cites go to scratch. `archive` deletes `scratch/` before it prunes worktrees, so a worktree an agent added there is unregistered too, and reports the run directory's size and what it freed; a delete it cannot finish is reported and does not block the archive. [Validation](skills/paseo-workloop/reference/validation.md) and both READMEs say the same.
+- **Added:** `workloop-audit` measures each run directory without following symbolic links and prints `disk: <n> MB (scratch <n> MB)`. A `size` check flag names an archived run that keeps more than 200 MB, with the three largest entries under `evidence/`, or a `scratch/` that `archive` did not delete.
+
+### Upgrade
+
+No migration is needed. Runs in progress continue: briefs written after updating name the two folders, and `archive` deletes a `scratch/` only where one exists. Archived runs are not touched; trees already in their `evidence/` stay until removed by hand, and `audit.mjs all` lists the runs that keep more than 200 MB. Requires Node.js 20+, npm and Git.
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.2.1 install
+```
+
+For an existing managed installation, run `npx --yes github:suntianc/paseo-matt-workloop#v3.2.1 update` with the same target. `update` fetches current `main`; pinning the installer tag does not pin the update payload. For a project installation, append `--target <project skills directory>`.
+
+### Verification
+
+- All 381 local tests pass (`npm test`), including a run whose executor, reviewer and final-reviewer briefs name folders that exist before the agent starts, and whose `archive` deletes 1 MB of scratch and keeps the receipt beside it; and the audit's tests for measuring a run (scratch excluded, symbolic links not followed), the 200 MB threshold, a scratch left after archive and a run with no measurement.
+- `npm run check:links` resolves every relative link and `skill://` reference across 66 markdown files.
+- The v3.2.1 tarball (133 files) installed 21 skills through npx into a temporary path containing spaces and reached through the macOS `/tmp` symlink; the installed link check (67 markdown files) passed, the installed briefs name both folders, and `workloop.mjs`, `validate.mjs`, `tidy-docs.mjs`, `req.mjs` and `audit.mjs` printed their usage. The local `Agent.md` and `AGENTS.md` are not in the artifact.
+- The installed `audit.mjs all` read the maintainer's 17 runs in under two seconds and flagged one: an archived run that keeps 486 MB, mostly Playwright traces.
+- CI passes on Ubuntu and Windows with Node 20 and 22 on the release commit; Windows and Linux were not run locally.
+
 ## [3.2.0] - 2026-11-01
 
 ### Summary
@@ -190,3 +219,5 @@ A fixed installer tag pins `install`; `update` always fetches current `main`. Ru
 [3.1.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.1.0
 
 [3.2.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.0
+
+[3.2.1]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.1
