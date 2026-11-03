@@ -402,10 +402,15 @@ export function sanitiseRemote(url) {
   let text = String(url ?? "").trim();
   if (!text) return null;
   const hadScheme = /^[a-z+]+:\/\//i.test(text);
+  const hadUser = !hadScheme && /^[^@/]+@/.test(text);
   text = text.replace(/^[a-z+]+:\/\//i, "").replace(/^[^@/]+@/, "");
   // `git@github.com:owner/repo.git` separates host and path with a colon; a URL
-  // with a scheme does not, so its colon may be a port and is left alone.
-  if (!hadScheme) text = text.replace(/^([^/:]+):(?!\/)/, "$1/");
+  // with a scheme does not, so its colon may be a port and is left alone. The
+  // result is sanitised again wherever a recorded remote is compared, so it must
+  // not change the second time: `host:8765/path`, the one colon a sanitised URL
+  // keeps, is a port, unless a user in front of it marks an scp address.
+  const keptPort = !hadScheme && !hadUser && /^[^/:]+:\d{1,5}(?:\/|$)/.test(text);
+  if (!hadScheme && !keptPort) text = text.replace(/^([^/:]+):(?!\/)/, "$1/");
   return text.replace(/\/+$/, "").replace(/\.git$/, "") || null;
 }
 

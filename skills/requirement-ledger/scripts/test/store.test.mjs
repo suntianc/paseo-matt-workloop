@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseYaml, stringifyYaml } from "../yaml.mjs";
 import { bodyDigest, emitRecord, fileNameFor, idFor, newRecord, parseRecord, recordProblems } from "../record.mjs";
-import { allocateId, LockError, readLog, withLock, writeFileAtomic } from "../store.mjs";
+import { allocateId, LockError, readLog, sanitiseRemote, withLock, writeFileAtomic } from "../store.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "..", "req.mjs");
@@ -678,6 +678,40 @@ test("new refuses a ledger whose recorded remote is a different repository", (t)
   assert.match(refused.stderr, /REQ-001 records this ledger as github\.com\/owner\/one/);
   assert.match(refused.stderr, /github\.com\/owner\/two/, "the current remote is named");
   assert.deepEqual(ledgerBytes(s.dir), before);
+});
+
+test("a sanitised remote reads the same when sanitised again, a port included", () => {
+  const cases = {
+    "http://user:token@git.example:8765/team/group/project.git": "git.example:8765/team/group/project",
+    "ssh://git@host.example:2222/owner/repo.git": "host.example:2222/owner/repo",
+    "https://github.com/owner/repo.git": "github.com/owner/repo",
+    "git@github.com:owner/repo.git": "github.com/owner/repo",
+    // A user marks an scp address, whose path may begin with digits.
+    "git@host.example:2024/repo.git": "host.example/2024/repo",
+    "host.example:owner/repo.git": "host.example/owner/repo",
+  };
+  for (const [url, expected] of Object.entries(cases)) {
+    assert.equal(sanitiseRemote(url), expected, url);
+    assert.equal(sanitiseRemote(sanitiseRemote(url)), expected, `${url}, sanitised twice`);
+  }
+});
+
+test("a remote with a port binds the ledger to one repository, recorded sanitised or as the full URL", (t) => {
+  const s = sandbox(t);
+  s.git("remote", "add", "origin", "http://git.example:8765/team/group/project.git");
+  assert.equal(s.run(["new", "First"]).status, 0);
+  const second = s.run(["new", "Second"]);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(readFileSync(join(s.dir, "REQ-001-first.md"), "utf8"), /^repo_remote: git\.example:8765\/team\/group\/project$/m);
+  const doctor = s.run(["doctor"]);
+  assert.equal(doctor.status, 0, doctor.stdout + doctor.stderr);
+
+  // A record that keeps the full URL, scheme and port, is the same repository.
+  const record = newRecord({ id: "REQ-003", title: "Kept by hand", repoPath: s.repo, now: NOW });
+  record.repo_remote = "http://git.example:8765/team/group/project";
+  writeFileSync(join(s.dir, fileNameFor(record.id, record.title)), emitRecord(record, "## Summary\n"));
+  const third = s.run(["new", "Third"]);
+  assert.equal(third.status, 0, third.stderr);
 });
 
 test("a credential in a recorded remote is stripped before it is compared or printed", (t) => {
