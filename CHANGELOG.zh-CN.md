@@ -2,6 +2,36 @@
 
 [English](CHANGELOG.md) · **简体中文**
 
+## [3.2.2] - 2026-11-03
+
+### 摘要
+
+请求的措辞和所有需求都对不上时，编排者不再面对一个空结果去猜：需求台账的字面检索没有命中、或有几个相近候选时，`lookup` 会列出本项目的整本台账，由编排者结合对话判断归属，只有拿不准时才问用户。旧版 Workloop（还没有 `completion` 字段时）归档的 run 现在记为已交付，而不是未交付，因此可以用项目早期的 run 建立台账；仓库 remote 带端口时，`req new` 不再拒绝写入台账。
+
+### 变更
+
+- **新增：** `req lookup` 的判断为 `none` 或 `ambiguous` 时，结果中增加 `catalog`：本项目的全部需求，按编号排列，包括状态、别名和摘要的前 100 个字符，均摘自记录本身，且不受 `--limit` 截断。`strong` 的结果结构不变。台账和 Workloop 技能现在写明：由 Main 结合对话判断归属，拿不准时才问用户，最多给出三个候选；只有用户确认后才把这次的说法加入该需求的别名，以免一次猜错在下次变成"明确命中"。[lookup 参考](skills/requirement-ledger/reference/lookup.md)删除了 lookup 从未写入的审计日志说明。
+- **修复：** 旧版 Workloop 在有 `completion` 之前归档的 run 只有 `finishedAt`，没有 `completion`，因此 `req sync` 会把它记为未交付，尽管其提交已经在主分支上。这类 run 同样没有当前每次归档都会先写入的 `archiveStartedAt`；现在，当它的所有 ticket 都已完成、且集成提交已越过起点时，按冻结的 `integration.tip` 记为已交付：`delivered_at` 取自 `lastIntegratedAt`，`sync` 和 `context` 显示 `basis: legacy-integration-tip`。含已取消 ticket 或没有任何集成的旧版 run 仍为未交付。[context 参考](skills/requirement-ledger/reference/context.md)说明了这条规则。
+- **修复：** 带端口的 remote（如 `http://git.example:8765/owner/repo`）清洗后是 `git.example:8765/owner/repo`，比较时再清洗一次就变成了 `git.example/8765/owner/repo`，因此当台账记录保存的是完整 URL 时，`req new` 会把它当作另一个仓库的台账而拒绝写入。现在清洗结果再清洗一次不会改变：没有 scheme 时，主机后跟数字端口的冒号会保留，除非前面带用户名、表明是 scp 地址。
+
+### 升级说明
+
+无需迁移。已经把旧版 run 以未交付状态 link 进台账的，下次执行 `req sync <project>/<feature>` 时会记录其交付。需要 Node.js 20+、npm 和 Git。
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.2.2 install
+```
+
+已有托管安装使用同一目标目录执行 `npx --yes github:suntianc/paseo-matt-workloop#v3.2.2 update`；`update` 拉取当前 `main`，固定安装器 tag 不会固定更新内容。项目安装在命令末尾添加 `--target <项目 skills 目录>`。
+
+### 验证
+
+- 全部 389 个本地测试通过（`npm test`），包括：lookup 在 `none`、带 `--limit 1` 的 `ambiguous`、空台账、长摘要、已退役需求和被两条需求同时认领的 run 下的 catalog；以及旧版 run 的 `sync` 和 `context`，其中含已取消 ticket、集成提交未前进、按当前方式归档和未归档的情况都保持未交付；以及包括带端口在内的 remote 清洗两次结果不变，台账记录保存完整 URL 时 `new` 仍可写入。
+- `npm run check:links` 在 66 个 Markdown 文件中解析了所有相对链接和 `skill://` 引用。
+- v3.2.2 tarball（133 个文件）经 npx 安装到一个路径含空格、经 macOS `/tmp` 符号链接访问的临时目录，安装了 21 个技能；安装后的链接检查（67 个 Markdown 文件）通过，`workloop.mjs`、`validate.mjs`、`tidy-docs.mjs`、`req.mjs` 和 `audit.mjs` 均打印出用法。本地的 `Agent.md` 和 `AGENTS.md` 不在制品中。
+- 以只读方式读取维护者机器上的 18 次 run：安装后的 `runstate.mjs` 判定 9 次因 completion 已交付、7 次为旧版交付、2 次（一次已取消、一次未完成）未交付。为本仓库用其 3 次 run 和 git 历史建立的 7 条需求台账通过 `req doctor`；对字面无法确定归属的请求，安装后的 `lookup` 列出了全部 7 条需求。
+- 代码提交（`ec168e1`）在 Ubuntu 和 Windows、Node 20 和 22 上的 CI 全部通过；发布提交只改动版本号和 changelog。本次未在本地运行 Windows 和 Linux。
+
 ## [3.2.1] - 2026-11-02
 
 ### 摘要
@@ -221,3 +251,5 @@ npx --yes github:suntianc/paseo-matt-workloop#main update
 [3.2.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.0
 
 [3.2.1]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.1
+
+[3.2.2]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.2

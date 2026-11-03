@@ -2,6 +2,36 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
+## [3.2.2] - 2026-11-03
+
+### Summary
+
+A request worded differently from every requirement no longer leaves the orchestrator to guess from an empty answer: when the requirement ledger's word search finds nothing, or several close candidates, `lookup` lists the project's whole ledger, and the orchestrator judges the owner from the conversation, asking the user only when it cannot tell. Runs archived by Workloop versions that predate `completion` are now recorded as delivered instead of pending, so a ledger can be built from a project's earlier runs, and `req new` no longer refuses a ledger whose repository remote carries a port.
+
+### Changes
+
+- **Added:** When `req lookup` decides `none` or `ambiguous`, its answer adds `catalog`: every requirement of the project, in number order, with its status, aliases and the first 100 characters of its summary, quoted from the records and never trimmed by `--limit`. A `strong` answer keeps its previous shape. The ledger and Workloop skills now say that Main judges the owner from the conversation, asks the user only when it cannot tell, naming at most three, and adds a term to a requirement's aliases only after the user confirms it, so a wrong guess does not come back as a strong match. The [lookup reference](skills/requirement-ledger/reference/lookup.md) no longer claims an audit line that lookup never writes.
+- **Fixed:** A run archived by Workloop before `completion` existed has `finishedAt` but no `completion`, so `req sync` recorded it as pending although its commits were on the main branch. Such a run, which also lacks the `archiveStartedAt` that every current archive writes first, is now delivered at its frozen `integration.tip` when every ticket is done and the tip moved past the base: `delivered_at` comes from `lastIntegratedAt`, and `sync` and `context` show `basis: legacy-integration-tip`. A legacy run with a cancelled ticket or nothing integrated stays pending. The [context reference](skills/requirement-ledger/reference/context.md) describes the rule.
+- **Fixed:** A remote with a port, such as `http://git.example:8765/owner/repo`, sanitises to `git.example:8765/owner/repo`; sanitised again for a comparison, it became `git.example/8765/owner/repo`, so `req new` refused a ledger whose records keep the full URL as another repository's. Sanitising now gives the same result the second time: without a scheme, a host followed by a numeric port keeps its colon unless a user in front of it marks an scp address.
+
+### Upgrade
+
+No migration is needed. A ledger that already linked a legacy run as pending records its delivery at the next `req sync <project>/<feature>`. Requires Node.js 20+, npm and Git.
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v3.2.2 install
+```
+
+For an existing managed installation, run `npx --yes github:suntianc/paseo-matt-workloop#v3.2.2 update` with the same target. `update` fetches current `main`; pinning the installer tag does not pin the update payload. For a project installation, append `--target <project skills directory>`.
+
+### Verification
+
+- All 389 local tests pass (`npm test`), including lookup's catalog for `none`, for `ambiguous` with `--limit 1`, for an empty ledger, a long summary, a retired requirement and a doubly claimed run; and `sync` and `context` on a legacy run, with the cancelled, unmoved, currently archived and unarchived cases staying pending; and remotes, a port included, that read the same when sanitised twice, with `new` accepting a ledger whose records keep the full URL.
+- `npm run check:links` resolves every relative link and `skill://` reference across 66 markdown files.
+- The v3.2.2 tarball (133 files) installed 21 skills through npx into a temporary path containing a space and reached through the macOS `/tmp` symlink; the installed link check (67 markdown files) passed, and `workloop.mjs`, `validate.mjs`, `tidy-docs.mjs`, `req.mjs` and `audit.mjs` printed their usage. The local `Agent.md` and `AGENTS.md` are not in the artifact.
+- Read-only against the 18 runs on the maintainer's machine, the installed `runstate.mjs` reads 9 as delivered by completion, 7 as legacy deliveries and 2 (one cancelled, one unfinished) as pending. A seven-requirement ledger built for this repository from its 3 runs and git history passes `req doctor`, and the installed `lookup` lists all seven for a request its words do not settle.
+- The code commit (`ec168e1`) passed CI on Ubuntu and Windows with Node 20 and 22; the release commit changes only the version and the changelogs. Windows and Linux were not run locally.
+
 ## [3.2.1] - 2026-11-02
 
 ### Summary
@@ -221,3 +251,5 @@ A fixed installer tag pins `install`; `update` always fetches current `main`. Ru
 [3.2.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.0
 
 [3.2.1]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.1
+
+[3.2.2]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.2
