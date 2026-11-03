@@ -22,7 +22,9 @@ node <this skill's directory>/scripts/req.mjs lookup "<the request>"
 
 It scores every requirement of the current project on title, aliases, summary and refs, and returns up to five candidates with `score`, `matched_terms` and a `decision`: `strong`, `ambiguous` or `none`.
 
-The lookup is evidence; Main decides. `strong` means the leading candidate clearly outscores the rest, not that the request belongs to it — confirm with the user whenever the answer changes what gets built. `none` means the word search found nothing, not that the request is new. [Lookup](reference/lookup.md) gives the scoring rule and what each decision promises.
+The lookup is evidence; Main decides, from the whole conversation. `strong` means the leading candidate clearly outscores the rest, not that the request belongs to it: check it against what the user said. On `none` or `ambiguous` the words did not settle it, and the reply lists every requirement of the project — id, status, title, aliases and the start of its summary. Judge which one the request belongs to, or that none does and it is new. Ask the user only when you cannot tell, naming at most three.
+
+When the user confirms a requirement the words missed, add the term they used to its `aliases`, so the next lookup finds it. Don't add one on your own judgement: a wrong guess would come back next time as a strong match. [Lookup](reference/lookup.md) gives the scoring rule and what each decision promises.
 
 ## Keep the record current
 

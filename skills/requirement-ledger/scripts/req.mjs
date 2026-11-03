@@ -30,7 +30,8 @@ const USAGE = `usage: req <command> [options]
   new <title> [--alias <term>]...   create a requirement and allocate its number
   list                              list this project's requirements
   show <REQ>                        print one requirement file
-  lookup "<text>" [--json]          find requirements the request's words overlap
+  lookup "<text>" [--json]          find requirements the request's words overlap;
+                                    list them all when the words do not settle it
   retire <REQ>                      mark a requirement retired; file and number stay
   doctor [--repair-log]             report inconsistencies; fill recoverable audit gaps
   context <REQ> [--json] [--include <sections>]
@@ -43,7 +44,7 @@ Options:
   --json             print lookup's or context's answer as JSON
   --threshold <n>    the score a candidate must reach to count (0-1, default ${LOOKUP_DEFAULTS.threshold})
   --lead <n>         how many times the runner-up the leader must beat for "strong" (default ${LOOKUP_DEFAULTS.lead})
-  --limit <n>        how many candidates to return (default ${LOOKUP_DEFAULTS.limit})
+  --limit <n>        how many candidates to return (default ${LOOKUP_DEFAULTS.limit}); the list is never trimmed
   --repair-log       append audit lines for recoverable gaps, without touching prose
   --include <list>   context: add retro, pitfalls or history (comma separated)
 
@@ -261,12 +262,26 @@ function cmdLookup({ positional, flags }) {
         "a `link --correct` did not finish, so its ownership is unresolved");
     }
   }
+  if (answer.decision === "strong") {
+    say("one candidate leads clearly, which is still not a confirmed owner: check it against the conversation before acting on it");
+    return;
+  }
   if (answer.decision === "none") {
     say(`nothing reached the threshold ${options.threshold}: the word search found no evidence, which is a fact about vocabulary rather than about the product`);
-  } else if (answer.decision === "ambiguous") {
-    say("several candidates are close: confirm with the user which requirement this belongs to");
   } else {
-    say("one candidate leads clearly, which is still not a confirmed owner: confirm before acting on it");
+    say("several candidates are close");
+  }
+  if (!answer.catalog.length) {
+    say("the ledger holds no requirements yet");
+    return;
+  }
+  say(`judge from the conversation which of these ${answer.catalog.length} requirements the request belongs to, if any; ` +
+    "ask the user only when you cannot tell, naming at most three");
+  say("catalog:");
+  for (const entry of answer.catalog) {
+    say(`  ${entry.id}  ${String(entry.status).padEnd(7)}  ${entry.ambiguous ? "[ambiguous] " : ""}${entry.title}`);
+    if (entry.aliases.length) say(`    aliases: ${entry.aliases.join(", ")}`);
+    if (entry.summary) say(`    summary: ${entry.summary}`);
   }
 }
 

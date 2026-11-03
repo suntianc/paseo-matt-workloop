@@ -290,7 +290,7 @@ test("E3: an ambiguous request returns both close candidates and assigns nothing
 
   const human = s.ok(["lookup", "checkout"]);
   assert.match(human, /decision: ambiguous/);
-  assert.match(human, /confirm with the user/);
+  assert.match(human, /ask the user only when you cannot tell/);
   assert.deepEqual(s.snapshot(), before, "an ambiguous answer assigns nothing and writes nothing");
   assert.deepEqual(s.record(1).runs, []);
   assert.deepEqual(s.record(2).runs, []);
@@ -473,6 +473,7 @@ test("E9: lookup stays inside the project — no leak of another project's uniqu
   assert.equal(leak.project, "myapp");
   assert.deepEqual(leak.candidates, []);
   assert.equal(leak.decision, "none");
+  assert.deepEqual(leak.catalog.map((entry) => entry.title), ["User login", "Checkout"], "the catalog lists this project's ledger only");
   const scoped = JSON.parse(s.stdout(["lookup", "invoice reconciliation", "--json"], { cwd: other }));
   assert.equal(scoped.project, "otherapp");
   assert.deepEqual(scoped.candidates.map((candidate) => candidate.id), ["REQ-002"]);

@@ -17,7 +17,7 @@ Every requirement's `title`, `aliases`, summary and `refs` are scored:
 
 Five candidates come back by default. The limit decides how many are printed, never how the
 decision is reached: `strong` is always measured against the full ranking, including a runner-up
-the reader is not shown.
+the reader is not shown. It never trims the catalog.
 
 ## Reading the answer
 
@@ -49,10 +49,24 @@ A candidate whose record holds a run that another requirement also holds as prim
 | Value | Means |
 |---|---|
 | `strong` | The best score passes an absolute threshold and clearly leads the runner-up, by about twice its score. |
-| `ambiguous` | Several candidates sit close together. Ask the user which one this is. |
-| `none` | Nothing passes the threshold. |
+| `ambiguous` | Several candidates sit close together. The answer adds the catalog. |
+| `none` | Nothing passes the threshold. The answer adds the catalog. |
 
-Neither decision is a verdict: `strong` is not a confirmed owner, and `none` says the vocabulary found nothing rather than that the product lacks it, so it is not proof of a new requirement. Main judges from the conversation, and asks the user when the answer changes what gets built.
+Neither decision is a verdict: `strong` is not a confirmed owner, and `none` says the vocabulary found nothing rather than that the product lacks it, so it is not proof of a new requirement. Main judges from the conversation, and asks the user only when it cannot tell.
+
+## The catalog
+
+A request worded differently from every record — "验证码" against a record that says "captcha" — finds no candidate, and only a reader of the conversation can tell where it belongs. So when the decision is `none` or `ambiguous`, the answer adds `catalog`: every readable requirement of the project, in number order, quoted from its record and not scored.
+
+```json
+"catalog": [
+  { "id": "REQ-007", "title": "User login", "status": "active", "aliases": ["login", "sign-in"], "summary": "Account login and authentication…" }
+]
+```
+
+`summary` is the start of the record's summary, cut at 100 characters. An entry whose record holds a run another requirement also claims as primary carries `ambiguous: true`, as a candidate does. A `strong` answer has no `catalog`, and an empty ledger answers with an empty one.
+
+Main reads it with the conversation and decides: one of these, or none, which makes the request a new requirement. It asks the user only when it cannot tell, naming at most three. When the user confirms a requirement the words missed, the term they used goes into that record's `aliases`; a term added on Main's own judgement would turn a wrong guess into next time's strong match. The catalog has no size limit.
 
 `matched_terms`, `summary_excerpt` and `score` come from stored fields and the algorithm, so they can be quoted back to the user as evidence.
 
@@ -60,6 +74,6 @@ Neither decision is a verdict: `strong` is not a confirmed owner, and `none` say
 
 The search covers the current project only, with no fallback to another. Requirements belonging to other projects are not returned, including one that happens to share a name with a requirement here: a name match in another project is still another project's requirement.
 
-A lookup writes nothing to the ledger and assigns nothing; an optional audit line records the query.
+A lookup writes nothing to the ledger, records nothing in its audit log and assigns nothing.
 
 The first version keeps a few explicit knobs — an absolute threshold, a lead multiple, top-N — calibrated from test cases rather than tuned in place.

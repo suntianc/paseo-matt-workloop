@@ -25,7 +25,7 @@ Read relevant project instructions and ADRs. Resolve material conflicts with the
 
 ## Requirement lookup
 
-In a project that keeps a requirement ledger, recall before you clarify: `node <requirement-ledger>/scripts/req.mjs lookup "<the user's words>"` returns candidate requirements as evidence, and you decide the owner. A Direct or Full run records that owner with `link` after `WL init`; `sync` is a fixed step once `WL finish` succeeds, and again once `archive` completes. [Requirement ledger](../requirement-ledger/SKILL.md) has the commands and their rules.
+In a project that keeps a requirement ledger, recall before you clarify: `node <requirement-ledger>/scripts/req.mjs lookup "<the user's words>"` returns candidate requirements as evidence, and the whole ledger when the words do not settle it; you decide the owner, and ask the user only when you cannot tell. A Direct or Full run records that owner with `link` after `WL init`; `sync` is a fixed step once `WL finish` succeeds, and again once `archive` completes. [Requirement ledger](../requirement-ledger/SKILL.md) has the commands and their rules.
 
 ## Quick
 

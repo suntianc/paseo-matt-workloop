@@ -211,7 +211,7 @@ test("two requirements that both answer to the word make the answer ambiguous", 
   const human = s.run(["lookup", "登录"]);
   assert.equal(human.status, 0, human.stderr);
   assert.match(human.stdout, /ambiguous/);
-  assert.match(human.stdout, /confirm with the user/, "the answer asks for a decision instead of making one");
+  assert.match(human.stdout, /ask the user only when you cannot tell/, "the answer asks for a judgement instead of making one");
 
   // The display limit must not manufacture a lead: with one candidate shown, the
   // runner-up still exists in the numbers, so the answer stays ambiguous.
@@ -331,6 +331,87 @@ test("a lookup creates nothing, records nothing and assigns no owner", (t) => {
   assert.equal(searched.status, 0, searched.stderr);
   assert.equal(JSON.parse(searched.stdout).decision, "none");
   assert.equal(existsSync(fresh.dirOf("unledgered")), false);
+});
+
+// ---------------------------------------------------------------- catalog
+
+test("a request the words miss gets the whole ledger to judge from, quoted from the records", (t) => {
+  const s = corpus(t);
+  const dir = s.dirOf("myapp");
+  const before = snapshot(dir);
+
+  // Worded unlike any record: no candidate, so only a reader of the conversation
+  // can tell whether it belongs to one of them.
+  const answer = s.lookup(["会议室预订提醒", "--json"]);
+  assert.equal(answer.decision, "none");
+  assert.deepEqual(answer.candidates, []);
+  assert.deepEqual(Object.keys(answer), ["query", "project", "decision", "candidates", "catalog"]);
+  assert.deepEqual(answer.catalog.map((entry) => entry.id), ["REQ-001", "REQ-002", "REQ-003"], "every requirement, in number order");
+  assert.deepEqual(answer.catalog[1], {
+    id: "REQ-002",
+    title: "结算与支付",
+    status: "active",
+    aliases: ["checkout", "payment"],
+    summary: "购物车结算、支付方式与发票。",
+  });
+
+  const human = s.run(["lookup", "会议室预订提醒"]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /judge from the conversation which of these 3 requirements/);
+  assert.match(human.stdout, /ask the user only when you cannot tell/);
+  assert.match(human.stdout, /^ {2}REQ-002 {2}active {3}结算与支付$/m);
+  assert.match(human.stdout, /^ {4}aliases: checkout, payment$/m);
+  assert.match(human.stdout, /^ {4}summary: 购物车结算、支付方式与发票。$/m);
+  assert.doesNotMatch(human.stdout, /new requirement|is a new|全新的需求|新需求/, "the script lists; it does not declare the request new");
+
+  assert.deepEqual(snapshot(dir), before, "listing the ledger writes nothing");
+});
+
+test("a strong answer carries no catalog; an ambiguous one carries all of it, whatever --limit says", (t) => {
+  const s = corpus(t);
+  const strong = s.lookup(["sign-in", "--json"]);
+  assert.equal(strong.decision, "strong");
+  assert.equal("catalog" in strong, false);
+  assert.doesNotMatch(s.run(["lookup", "sign-in"]).stdout, /catalog:/);
+
+  seed(s, { n: 4, title: "单点登录", aliases: ["登录", "sso"], summary: "跨系统的单点登录。" });
+  const limited = s.lookup(["登录", "--limit", "1", "--json"]);
+  assert.equal(limited.decision, "ambiguous");
+  assert.equal(limited.candidates.length, 1);
+  assert.deepEqual(limited.catalog.map((entry) => entry.id), ["REQ-001", "REQ-002", "REQ-003", "REQ-004"]);
+});
+
+test("the catalog cuts a long summary, labels a retired requirement and marks a doubly claimed run", (t) => {
+  const s = sandbox(t);
+  const shared = runLinked("req-001-login", "delivered");
+  const long = `${"Sign in with email and password, ".repeat(5)}end.`;
+  seed(s, { n: 1, title: "User login", aliases: ["login"], summary: long, runs: [shared] });
+  seed(s, { n: 2, title: "Legacy SSO", summary: "", status: "retired" });
+  seed(s, { n: 3, title: "Account security", summary: "Lockout rules.", runs: [shared] });
+
+  const { catalog } = s.lookup(["会议室预订提醒", "--json"]);
+  assert.ok(catalog[0].summary.endsWith("…"), catalog[0].summary);
+  assert.ok(catalog[0].summary.length <= 101, `cut to the width: ${catalog[0].summary.length}`);
+  assert.ok(long.startsWith(catalog[0].summary.slice(0, -1)), "the cut quotes the record's own prose");
+  assert.equal(catalog[1].status, "retired");
+  assert.deepEqual(catalog[1].aliases, []);
+  assert.equal(catalog[1].summary, "");
+  assert.deepEqual(catalog.filter((entry) => entry.ambiguous === true).map((entry) => entry.id), ["REQ-001", "REQ-003"]);
+
+  const human = s.run(["lookup", "会议室预订提醒"]);
+  assert.match(human.stdout, /^ {2}REQ-002 {2}retired {2}Legacy SSO$/m);
+  assert.match(human.stdout, /^ {2}REQ-003 {2}active {3}\[ambiguous\] Account security$/m);
+});
+
+test("an empty ledger says so instead of printing an empty list", (t) => {
+  const s = sandbox(t, ["unledgered"]);
+  const answer = s.lookup(["登录", "--json"]);
+  assert.equal(answer.decision, "none");
+  assert.deepEqual(answer.catalog, []);
+  const human = s.run(["lookup", "登录"]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /the ledger holds no requirements yet/);
+  assert.doesNotMatch(human.stdout, /catalog:|judge from the conversation/);
 });
 
 // ---------------------------------------------------------------- record fields

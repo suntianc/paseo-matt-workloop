@@ -236,6 +236,28 @@ function scoreAnalysed(analysed, requirement) {
   };
 }
 
+// How much of each summary the catalog quotes: enough to tell two capabilities
+// apart, short enough that a ledger of a few dozen requirements stays readable.
+const CATALOG_SUMMARY_WIDTH = 100;
+
+// Every requirement of the project, for the caller to judge what the words
+// missed: a request worded differently from the record finds no candidate, and
+// only a reader of the conversation can tell which requirement, if any, it
+// belongs to. Quoted from the records, in number order; nothing is scored.
+function catalogOf(requirements, ambiguous) {
+  return requirements.map((requirement) => {
+    const { frontmatter, body } = requirement;
+    const entry = {
+      id: frontmatter.id,
+      title: frontmatter.title,
+      status: frontmatter.status,
+      aliases: Array.isArray(frontmatter.aliases) ? frontmatter.aliases.map(String) : [],
+      summary: excerptOf(summaryOf(body), [], CATALOG_SUMMARY_WIDTH),
+    };
+    return ambiguousIn(frontmatter, ambiguous).length ? { ...entry, ambiguous: true } : entry;
+  });
+}
+
 // `strong` is a statement about numbers: the leader clears the floor and is at
 // least `lead` times the runner-up. `ambiguous` means the numbers do not
 // separate; `none` means nothing cleared the floor, which is a fact about
@@ -266,10 +288,11 @@ export function lookupRequirements({
   // The predicate is `relations.mjs`', the same one `list`, `show` and `doctor`
   // mark from; lookup still answers, and only says the ownership is unresolved.
   const ambiguous = ambiguousRuns(requirements);
-  const ranked = requirements
-    // A record without an id or a title cannot be quoted as a candidate; it is
-    // `doctor`'s finding, not a reason to fail the search.
-    .filter((requirement) => !requirement.error && typeof requirement.frontmatter?.id === "string" && requirement.frontmatter.title)
+  // A record without an id or a title cannot be quoted as a candidate; it is
+  // `doctor`'s finding, not a reason to fail the search.
+  const quotable = requirements
+    .filter((requirement) => !requirement.error && typeof requirement.frontmatter?.id === "string" && requirement.frontmatter.title);
+  const ranked = quotable
     .map((requirement) => {
       const candidate = scoreAnalysed(analysed, requirement);
       return ambiguousIn(requirement.frontmatter, ambiguous).length ? { ...candidate, ambiguous: true } : candidate;
@@ -279,5 +302,10 @@ export function lookupRequirements({
   // The decision reads the whole ranking, including the runner-up the caller may
   // not see: `--limit` decides how much evidence to print, never whether the
   // leader actually leads.
-  return { query, project, decision: decide(ranked, { threshold, lead }), candidates: ranked.slice(0, limit) };
+  const decision = decide(ranked, { threshold, lead });
+  const answer = { query, project, decision, candidates: ranked.slice(0, limit) };
+  // When the words do not settle it, the caller gets the whole ledger to judge
+  // from. `--limit` trims candidates only; the catalog is always complete.
+  if (decision !== "strong") answer.catalog = catalogOf(quotable, ambiguous);
+  return answer;
 }
