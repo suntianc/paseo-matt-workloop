@@ -43,6 +43,7 @@ runs:
       delivered_at: …                  # = state.completion.at
       archived_at: …                   # = state.finishedAt
       evidence_dir: …                  # optional; existence checked separately
+      basis: legacy-integration-tip    # only for a run archived before Workloop recorded completion (context.md)
     delivery_history: []               # superseded deliveries, append-only
 outcomes: []                           # Quick work: date, summary, real commit_sha, verification
 refs:

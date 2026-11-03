@@ -37,6 +37,8 @@ A run's delivery is read from its `state.json`, and nothing else. Three states l
 
 `finish` writes `completion`; `archive` writes `finishedAt`. A run can be delivered for a long time before it is archived, and that interval is normal.
 
+**Legacy runs.** Workloop before `completion` existed archived a run without recording an accepted version. Such a run has `finishedAt` but neither `completion` nor `archiveStartedAt`, which every archive since then writes first. When every ticket is `done` and `integration.tip` moved past `baseSha`, archive froze that tip, so it is the delivery: `final_tip` is `integration.tip`, `delivered_at` is `lastIntegratedAt`, and the delivery carries `basis: legacy-integration-tip`. A legacy run with a cancelled ticket, or with nothing integrated, stays `pending`.
+
 ## No worktree required
 
 Archival deletes the run's worktree, its branch and its agent sessions, and keeps the run directory, `state.json`, `events.jsonl`, `evidence/` and the retrospective. Context therefore never assumes a historical worktree still exists: it cites the state file, the commit SHAs, the branch name, the spec path and the evidence directory.

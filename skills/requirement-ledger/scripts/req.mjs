@@ -557,6 +557,7 @@ function describeDelivery(delivery) {
   const parts = [`delivered ${short(delivery.final_tip)} at ${delivery.delivered_at || "(no completion time recorded)"}`];
   if (delivery.archived_at) parts.push(`archived ${delivery.archived_at}`);
   if (delivery.evidence_dir) parts.push(`evidence ${delivery.evidence_dir}`);
+  if (delivery.basis) parts.push(`basis ${delivery.basis}: archived before Workloop recorded a completion`);
   return parts.join("\n");
 }
 

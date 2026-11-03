@@ -252,6 +252,9 @@ function deliveryView({ key, state, recorded, dir }) {
     recorded: { state: typeof recorded.state === "string" ? recorded.state : "pending", final_tip: recordedTip },
     note: fromLedger ? "recorded in the ledger; state.json is missing" : null,
   };
+  // A legacy delivery says so: its tip is the archived integration tip, not a completion.
+  const basis = fromState ? from.basis : fromLedger && typeof recorded.basis === "string" ? recorded.basis : null;
+  if (basis) delivery.basis = basis;
 
   const evidence = evidenceOf({ archived: Boolean(archivedAt), evidenceDir: evidenceDirOf(state, dir, recorded) });
   Object.assign(delivery, {
@@ -439,6 +442,7 @@ export function renderText(context) {
     }
     lines.push(`${delivery.run}  delivered ${short(delivery.final_tip)}${delivery.delivered_at ? `  at ${delivery.delivered_at}` : ""}`);
     if (delivery.archived_at) field("archived", delivery.archived_at);
+    if (delivery.basis) field("basis", `${delivery.basis}: archived before Workloop recorded a completion`);
     const label = EVIDENCE_LABELS[delivery.evidence_status] ?? delivery.evidence_status;
     const evidence = delivery.evidence_status === "available"
       ? label

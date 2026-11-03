@@ -459,6 +459,62 @@ test("sync after archive only fills the archive time and the evidence directory"
   assert.match(s.ok(["doctor"]), /clean: the records/);
 });
 
+// ------------------------------------------------------------------ legacy runs
+
+// A run as Workloop left it before `completion` existed: archived, every ticket
+// integrated, the delivery only in `integration.tip`, and no `archiveStartedAt`.
+const legacyState = (tasks = { "01": { id: "01", status: "done" }, "02": { id: "02", status: "done" } }) =>
+  ({ finishedAt: ARCHIVED, lastIntegratedAt: NOW, tasks });
+
+test("a run archived before Workloop recorded completion is delivered at its frozen integration tip", (t) => {
+  const s = sandbox(t);
+  s.ok(["new", "User login"]);
+  const tip = s.commit();
+  s.writeRun({ integrationTip: tip, state: legacyState() });
+  s.link();
+  const before = s.runSnapshot();
+
+  const out = s.ok(["sync", "myapp/feat"]);
+  assert.ok(out.includes(`delivered ${tip.slice(0, 7)} at ${NOW}`), out);
+  assert.match(out, /basis legacy-integration-tip: archived before Workloop recorded a completion/);
+  assert.deepEqual(s.record(1).runs[0].delivery, {
+    state: "delivered", final_tip: tip, delivered_at: NOW, archived_at: ARCHIVED, basis: "legacy-integration-tip",
+  });
+  assert.deepEqual(s.runSnapshot(), before, "sync writes only the ledger");
+  assert.match(s.ok(["sync", "myapp/feat"]), /in sync/, "a second sync has nothing to change");
+
+  const context = JSON.parse(s.ok(["context", "REQ-001", "--json"]));
+  assert.equal(context.deliveries[0].state, "delivered");
+  assert.equal(context.deliveries[0].final_tip, tip);
+  assert.equal(context.deliveries[0].basis, "legacy-integration-tip");
+  assert.match(s.ok(["context", "REQ-001"]), /basis: +legacy-integration-tip/);
+  assert.match(s.ok(["doctor"]), /clean: the records/);
+});
+
+test("a run without completion stays pending unless it is an archived legacy run that integrated every ticket", (t) => {
+  const s = sandbox(t);
+  s.ok(["new", "User login"]);
+  const tip = s.commit();
+  const cases = {
+    // A cancelled ticket: the run stopped short of what it set out to deliver.
+    cancelled: { integrationTip: tip, state: legacyState({ "01": { id: "01", status: "done" }, "02": { id: "02", status: "cancelled" } }) },
+    // Nothing integrated: the tip never left the base.
+    unmoved: { integrationTip: s.baseSha, state: legacyState() },
+    // A current archive always writes archiveStartedAt; without completion it is no delivery.
+    current: { integrationTip: tip, state: { ...legacyState(), archiveStartedAt: ARCHIVED } },
+    // Not archived: the integration tip may still move.
+    open: { integrationTip: tip, state: { ...legacyState(), finishedAt: undefined } },
+  };
+  for (const [feature, options] of Object.entries(cases)) {
+    s.writeRun({ feature, ...options });
+    s.ok(["link", `myapp/${feature}`, "REQ-001"]);
+    s.ok(["sync", `myapp/${feature}`]);
+  }
+  for (const relation of s.record(1).runs) {
+    assert.deepEqual(relation.delivery, { state: "pending" }, relation.feature);
+  }
+});
+
 test("sync refuses a run that is not linked, and one in another project", (t) => {
   const s = sandbox(t);
   s.ok(["new", "User login"]);

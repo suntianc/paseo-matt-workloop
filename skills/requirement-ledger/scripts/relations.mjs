@@ -96,6 +96,7 @@ function snapshot(delivery, { now, reason }) {
   const entry = { final_tip: delivery.final_tip, delivered_at: delivery.delivered_at };
   if (delivery.archived_at) entry.archived_at = delivery.archived_at;
   if (delivery.evidence_dir) entry.evidence_dir = delivery.evidence_dir;
+  if (delivery.basis) entry.basis = delivery.basis;
   entry.superseded_at = now;
   entry.reason = reason;
   return entry;

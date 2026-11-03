@@ -89,16 +89,16 @@ function evidenceDirOf(state) {
 
 // What the ledger may say about this run's delivery, taken only from Workloop:
 //
-//   - delivered if and only if `state.completion` exists;
+//   - delivered if `state.completion` exists, or the run is a legacy delivery (below);
 //   - `final_tip` / `delivered_at` are `completion.tip` / `completion.at`;
 //   - `archived_at` is `state.finishedAt` (a misnomer of Workloop's; `status --json`
 //     reports the same field as `archivedAt`, workloop.mjs:2899).
 //
-// `integration.tip` is never consulted: it is a working tip that moves with every
-// integrate, not an accepted version.
+// `integration.tip` is otherwise never consulted: it is a working tip that moves
+// with every integrate, not an accepted version.
 export function deliveryFrom(state) {
   const completion = state?.completion;
-  if (completion === null || completion === undefined) return { state: "pending" };
+  if (completion === null || completion === undefined) return legacyDeliveryFrom(state) ?? { state: "pending" };
   if (typeof completion !== "object" || typeof completion.tip !== "string" || !completion.tip) {
     throw new RunError("state.completion has no tip: the run's delivery cannot be read, and recording it as pending would lose a delivery");
   }
@@ -107,6 +107,31 @@ export function deliveryFrom(state) {
   const evidence = evidenceDirOf(state);
   if (evidence) delivery.evidence_dir = evidence;
   return delivery;
+}
+
+// The basis a legacy delivery records, so a reader can tell it from a completion.
+export const LEGACY_BASIS = "legacy-integration-tip";
+
+// Workloop before `completion` existed recorded no accepted version: its archive
+// wrote `finishedAt` and left the delivery as `integration.tip`. Such a run is
+// recognised by three facts of its own state.json — archived, no completion, and
+// no `archiveStartedAt`, which every archive since then writes before `finishedAt`
+// (workloop.mjs `cmdArchive`) — so a current run is never read this way. Archive
+// froze the tip, and it counts as delivered only when every ticket was integrated
+// and the tip moved past the base; a run with a cancelled ticket stays pending.
+function legacyDeliveryFrom(state) {
+  if (typeof state?.finishedAt !== "string" || !state.finishedAt || state.archiveStartedAt) return null;
+  const tip = state.integration?.tip;
+  if (typeof tip !== "string" || !tip || tip === state.baseSha) return null;
+  const tasks = state.tasks && typeof state.tasks === "object" ? Object.values(state.tasks) : [];
+  if (!tasks.length || !tasks.every((task) => task?.status === "done")) return null;
+  return {
+    state: "delivered",
+    final_tip: tip,
+    delivered_at: typeof state.lastIntegratedAt === "string" ? state.lastIntegratedAt : "",
+    archived_at: state.finishedAt,
+    basis: LEGACY_BASIS,
+  };
 }
 
 // The last Workloop command that reopened the run, for the `reason` a superseded
