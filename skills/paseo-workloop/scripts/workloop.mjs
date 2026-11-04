@@ -1950,9 +1950,6 @@ function agentConfig(opts, prefix) {
   for (const k of [...FIELDS, "profile"]) if (opts[prefix + k]) c[k] = opts[prefix + k];
   return c;
 }
-function agentArgs(c) {
-  return FIELDS.flatMap((k) => (c[k] ? [`--${k}`, c[k]] : []));
-}
 const describe = (l) => `${l.provider}${FIELDS.slice(1).map((k) => (l[k] ? ` ${k}=${l[k]}` : "")).join("")} ← ${l.source}`;
 
 // Paseo keeps agent profiles in its daemon config, the list the `list_profiles`
@@ -1989,8 +1986,6 @@ function resolveLaunch(config, role, opts = {}) {
     ? Object.fromEntries(FIELDS.filter((k) => p[PROFILE_KEYS[k]]).map((k) => [k, p[PROFILE_KEYS[k]]])) : {};
   const over = Object.keys(explicit);
   const source = !base.provider ? "run config" : `profile "${p.name}"${over.length ? ` + ${over.join(", ")} from the run` : ""}`;
-  const features = base.provider ? Object.keys(p.featureValues || {}) : [];
-  const warnings = features.length ? [`profile "${p.name}" sets ${features.join(", ")}, which the paseo CLI cannot pass; the agent starts without them`] : [];
   // Paseo starts an agent as provider/model, and an agent on another provider can't
   // inherit the orchestrator's mode, so both must be named here.
   if (!explicit.model && !base.model) {
@@ -2001,7 +1996,7 @@ function resolveLaunch(config, role, opts = {}) {
     fail(`${role}: no mode: the launch settings (${source}) set none, and the run sets no --${prefix}mode. `
       + `An agent on another provider cannot inherit the orchestrator's mode. Tell the user; don't choose for them.`);
   }
-  return { ...base, ...explicit, source, warnings, features: base.provider ? p.featureValues || {} : {} };
+  return { ...base, ...explicit, source, features: base.provider ? p.featureValues || {} : {} };
 }
 
 // Resolves, then makes sure Paseo can run the provider at all, before anything is created.
@@ -2013,7 +2008,6 @@ function launchSettings(config, role, opts) {
   const status = String(pick(p, "status") ?? "").toLowerCase();
   if (!p) fail(`${role}: provider "${id}" (${l.source}) is not one Paseo knows (${all.map((x) => pick(x, "provider", "id")).join(", ")}). Tell the user.`);
   if (status && status !== "available") fail(`${role}: provider "${id}" (${l.source}) is ${status} in Paseo. Tell the user.`);
-  if (!opts?.prepare) l.warnings.forEach((w) => say(`warning: ${role}: ${w}. Tell the user.`));
   return l;
 }
 
@@ -2024,19 +2018,6 @@ function launchTable(config) {
       return { role, error: e.message };
     }
   });
-}
-
-function startAgent(role, launch, args, prompt) {
-  let res;
-  try { res = paseo(["agent", "run", "--background", "--json", ...args, ...agentArgs(launch), prompt]); } catch (e) {
-    if (e instanceof UserError) fail(`${e.message}\n${role} launch settings: ${describe(launch)}. If Paseo rejected them, tell the user.`);
-    throw e;
-  }
-  const id = pick(res, "agentId", "id");
-  if (!id) fail(`paseo agent run returned no agent id: ${JSON.stringify(res)}`);
-  const status = String(pick(res, "status") ?? "").toLowerCase();
-  if (status === "error") say(`warning: ${role} ${id} started in status "error". Read \`paseo agent logs ${id} --tail 30\`; if its launch settings (${describe(launch)}) are the cause, tell the user.`);
-  return id;
 }
 
 // The script prepares guarded MCP calls; the orchestrator executes them in its
@@ -2232,15 +2213,16 @@ function cmdDispatch(dir, s, id, opts) {
     say(`\n(dry run: would create branch ${branch} from ${s.integration.branch} at ${short(tip)} and start an executor: ${describe(launch)})`);
     return;
   }
+  // Every dispatch is a guarded MCP request, so each names --prepare: none falls back
+  // to starting a CLI worker itself. After the dry run, which only prints.
+  if (!opts.prepare) fail(`dispatch ${t.id} needs --prepare: it prepares the MCP request you execute and acknowledge`);
 
   // 1. worktree — adopt one left by an interrupted dispatch, else create it.
   let wt = worktreeFor(s.repo, branch);
   if (t.reuseWorktree && (!wt || normPath(wt) !== normPath(t.worktree))) fail(`recovery worktree is missing or moved (branch=${branch}, registered=${JSON.stringify(wt)}, expected=${JSON.stringify(t.worktree)}, normalized=${JSON.stringify([normPath(wt), normPath(t.worktree)])}); reconcile it, or explicitly retry --new-worktree --reason <why>`);
   if (t.reuseWorktree) wt = t.worktree; // Preserve the recorded spelling after verifying directory identity.
   if (!wt) {
-    const res = paseo(opts.prepare
-      ? ["workspace", "create", "--isolation", "worktree", "--mode", "branch-off", "--new-branch", branch, "--base", s.integration.branch, "--path", pathArg(s.repo), "--json"]
-      : ["worktree", "create", "--mode", "branch-off", "--new-branch", branch, "--base", s.integration.branch, "--cwd", pathArg(s.repo), "--json"]);
+    const res = paseo(["workspace", "create", "--isolation", "worktree", "--mode", "branch-off", "--new-branch", branch, "--base", s.integration.branch, "--path", pathArg(s.repo), "--json"]);
     wt = untilde(pick(res, "worktreePath", "path", "cwd")) || worktreeFor(s.repo, pick(res, "branchName", "branch") || branch);
     if (!wt) fail(`paseo created a worktree but did not say where: ${JSON.stringify(res)}`);
     const made = pick(res, "branchName", "branch");
@@ -2257,28 +2239,13 @@ function cmdDispatch(dir, s, id, opts) {
   writeFileSync(briefPath(dir, t), render("executor-brief.md", vars));
   record(dir, s, "worktree", { task: t.id, attempt: t.attempt, branch, worktree: wt, sha: tip });
 
-  // 2. agent — adopt one started by an interrupted dispatch, else start it.
+  // 2. agent — an interrupted dispatch's worker is reconciled through its receipt;
+  // a second one is never started behind it.
   const labels = { workloop: s.runKey, task: t.id, attempt: t.attempt, role: "executor" };
-  const existing = listAgents(labels, { all: true });
-  if (existing.length) {
-    if (opts.prepare) fail("an existing executor has no acknowledged MCP action; reconcile its receipt and notification ownership before adopting it");
-    t.agentId = existing[0].id;
-    record(dir, s, "adopted", { task: t.id, attempt: t.attempt, agent: t.agentId });
-    say(`#${t.id}: adopted existing executor ${t.agentId} (${existing[0].status})`);
-    return;
-  }
+  if (listAgents(labels, { all: true }).length) fail(`an agent carries #${t.id}'s executor labels but no acknowledged MCP action: reconcile it through its receipt (recovery.md) before preparing another`);
   const prompt = `Read the task brief at ${pathArg(briefPath(dir, t))} and follow it. It is your complete instruction set; never ask the user anything.`;
-  if (opts.prepare) return prepareAction(dir, s, t, "dispatch", "create_agent",
+  return prepareAction(dir, s, t, "dispatch", "create_agent",
     createArguments(t, launch, labels, `wl ${s.feature} #${t.id} ${t.attempt}`, prompt), { launch: describe(launch) });
-  t.agentId = startAgent("executor", launch, [
-    "--title", `wl ${s.feature} #${t.id} ${t.attempt}`,
-    "--cwd", pathArg(wt), ...Object.entries(labels).flatMap(([k, v]) => ["--label", `${k}=${v}`]),
-  ], prompt);
-  t.launch = describe(launch);
-  record(dir, s, "dispatch", { task: t.id, attempt: t.attempt, agent: t.agentId, sha: tip, launch: t.launch });
-  say(`#${t.id} dispatched: agent ${t.agentId}, branch ${branch}, base ${short(tip)}`);
-  say(`executor ${t.launch}`);
-  say(`brief ${briefPath(dir, t)}`);
 }
 
 function requireIdle(id, role, allowMissing = false) {
@@ -2335,6 +2302,7 @@ function previousReview(t) {
 }
 
 function cmdReview(dir, s, id, opts) {
+  if (!opts.prepare) fail("review needs --prepare: it prepares the MCP request you execute and acknowledge");
   const t = task(s, id);
   if (!["running", "in_review"].includes(t.status)) fail(`#${t.id} is ${t.status}; nothing to review`);
   if (t.review && !opts.again) fail(`#${t.id} already has review agent ${t.review.agentId} for ${short(t.review.candidateSha)}; pass --again to start another`);
@@ -2343,7 +2311,7 @@ function cmdReview(dir, s, id, opts) {
     + tasksOf(s).filter((x) => x.pendingAction?.kind === "review").length;
   if (busy >= s.config.maxReviewers) fail(`reviewer budget full (${busy}/${s.config.maxReviewers}); patrol, or raise it with \`config --max-reviewers\``);
   const launch = launchSettings(s.config, "reviewer", opts);
-  if (t.status === "running") freeze(dir, s, t, opts.prepare);
+  if (t.status === "running") freeze(dir, s, t, true); // review prints only its request
   requireIdle(t.agentId, "executor");
   if (head(t.worktree) !== t.candidateSha || !isClean(t.worktree)) fail(`#${t.id}: worktree moved off the frozen candidate ${short(t.candidateSha)}`);
 
@@ -2372,21 +2340,10 @@ function cmdReview(dir, s, id, opts) {
   };
   writeFileSync(brief, render("reviewer-brief.md", vars));
   const labels = { workloop: s.runKey, task: t.id, attempt: t.attempt, role: "reviewer", candidate: short(t.candidateSha) };
-  const startedAt = now();
-  if (opts.prepare) return prepareAction(dir, s, t, "review", "create_agent",
+  return prepareAction(dir, s, t, "review", "create_agent",
     createArguments(t, launch, labels, `wl ${s.feature} #${t.id} review ${short(t.candidateSha)}`,
       `Read the review brief at ${pathArg(brief)} and follow it. Review only; change nothing; never ask the user anything.`),
     { candidateSha: t.candidateSha, path, launch: describe(launch), ...(ids && { criteria: ids }) });
-  const agentId = startAgent("reviewer", launch, [
-    "--title", `wl ${s.feature} #${t.id} review ${short(t.candidateSha)}`,
-    "--cwd", pathArg(t.worktree), ...Object.entries(labels).flatMap(([k, v]) => ["--label", `${k}=${v}`]),
-  ], `Read the review brief at ${pathArg(brief)} and follow it. Review only; change nothing; never ask the user anything.`);
-  displaceReview(t);
-  t.review = { agentId, candidateSha: t.candidateSha, path, startedAt, launch: describe(launch), ...(ids && { criteria: ids }) };
-  t.reviewers = [...(t.reviewers || []), agentId];
-  record(dir, s, "review", { task: t.id, attempt: t.attempt, agent: agentId, sha: t.candidateSha, launch: t.review.launch });
-  say(`#${t.id} review started: agent ${agentId} on ${short(t.candidateSha)}; report goes to ${path}`);
-  say(`reviewer ${t.review.launch}`);
 }
 
 // A rework round past the run's cap waits for the user: the orchestrator asks, then
@@ -2402,7 +2359,7 @@ function extraRound(s, t, opts) {
   }
   if (!opts["extra-round"]) {
     fail(`#${t.id}: rework round ${round} would pass the run's cap of ${cap}. The task waits for the user: decide with them whether to go on, then `
-      + `\`send ${t.id} --extra-round --reason "<the user's decision>"\``);
+      + `\`send ${t.id} --prepare --extra-round --reason "<the user's decision>"\``);
   }
   if (!opts.reason?.trim()) fail(`send --extra-round needs --reason "<the user's decision>": round ${round} goes past the cap of ${cap}, and finish lists it`);
   return { task: t.id, attempt: t.attempt, round, cap, reason: opts.reason.trim() };
@@ -2416,6 +2373,7 @@ function extraRoundsAdd(s, entry) {
 }
 
 function cmdSend(dir, s, id, opts) {
+  if (!opts.prepare) fail("send needs --prepare: it prepares the MCP request you execute and acknowledge");
   const t = task(s, id);
   if (!["running", "in_review"].includes(t.status) || !t.agentId) fail(`#${t.id} is ${t.status}; no executor to talk to`);
   let body;
@@ -2448,24 +2406,9 @@ function cmdSend(dir, s, id, opts) {
   const footer = `\n\n---\n${method}This continues task #${t.id} (brief: ${pathArg(briefPath(dir, t))}). When you stop, overwrite ${pathArg(reportPath(dir, t))} as the brief describes (first line \`Status: done | question | blocked\`). End with exactly three lines: Result: <done | question | blocked>, Report: ${pathArg(reportPath(dir, t))}, Summary: <one sentence>. Then end your turn.\n`;
   writeFileSync(file, body + footer);
   const sentAt = now(); // before sending: a fast agent may rewrite its report right away
-  if (opts.prepare) return prepareAction(dir, s, t, "send", "send_agent_prompt", {
+  return prepareAction(dir, s, t, "send", "send_agent_prompt", {
     agentId: t.agentId, prompt: body + footer, notifyOnFinish: true, activeTurnBehavior: "steer",
   }, { sentAt, n, rework, ...(waiver && { waiver }), ...(extra && { extraRound: extra }), ...(accounting?.warning && { warning: accounting.warning }) });
-  paseo(["agent", "send", t.agentId, "--prompt-file", pathArg(file), "--no-wait", "--json"]);
-  const wasReview = t.status === "in_review";
-  completeSend(t, { sentAt, n, rework });
-  // A legacy send has no receipt to wait for, so its waivers are recorded at once,
-  // in the same save as the send it belongs to.
-  const added = waiver && ledgerAdd(s, waiver);
-  const past = extra && extraRoundsAdd(s, extra);
-  recordAll(dir, s, [
-    ["send", { task: t.id, attempt: t.attempt, agent: t.agentId, file, rework: wasReview }],
-    ...(added ? [waiverEvent(added)] : []),
-    ...(past ? [["extra_round", past]] : []),
-  ]);
-  if (accounting?.warning) say(`warning: #${t.id}: ${accounting.warning}`);
-  say(`#${t.id}: message ${n} sent to ${t.agentId}${wasReview ? ` (rework round ${t.rounds}; back to running)` : ""}`);
-  if (past) say(`#${t.id}: rework round ${past.round} goes past the cap of ${past.cap}: ${past.reason}; finish lists it`);
 }
 
 // Why #t's candidate cannot be integrated, or null. Checked before the merge and
@@ -3017,7 +2960,7 @@ function printStatus(dir, s, live, asJson = false) {
       ...tasksOf(s).flatMap((t) => [t.agentId, ...(t.reviewers || []), ...t.history.map((h) => h.agentId)]),
       ...finalRounds(s).map((r) => r.agentId),
     ].filter(Boolean));
-    for (const [id, a] of agents) if (!known.has(id)) say(`warning: agent ${id} "${a.name}" (${a.status}) carries this run's label but is not recorded — a dispatch was interrupted; \`dispatch\` adopts it`);
+    for (const [id, a] of agents) if (!known.has(id)) say(`warning: agent ${id} "${a.name}" (${a.status}) carries this run's label but is not recorded — reconcile its start with \`action <NN>\` / \`ack <NN>\` (see recovery.md); do not prepare another`);
     for (const t of tasksOf(s)) {
       if (["running", "in_review"].includes(t.status) && t.worktree && !existsSync(t.worktree)) say(`warning: #${t.id} worktree is gone: ${t.worktree}`);
     }
@@ -3034,7 +2977,7 @@ function printLaunch(config, full = false) {
   for (const l of launchTable(config)) {
     if (l.error && full) say(`${l.role} UNRESOLVED: ${l.error.slice(l.role.length + 2)}`);
     else if (l.error) say(`${l.role} UNRESOLVED: ${l.error.slice(l.role.length + 2).split("\n")[0].replace(/ Profiles:$/, "")} (\`config\` lists the profiles; tell the user)`);
-    else say(`${l.role} ${describe(l)}${l.warnings.map((w) => ` · warning: ${w}`).join("")}`);
+    else say(`${l.role} ${describe(l)}`);
   }
 }
 
@@ -3103,7 +3046,7 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
   import                               re-read the tickets directory (new/repair tickets)
   decisions                            commit ADR/glossary changes before the first dispatch
   status [--live] [--json]             table + next steps; --live reconciles with Paseo and git
-  dispatch <NN> [--prepare] [--note t] [--note-file f] [--dry-run] [--profile ...]
+  dispatch <NN> --prepare [--note t] [--note-file f] [--dry-run] [--profile ...]
   patrol [--window 1] [--interval 15]    bounded diagnostic (window <= 60s)
   watch                                fresh health check; renew/remove 55m heartbeat
         [--heartbeat-id <id>]...        recover IDs from actual heartbeat receipts
@@ -3113,9 +3056,9 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
                                        - reads it from stdin and saves a copy under messages/
   freeze <NN>                          record the executor's commit as the candidate
   criteria <NN> --reason r             record the user's agreement to a change in its criteria
-  review <NN> [--prepare] [--again]     freeze if needed, prepare/start a reviewer; after a rework
-                                        the brief adds the previous review and the change since it
-  send <NN> [--prepare] --text t | --file f | --merge-tip   message an idle executor
+  review <NN> --prepare [--again]      freeze if needed, prepare a reviewer; after a rework the
+                                        brief adds the previous review and the change since it
+  send <NN> --prepare --text t | --file f | --merge-tip   message an idle executor
        [--waive ID,ID --reason r]      a rework answers every blocking finding: name it, or waive it
        [--extra-round --reason r]      a rework round past the cap goes on, with the user's decision
   integrate <NN> [--override reason]   merge, then the checks and the regression set outside the run
@@ -3141,8 +3084,7 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
 env: WORKLOOP_ROOT (default ~/.workloop) · WORKLOOP_RUN · PASEO_CLI (default "paseo")
      PASEO_HOME (default ~/.paseo; its config.json holds the profiles)
      PASEO_AGENT_ID (required for MCP preparation and watch) · PASEO_TIMEOUT_MS (30000)
-Use --prepare for agent-scoped MCP notifications; execute arguments and ack the receipt.
-Bare dispatch/review/send retain legacy CLI behavior without a callback guarantee.`;
+Use --prepare for agent-scoped MCP notifications; execute arguments and ack the receipt.`;
 
 const OPTIONS = Object.fromEntries([
   ...["run", "repo", "feature", "base", "spec", "tickets", "max-executors", "max-reviewers", "profile", "provider", "model", "mode", "thinking",

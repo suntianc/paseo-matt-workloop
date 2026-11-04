@@ -35,8 +35,6 @@ The actual `arguments` also contain the selected provider/model/settings, worksp
 
 The executor and reviewer finish with `Result`, `Report`, and `Summary` lines. Read the report and verify the live status before advancing; the notification and three lines do not replace acceptance evidence. A `question`, `blocked`, `changes_requested`, error, or missing report requires a decision by the orchestrator.
 
-Bare dispatch/review/send commands keep the legacy CLI path for existing scripts, which does not promise a finish callback; the skill's default is `--prepare` plus MCP, not a silent fallback.
-
 ## Interruption and errors
 
 Run `WL action NN` (or `WL action final`) to retrieve a pending request. **Printing the request again is not permission to execute it again.**
@@ -45,7 +43,7 @@ Run `WL action NN` (or `WL action final`) to retrieve a pending request. **Print
 - If creation may have succeeded, query the run/task/action labels (including archived agents), recover the matching agent ID and response, and acknowledge the existing worker. Never start another worker just because the acknowledgement was lost.
 - If a send may have succeeded, inspect its activity and recover its dispatch receipt. Do not resend automatically. A report can already have been rewritten before the acknowledgement arrives.
 - A confirmed creation error with no matching agent can be acknowledged with its actual `isError: true` response; no success is recorded and preparation can be retried after correcting the cause. Errors after creation and ambiguous send errors retain the pending action for reconciliation.
-- Existing legacy runs can use `WL watch` as a fallback wake-up. Do not assume old CLI workers gained notifications. Restore notifications with an agent-scoped MCP follow-up only after the worker is idle and the intended continuation has been established.
+- Restore notifications with an agent-scoped MCP follow-up only after the worker is idle and the intended continuation has been established.
 
 After a daemon restart, treat notification subscriptions as unverified. Reconcile live state and restore the watch; do not assume a stored parent label means a callback is armed. See [recovery.md](recovery.md).
 

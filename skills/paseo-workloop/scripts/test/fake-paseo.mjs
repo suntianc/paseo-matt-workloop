@@ -2,15 +2,14 @@
 // Stand-in for the paseo CLI, used by workloop.test.mjs through PASEO_CLI.
 // Implements only the subcommands and flags workloop.mjs calls, with the JSON
 // shapes recorded in ../../reference/paseo-compat.md. State: $FAKE_PASEO_DB.
-// $FAKE_PASEO_FAIL="agent run" makes that subcommand fail once (then unsets itself).
-// Providers: "fake" works, "down" is unavailable, "crashy" starts agents in status "error".
+// Providers: "fake" works, "down" is unavailable.
 // Profiles are not served here: workloop.mjs reads them from $PASEO_HOME/config.json.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const dbPath = process.env.FAKE_PASEO_DB;
-const db = existsSync(dbPath) ? JSON.parse(readFileSync(dbPath, "utf8")) : { n: 0, agents: [], workspaces: [], calls: [], failOnce: process.env.FAKE_PASEO_FAIL || null };
+const db = existsSync(dbPath) ? JSON.parse(readFileSync(dbPath, "utf8")) : { n: 0, agents: [], workspaces: [], calls: [], failOnce: null };
 const save = () => writeFileSync(dbPath, JSON.stringify(db, null, 2));
 const out = (x) => { save(); process.stdout.write(`${JSON.stringify(x, null, 2)}\n`); };
 const err = (code, message) => { save(); process.stdout.write(`${JSON.stringify({ error: { code, message } })}\n`); process.exit(1); };
@@ -23,7 +22,7 @@ if (db.failOnce === sub) { db.failOnce = null; err("INJECTED", `injected failure
 
 const flags = { label: [] };
 const pos = [];
-const BOOL = new Set(["--json", "-d", "--background", "-g", "-a", "--no-wait", "--force"]);
+const BOOL = new Set(["--json", "-d", "-g", "-a", "--force"]);
 for (let i = 2; i < argv.length; i++) {
   const a = argv[i];
   if (BOOL.has(a)) flags[a.replace(/^-+/, "")] = true;
@@ -41,8 +40,7 @@ const git = (...a) => {
 const agent = (id) => db.agents.find((a) => a.id === id || a.id.startsWith(id)) || err("NOT_FOUND", `agent ${id}`);
 
 switch (sub) {
-  case "workspace create":
-  case "worktree create": {
+  case "workspace create": {
     if (flags.mode !== "branch-off") err("UNSUPPORTED", "mode");
     const branch = flags["new-branch"].replace(/\//g, "-"); // paseo 0.11.2 flattens slashes
     const path = join(process.env.FAKE_PASEO_HOME, "worktrees", branch);
@@ -50,24 +48,16 @@ switch (sub) {
     git("-C", repo, "worktree", "add", "-b", branch, path, flags.base ?? "main");
     const workspaceId = `wks_${++db.n}`;
     db.workspaces.push({ workspaceId, project: "repo", name: branch, isolation: "worktree", cwd: path, repo, archived: false });
-    out(sub === "workspace create" ? { workspaceId, name: branch, cwd: path, isolation: "worktree" } : { name: branch, branchName: branch, worktreePath: path });
+    out({ workspaceId, name: branch, cwd: path, isolation: "worktree" });
     break;
   }
   case "provider ls":
     out([
       { provider: "fake", label: "Fake", status: "available", enabled: "Enabled", defaultMode: "full", modes: "Full Access" },
-      { provider: "crashy", label: "Crashy", status: "available", enabled: "Enabled", defaultMode: "full", modes: "Full Access" },
+      { provider: "other", label: "Other", status: "available", enabled: "Enabled", defaultMode: "full", modes: "Full Access" },
       { provider: "down", label: "Down", status: "unavailable", enabled: "Disabled", defaultMode: "default", modes: "" },
     ]);
     break;
-  case "agent run": {
-    const id = `${String(++db.n).padStart(8, "0")}-fake-agent`;
-    const labels = Object.fromEntries(flags.label.map((l) => l.split("=")));
-    const status = flags.provider === "crashy" ? "error" : "running";
-    db.agents.push({ id, title: flags.title, cwd: flags.cwd, labels, status, archived: false, prompts: [pos.at(-1)], args: argv, updatedAt: new Date().toISOString() });
-    out({ agentId: id, status, cwd: flags.cwd });
-    break;
-  }
   case "agent ls": {
     const want = flags.label.map((l) => l.split("="));
     out(db.agents.filter((a) => (flags.a || !a.archived) && want.every(([k, v]) => a.labels[k] === v))
@@ -79,14 +69,6 @@ switch (sub) {
     out({ Id: a.id, Name: a.title, Status: a.status, Archived: a.archived, Cwd: a.cwd, UpdatedAt: a.updatedAt, PendingPermissions: a.pending || [], ParentAgentId: a.parentAgentId || null });
     break;
   }
-  case "agent send": {
-    const a = agent(pos[0]);
-    if (a.archived) err("SEND_FAILED", "Working directory does not exist");
-    a.prompts.push(readFileSync(flags["prompt-file"], "utf8"));
-    a.status = "running";
-    out({ agentId: a.id, status: "running" });
-    break;
-  }
   case "agent archive": {
     const a = agent(pos[0]);
     Object.assign(a, { archived: true, status: "closed" });
@@ -96,7 +78,7 @@ switch (sub) {
   case "agent logs": {
     const a = agent(pos[0]);
     save();
-    process.stdout.write(a.prompts.join("\n\n"));
+    process.stdout.write((a.prompts || []).join("\n\n"));
     break;
   }
   case "schedule ls":

@@ -19,8 +19,8 @@ It compares the run state with Paseo and with git, and warns about these things.
 
 **An agent that carries the run's labels but isn't recorded.**
 
-- *Cause:* a dispatch was interrupted after `agent run` but before the state was saved.
-- *Fix:* For a prepared MCP action, recover the existing worker's ID and acknowledge its receipt. For legacy CLI dispatches, `WL dispatch <NN>` adopts the existing agent instead of starting a second one. Do not mix these recovery paths.
+- *Cause:* a dispatch was interrupted after its `create_agent` request was executed but before its receipt was acknowledged. (The same warning catches a worker some other process started with this run's labels.)
+- *Fix:* Recover the existing worker's ID and acknowledge the prepared MCP action's receipt. `WL dispatch <NN>` refuses while such an agent exists, so it never starts a second one; do not prepare another.
 
 **A running or in-review task whose worktree has gone.**
 
