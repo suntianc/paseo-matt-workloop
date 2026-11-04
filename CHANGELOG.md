@@ -2,6 +2,28 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
+## [Unreleased]
+
+### Summary
+
+Three changes trim the workflow on evidence from the maintainer's 19 recorded runs. `dispatch`, `review` and `send` keep only the prepared MCP path that every recorded run used, so a bare command now refuses. A new run's acceptance criteria each say how they are checked: a command, or why none can, so a manual criterion is a choice the user confirms rather than a forgotten command. And `finish` writes the reviews' out-of-scope suggestions to one file instead of printing hundreds of lines.
+
+### Changes
+
+- **Breaking:** `dispatch`, `review` and `send` refuse without `--prepare`, as `final-review` already did; `dispatch --dry-run` still only prints. The legacy path that started or messaged a worker through `paseo agent run` / `paseo agent send` is gone, with its adoption of an unrecorded labelled agent and the warning that a CLI launch drops a profile's features. All 342 dispatch, review and send events in the recorded runs used the prepared path. `status --live` now points an unrecorded labelled agent at its receipt, and the [recovery reference](skills/paseo-workloop/reference/recovery.md) says the same.
+- **Changed:** In a run created by this version, every acceptance criterion ends in `— check: \`<command>\`` or `— manual: <why no command can check it>`. `init` and `import` refuse a criterion with neither, with both, or with an empty or placeholder reason, naming the ticket and line. The reason is part of the confirmed criterion, so a change to it goes through `criteria --reason`. This replaces the warning for a ticket with no command at all. The [direct](skills/paseo-workloop/templates/direct-ticket.md) and [repair](skills/paseo-workloop/templates/repair-ticket.md) ticket templates show both endings and no longer list "The run's checks pass.", which every integration checks anyway.
+- **Changed:** `finish` writes every `## Out of scope` suggestion, grouped by ticket and review, to `suggestions.md` in the run directory, and prints how many each ticket raised and the file's path instead of the list.
+- **Fixed:** A suggestion wrapped over several lines was read as several, and a review's closing fenced block (`Result:`, `Summary:`) under `## Out of scope` was read as suggestions. Each item is now one suggestion and fenced blocks are skipped; on one recorded run, 275 printed lines become 115 suggestions. `workloop-audit` counts suggestions the same way.
+
+### Upgrade
+
+Scripts that call bare `dispatch`, `review` or `send` must pass `--prepare`, execute the printed MCP request and acknowledge it with `ack`, as the skill already directs. Runs created before this version keep reading a criterion without `check:` or `manual:` as manual; only runs created after it need the new ending. Requires Node.js 20+, npm and Git.
+
+### Verification
+
+- All 390 local tests pass (`npm test`), including the refusal of bare `dispatch`, `review` and `send` with no state change, a dry run that still only prints, a labelled agent no state accounts for refusing a second dispatch, the acceptance rule at `init`, `import` and `criteria` and for direct runs, older runs keeping bare criteria, and `suggestions.md` with wrapped items joined and fenced blocks skipped.
+- Extraction was compared on the four recorded runs with suggestions: 275 → 115, 132 → 83, 61 → 17 and 36 → 36 items, with no closing block left.
+
 ## [3.2.2] - 2026-11-03
 
 ### Summary

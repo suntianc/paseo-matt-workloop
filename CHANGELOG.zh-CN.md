@@ -2,6 +2,28 @@
 
 [English](CHANGELOG.md) · **简体中文**
 
+## [未发布]
+
+### 摘要
+
+三项改动依据维护者机器上 19 个已记录 run 的数据精简工作流。`dispatch`、`review`、`send` 只保留所有已记录 run 都在用的 MCP 预备路径，裸命令改为拒绝。新 run 的每条验收标准都写明怎么验证：给出命令，或说明为何没有命令能验证，让手工验收成为用户确认过的选择，而不是漏写的命令。`finish` 把各轮评审的范围外建议写进一个文件，不再打印成百上千行。
+
+### 变更
+
+- **不兼容变更：** 不带 `--prepare` 的 `dispatch`、`review`、`send` 改为拒绝，与 `final-review` 一致；`dispatch --dry-run` 仍只打印。通过 `paseo agent run` / `paseo agent send` 启动或发消息的旧路径已删除，连同对未记录的同标签 agent 的认领，以及 CLI 启动会丢失 profile features 的警告。已记录 run 中全部 342 次 dispatch、review、send 都走预备路径。`status --live` 现在提示用回执对账未记录的同标签 agent，[恢复参考](skills/paseo-workloop/reference/recovery.md)同步说明。
+- **调整：** 本版本创建的 run 中，每条验收标准须以 `— check: \`<命令>\`` 或 `— manual: <为何没有命令能验证>` 结尾。`init` 和 `import` 拒绝两者皆无、两者皆有、理由为空或仍是占位符的标准，并指出 ticket 与行号。理由属于已确认标准的一部分，修改须经 `criteria --reason`。此规则取代原先对整张 ticket 没有命令的警告。[Direct](skills/paseo-workloop/templates/direct-ticket.md) 与[修复](skills/paseo-workloop/templates/repair-ticket.md) ticket 模板展示两种结尾，并删去每次合入都会检查的 “The run's checks pass.”。
+- **调整：** `finish` 把每条 `## Out of scope` 建议按 ticket 和评审分组写入 run 目录下的 `suggestions.md`，只打印每个 ticket 的建议条数和文件路径，不再列出全文。
+- **修复：** 跨多行的一条建议会被读成多条，评审在 `## Out of scope` 下收尾的围栏块（`Result:`、`Summary:`）也会被当成建议。现在每个条目算一条建议，围栏块跳过；在一个已记录 run 上，275 行打印输出变为 115 条建议。`workloop-audit` 按同一方式计数。
+
+### 升级说明
+
+调用裸 `dispatch`、`review`、`send` 的脚本须加 `--prepare`，执行打印出的 MCP 请求并用 `ack` 确认，技能本身早已如此要求。本版本之前创建的 run 仍把没有 `check:` 或 `manual:` 的标准读作手工验收；只有之后创建的 run 需要新结尾。运行需要 Node.js 20+、npm 和 Git。
+
+### 验证
+
+- 全部 390 个本地测试通过（`npm test`），覆盖裸 `dispatch`、`review`、`send` 被拒且不改状态、dry run 仍只打印、状态无法解释的同标签 agent 阻止再次派发、`init`、`import`、`criteria` 与 Direct run 中的验收规则、旧 run 保留裸标准，以及 `suggestions.md` 合并折行条目并跳过围栏块。
+- 在四个有建议的已记录 run 上对比提取结果：275 → 115、132 → 83、61 → 17、36 → 36 条，没有残留收尾块。
+
 ## [3.2.2] - 2026-11-03
 
 ### 摘要
