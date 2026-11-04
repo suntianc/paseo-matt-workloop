@@ -14,7 +14,7 @@ import {
   readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { HeartbeatError, maintainHeartbeat } from "./heartbeat.mjs";
@@ -605,19 +605,41 @@ function runReviews(s) {
   return out;
 }
 
-// The suggestions a review listed under `## Out of scope`: one per non-empty line,
-// bullets and numbering removed, up to the next heading.
+// The suggestions a review listed under `## Out of scope`, up to the next heading:
+// one per bullet or numbered item, its bullet removed. A wrapped item's following
+// lines join it; a blank line ends it, and prose after one is an item of its own. A
+// fenced block is no suggestion — reviewers end their report with one holding the
+// Result/Report/Summary lines — so its lines are skipped.
 export function outOfScope(text) {
   const out = [];
   let inside = false;
+  let fence = null;
+  let open = false;
   for (const line of String(text ?? "").replace(/\r/g, "").split("\n")) {
+    const fenceMark = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      if (fenceMark && fenceMark[1][0] === fence[0] && fenceMark[1].length >= fence.length) fence = null;
+      continue;
+    }
     if (/^#{1,6}\s/.test(line)) {
       inside = /^#{1,6}\s+out of scope[*_\s]*$/i.test(line.trim());
+      open = false;
       continue;
     }
     if (!inside) continue;
-    const item = line.trim().replace(/^(?:[-*+]|\d+[.)])\s+/, "").trim();
-    if (item) out.push(item);
+    if (fenceMark) {
+      fence = fenceMark[1];
+      open = false;
+      continue;
+    }
+    const trimmed = line.trim();
+    if (!trimmed) { open = false; continue; }
+    const bullet = trimmed.match(/^(?:[-*+]|\d+[.)])\s+/);
+    const item = trimmed.slice(bullet ? bullet[0].length : 0).trim();
+    if (!item) continue;
+    if (open && !bullet) out[out.length - 1] += ` ${item}`;
+    else out.push(item);
+    open = true;
   }
   return out;
 }
@@ -626,7 +648,7 @@ export function outOfScope(text) {
 // went past the cap, and everything the reviews raised outside the boundary — the
 // suggestions they decide, which never gated anything. Null when the run predates
 // the boundary, which has none of this.
-function boundaryReport(s) {
+function boundaryReport(dir, s) {
   if (!numberedCriteria(s)) return null;
   const extras = s.extraRounds || [];
   const out = [];
@@ -639,7 +661,8 @@ function boundaryReport(s) {
     for (const f of (parseFindings(text) || []).filter((x) => x.blocking && !inBoundary(x, ids))) {
       out.push({ who: `#${t.id}`, ...f });
     }
-    for (const line of outOfScope(text)) scope.push({ who: `#${t.id}`, line });
+    const items = outOfScope(text);
+    if (items.length) scope.push({ who: `#${t.id}`, title: t.title, path: review.path, items });
   }
   // The final reviewer's report is bounded the same way: what its mapping, criteria,
   // ledger and floor classes did not cover is a suggestion for the user.
@@ -650,7 +673,8 @@ function boundaryReport(s) {
     for (const f of (parseFindings(r.text) || []).filter((x) => x.blocking && !inFinalBoundary(x, boundary))) {
       out.push({ who: "final review", ...f });
     }
-    for (const line of outOfScope(r.text)) scope.push({ who: "final review", line });
+    const items = outOfScope(r.text);
+    if (items.length) scope.push({ who: "final review", title: null, path: round.path, items });
   }
   return [
     extras.length
@@ -662,10 +686,34 @@ function boundaryReport(s) {
       ? ["out-of-boundary findings — raised outside the confirmed criteria and floor classes; the user decides:",
         ...out.map((f) => `- ${f.who} ${f.id} · ${f.axis} · ${f.location} · ${f.basis}`)].join("\n")
       : "out-of-boundary findings: none",
-    scope.length
-      ? ["suggestions from `## Out of scope` — the user decides:", ...scope.map((x) => `- ${x.who}: ${x.line}`)].join("\n")
-      : "out-of-scope suggestions: none",
+    scope.length ? suggestionsSummary(writeSuggestions(dir, s, scope), scope) : "out-of-scope suggestions: none",
   ].join("\n");
+}
+
+// The reviews' `## Out of scope` suggestions go to one file in the run directory,
+// grouped by ticket and then by review, so the user reads them in one place and a
+// suggestion a later round repeats sits next to the first. finish prints the counts
+// and the path; printed one per line, a run's suggestions ran to hundreds of lines.
+function writeSuggestions(dir, s, scope) {
+  const path = join(dir, "suggestions.md");
+  const lines = [`# Out-of-scope suggestions: ${s.project}/${s.feature}`, "",
+    "The reviews raised these outside the confirmed criteria and floor classes. Nothing gated on them; each is the user's to decide.", ""];
+  let who = null;
+  for (const g of scope) {
+    if (g.who !== who) {
+      who = g.who;
+      lines.push(g.title ? `## ${g.who} ${g.title}` : `## ${g.who[0].toUpperCase()}${g.who.slice(1)}`, "");
+    }
+    lines.push(`### ${relative(dir, g.path).replace(/\\/g, "/")}`, "", ...g.items.map((i) => `- ${i}`), "");
+  }
+  writeFileSync(path, lines.join("\n"));
+  return path;
+}
+function suggestionsSummary(path, scope) {
+  const counts = new Map();
+  for (const g of scope) counts.set(g.who, (counts.get(g.who) || 0) + g.items.length);
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  return `suggestions from \`## Out of scope\`: ${total} (${[...counts].map(([w, n]) => `${w} ${n}`).join(", ")}) — the user decides; all of them, by ticket and review: ${path}`;
 }
 
 // The ledger: every finding the orchestrator let through, with its reason. It
@@ -1367,9 +1415,17 @@ export function ticketScope(file, text) {
 // own `AC<n>` ID, unique within the ticket, so a review finding can cite it and a
 // change to one is visible. A ticket that breaks either rule is refused, naming the
 // ticket and the line. Runs created earlier read tickets as before, with `id: null`.
+//
+// `explicit` is what a run created by this version uses on top of that: a criterion
+// ends in either `— check: \`<command>\`` or `— manual: <why no command can check
+// it>`, so a criterion is manual by choice, which the user sees when confirming the
+// tickets, and never by omission. The reason is part of the confirmed criterion.
+// Runs created earlier keep reading a criterion without either as manual, and keep
+// any "manual:" text as part of the criterion.
 const CHECK_MARKER = /(?:—\s*|(?<![\w-])--?\s*)check\s*:/i;
+const MANUAL_MARKER = /(?:—\s*|(?<![\w-])--?\s*)manual\s*:/i;
 const CRITERION_ID = /^AC(\d+)\s*:\s*/i;
-export function acceptanceCriteria(file, text, { numbered = false } = {}) {
+export function acceptanceCriteria(file, text, { numbered = false, explicit = false } = {}) {
   const out = [];
   const seen = new Map(); // ID -> 1-based line number of the criterion that claimed it
   const lines = text.replace(/\r/g, "").split("\n");
@@ -1382,19 +1438,32 @@ export function acceptanceCriteria(file, text, { numbered = false } = {}) {
     const id = idm ? `AC${idm[1]}` : null;
     if (idm) body = body.slice(idm[0].length).trim();
     const marker = body.match(CHECK_MARKER);
-    const criterion = marker ? body.slice(0, marker.index).replace(/[\s—–-]+$/, "").trim() : body;
+    const manual = explicit ? body.match(MANUAL_MARKER) : null;
+    const end = Math.min(marker?.index ?? Infinity, manual?.index ?? Infinity);
+    const criterion = end < Infinity ? body.slice(0, end).replace(/[\s—–-]+$/, "").trim() : body;
     if (numbered) {
       if (!id) fail(`${basename(file)}:${n}: the acceptance criterion "${criterion.slice(0, 60)}" has no ID; write "- [ ] AC1: ${body.slice(0, 60)}"`);
       const was = seen.get(id);
       if (was) fail(`${basename(file)}:${n}: ${id} is already the ID of the criterion on line ${was}; an acceptance ID is unique within its ticket`);
       seen.set(id, n);
     }
+    if (explicit) {
+      const name = id ?? `"${criterion.slice(0, 60)}"`;
+      if (marker && manual) fail(`${basename(file)}:${n}: ${name} has both "check:" and "manual:"; keep the command, or say why none can check it — not both`);
+      if (!marker && !manual) fail(`${basename(file)}:${n}: ${name} names no command and no reason it is manual; end it with "— check: \`<command>\`", or with "— manual: <why no command can check it>"`);
+    }
+    if (manual) {
+      const reason = body.slice(manual.index + manual[0].length).trim();
+      if (!reason || /<[^<>]*>/.test(reason)) fail(`${basename(file)}:${n}: the manual reason for ${id ?? `"${criterion.slice(0, 60)}"`} is ${reason ? "a template placeholder" : "empty"}; say why no command can check it`);
+      out.push({ id, criterion, command: null, manual: reason });
+      continue;
+    }
     if (!marker) {
       out.push({ id, criterion, command: null });
       continue;
     }
     const span = body.slice(marker.index + marker[0].length).match(/`([^`]*)`/);
-    if (!span) fail(`${basename(file)}: the acceptance line "${criterion.slice(0, 60)}" ends in "check:" but names no command in backticks; drop "check:" to make it a manual criterion`);
+    if (!span) fail(`${basename(file)}: the acceptance line "${criterion.slice(0, 60)}" ends in "check:" but names no command in backticks; ${explicit ? `replace "check:" with "manual: <why no command can check it>"` : `drop "check:"`} to make it a manual criterion`);
     const command = span[1].trim();
     if (!command || /<[^<>]*>/.test(command)) {
       fail(`${basename(file)}: the acceptance command for "${criterion.slice(0, 60)}" is a template placeholder (${command || "empty"}); name the command that proves it`);
@@ -1413,16 +1482,21 @@ export function acceptanceCommands(file, text, opts) {
 // Runs created by this version record that they use numbered, frozen criteria.
 // State without the marker predates it, and reads its tickets as before.
 const numberedCriteria = (s) => Boolean(s.reviewBoundary);
+// Runs created by this version also require every criterion to name its command or
+// why it is manual. State without the marker reads a bare criterion as manual.
+const explicitAcceptance = (s) => Boolean(s.explicitAcceptance);
+const criteriaOptions = (s) => ({ numbered: numberedCriteria(s), explicit: explicitAcceptance(s) });
 
-// The IDs whose criterion text, command or presence differs from the confirmed
-// set, in the ticket file's order and then the IDs only the confirmed set has.
+// The IDs whose criterion text, command, manual reason or presence differs from the
+// confirmed set, in the ticket file's order and then the IDs only the confirmed set has.
 export function criteriaDiff(confirmed = [], current = []) {
   const was = new Map(confirmed.map((c) => [c.id, c]));
   const now = new Set(current.map((c) => c.id));
   return [
     ...current.filter((c) => {
       const old = was.get(c.id);
-      return !old || old.criterion !== c.criterion || (old.command ?? null) !== (c.command ?? null);
+      return !old || old.criterion !== c.criterion || (old.command ?? null) !== (c.command ?? null)
+        || (old.manual ?? null) !== (c.manual ?? null);
     }).map((c) => c.id),
     ...confirmed.filter((c) => !now.has(c.id)).map((c) => c.id),
   ];
@@ -1437,7 +1511,7 @@ function criteriaGate(s, t) {
   if (!existsSync(t.file)) return `#${t.id}: its ticket file is gone (${t.file}); restore it before continuing`;
   let current;
   try {
-    current = acceptanceCriteria(t.file, readFileSync(t.file, "utf8"), { numbered: true });
+    current = acceptanceCriteria(t.file, readFileSync(t.file, "utf8"), criteriaOptions(s));
   } catch (e) {
     if (!(e instanceof UserError)) throw e;
     return `#${t.id}: its criteria cannot be read: ${e.message}`;
@@ -1470,14 +1544,14 @@ function globRe(glob) {
 // A glob without wildcards also covers everything below it, so "src/foo" reads as the file or the directory.
 export const inScope = (path, scope) => scope.some((g) => globRe(g).test(path) || (!/[*?]/.test(g) && path.startsWith(`${g}/`)));
 
-function readTickets(dir, { numbered = false } = {}) {
+function readTickets(dir, { numbered = false, explicit = false } = {}) {
   if (!existsSync(dir)) fail(`tickets directory not found: ${dir}`);
   const tickets = readdirSync(dir).filter((f) => f.endsWith(".md"))
     .map((f) => {
       const file = join(dir, f);
       const text = readFileSync(file, "utf8");
       const t = parseTicket(file, text);
-      const criteria = t && acceptanceCriteria(file, text, { numbered });
+      const criteria = t && acceptanceCriteria(file, text, { numbered, explicit });
       return t && { ...t, criteria, acceptance: criterionCommands(criteria) };
     }).filter(Boolean);
   if (!tickets.length) fail(`no NN-slug.md tickets in ${dir}`);
@@ -1506,13 +1580,6 @@ function readTickets(dir, { numbered = false } = {}) {
   tickets.forEach((t) => visit(t, []));
   return { tickets, warnings };
 }
-
-// A full-run ticket with no acceptance command still integrates; only the run's
-// checks guard it afterwards. Say so rather than refusing: a manual criterion is
-// legitimate, it just cannot join the regression set. Closed tickets are history.
-const missingAcceptance = (tickets, tasks) => tickets
-  .filter((k) => !k.acceptance.length && !["done", "cancelled"].includes(tasks?.[k.id]?.status ?? "ready"))
-  .map((k) => `ticket ${k.id} (${k.title}) names no acceptance command; a later ticket can break it without integration noticing`);
 
 // The regression set: every integrated ticket's acceptance commands, in ticket
 // number order, run again at each later integration and at finish. Each entry
@@ -1878,7 +1945,7 @@ async function cmdInit(opts) {
   const { repo, project, dir } = runLocation(opts);
   if (existsSync(statePath(dir))) fail(`a run already exists at ${dir}`);
   const ticketsDir = resolve(opts.tickets || join(dir, "issues"));
-  const { tickets, warnings } = readTickets(ticketsDir, { numbered: true });
+  const { tickets, warnings } = readTickets(ticketsDir, { numbered: true, explicit: true });
   if (opts.direct) {
     if (tickets.length !== 1) fail(`a direct run takes exactly one ticket; ${ticketsDir} has ${tickets.length}`);
     if (!ticketScope(tickets[0].file, readFileSync(tickets[0].file, "utf8"))) fail(`${basename(tickets[0].file)}: a direct run needs a "Scope:" line listing the paths it may change`);
@@ -1924,10 +1991,9 @@ async function cmdInit(opts) {
     version: 1, project, feature: opts.feature, runKey: `${project}-${opts.feature}`, mode: opts.direct ? "direct" : "full",
     repo, spec, tickets: ticketsDir, baseRef, baseSha,
     integration: { branch, worktree: integ, tip: baseSha },
-    config, tasks: {}, seq: 0, createdAt: now(), reviewBoundary: 1,
+    config, tasks: {}, seq: 0, createdAt: now(), reviewBoundary: 1, explicitAcceptance: 1,
   };
   mergeTickets(state, tickets, { numbered: true });
-  if (!opts.direct) warnings.push(...missingAcceptance(tickets));
   for (const d of ["briefs", "reports", "reviews", "messages"]) mkdirSync(join(dir, d), { recursive: true });
   record(dir, state, "init", { baseSha, tasks: Object.keys(state.tasks) });
   warnings.forEach((w) => say(`warning: ${w}`));
@@ -2155,7 +2221,7 @@ function cmdCriteria(dir, s, id, opts) {
   if (!numberedCriteria(s)) fail(`this run predates numbered acceptance criteria, so #${t.id} has no confirmed set to change; it reads its tickets as before`);
   if (!opts.reason?.trim()) fail(`criteria needs --reason "<the user's decision>": a change follows the user's agreement, and finish lists it with that reason`);
   if (!existsSync(t.file)) fail(`#${t.id}: its ticket file is gone (${t.file}); restore it before recording its criteria`);
-  const current = acceptanceCriteria(t.file, readFileSync(t.file, "utf8"), { numbered: true });
+  const current = acceptanceCriteria(t.file, readFileSync(t.file, "utf8"), criteriaOptions(s));
   const ids = criteriaDiff(t.criteria ?? [], current);
   if (!ids.length) return say(`#${t.id}: its criteria are unchanged; nothing recorded`);
   const entry = { task: t.id, ids, reason: opts.reason.trim(), at: now() };
@@ -2166,8 +2232,8 @@ function cmdCriteria(dir, s, id, opts) {
 }
 
 function cmdImport(dir, s) {
-  const numbered = numberedCriteria(s);
-  const { tickets, warnings } = readTickets(s.tickets, { numbered });
+  const { numbered, explicit } = criteriaOptions(s);
+  const { tickets, warnings } = readTickets(s.tickets, { numbered, explicit });
   if (isDirect(s)) {
     const added = tickets.filter((k) => !s.tasks[k.id]);
     if (added.length && (added.length !== 1 || tasksOf(s).some((t) => t.status !== "done")
@@ -2177,7 +2243,6 @@ function cmdImport(dir, s) {
     for (const k of added) if (!ticketScope(k.file, readFileSync(k.file, "utf8"))) fail(`direct repair #${k.id} needs a "Scope:" line`);
   }
   const changes = mergeTickets(s, tickets, { numbered });
-  if (!isDirect(s)) warnings.push(...missingAcceptance(tickets, s.tasks));
   const missing = Object.values(s.tasks).filter((t) => !tickets.some((k) => Number(k.id) === Number(t.id)));
   record(dir, s, "import", { changes });
   warnings.forEach((w) => say(`warning: ${w}`));
@@ -2458,7 +2523,7 @@ function cmdIntegrate(dir, s, id, opts) {
   // Read fresh, as `freeze` reads Scope: the commands that run are the ticket's
   // now, and they are stored on the task only when this integration is recorded.
   if (!existsSync(t.file)) fail(`#${t.id}: its ticket file is gone (${t.file}); restore it before integrating`);
-  const acceptance = acceptanceCommands(t.file, readFileSync(t.file, "utf8"), { numbered: numberedCriteria(s) });
+  const acceptance = acceptanceCommands(t.file, readFileSync(t.file, "utf8"), criteriaOptions(s));
   const integ = s.integration.worktree;
   const prev = s.integration.tip;
 
@@ -2700,7 +2765,7 @@ function completeFinish(dir, s, phase, checks, minutes) {
   // The whole ledger, for the user: these are the findings the run let through,
   // and the criteria changes it accepted.
   say(waiverReport(s));
-  const boundary = boundaryReport(s);
+  const boundary = boundaryReport(dir, s);
   if (boundary) say(boundary);
   say(criteriaReport(s));
   say("Nothing was pushed or merged into the base; that is the user's call.");

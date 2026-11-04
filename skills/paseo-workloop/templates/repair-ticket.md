@@ -10,7 +10,7 @@ Found in: <the final reviewer's report at <tip sha>, or where else you saw it>
      - Reproduce: a command you ran yourself on the integration tip, and what it printed. Not something an agent told you.
      - Keep what you saw (Symptom, Reproduce) apart from what you think caused it (Known cause).
      - Say what must be true when it's fixed. Prescribe the fix only if you know it.
-     - Give the acceptance items the command that proves them, after `— check: \`<command>\``: integration runs it again at every later integration and at finish, from the root of the integrated tree, so it must be repeatable.
+     - Give the acceptance items the command that proves them, after `— check: \`<command>\``: integration runs it again at every later integration and at finish, from the root of the integrated tree, so it must be repeatable. An item no command can check ends in `— manual: <why>` instead; `import` refuses one with neither. The run's checks run at every integration, so no item repeats them.
      - Number the items `AC1`, `AC2`, …: `import` records them, and a later change is recorded with `WL criteria` after the user agrees to it.
      - Bound every item: the reviewer holds it to its letter. Replace "all", "every", "never" with the scope they cover, and write a known limit into the item. -->
 
@@ -43,5 +43,4 @@ What you have established, with the evidence: file and line, a log line, a bisec
 ## Acceptance
 
 - [ ] AC1: The command under Reproduce gives the expected result — check: `<the command under Reproduce>`
-- [ ] AC2: A regression test fails on `<sha>` and passes with the fix.
-- [ ] AC3: The run's checks pass.
+- [ ] AC2: A regression test fails on `<sha>` and passes with the fix — manual: the reviewer runs it on both commits

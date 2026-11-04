@@ -15,7 +15,7 @@ const FAKE = join(HERE, "fake-paseo.mjs");
 const CHECK = `node -e "process.exit(require('fs').existsSync('BROKEN') ? 1 : 0)"`;
 
 const TICKETS = {
-  "01-schema.md": "# 01: Schema\n\n**What to build:** the table.\n\n**Blocked by:** None (can start immediately)\n\n**Status:** ready-for-agent\n\n- [ ] AC1: works\n",
+  "01-schema.md": "# 01: Schema\n\n**What to build:** the table.\n\n**Blocked by:** None (can start immediately)\n\n**Status:** ready-for-agent\n\n- [ ] AC1: works — manual: a reviewer reads it\n",
   "02-api.md": "# 02: API\n\n**What to build:** endpoints.\n\n**Blocked by:** 01\n\n**Status:** ready-for-agent\n",
   "03-ui.md": "# 03: UI over OAuth2\n\n## What to build\n\nScreens.\n\n## Blocked by\n\n- 01 (schema)\n- [02: API](./02-api.md)\n",
 };
@@ -347,6 +347,21 @@ test("criteria: a numbered line yields its ID, criterion and command; a numbered
     /01-a\.md:2: AC1 is already the ID of the criterion on line 1/);
   // A placeholder command is still refused, numbered or not.
   assert.throws(() => acceptanceCriteria("/x/01-a.md", "- [ ] AC1: it works — check: `<cmd>`\n", { numbered: true }), /template placeholder/);
+  // An explicit run reads a manual reason after either dash, and refuses a line with neither or both.
+  const explicit = { numbered: true, explicit: true };
+  assert.deepEqual(acceptanceCriteria("/x/02-b.md", "- [ ] AC1: reads well — manual: a judgement about wording\n- [ ] AC2: works -- check: `npm test`\n- [ ] AC3: lit -- MANUAL: needs the real device\n", explicit), [
+    { id: "AC1", criterion: "reads well", command: null, manual: "a judgement about wording" },
+    { id: "AC2", criterion: "works", command: "npm test" },
+    { id: "AC3", criterion: "lit", command: null, manual: "needs the real device" },
+  ]);
+  assert.throws(() => acceptanceCriteria("/x/02-b.md", "- [ ] AC1: works\n", explicit), /02-b\.md:1: AC1 names no command and no reason it is manual/);
+  assert.throws(() => acceptanceCriteria("/x/02-b.md", "- [ ] AC1: works — check:\n", explicit), /replace "check:" with "manual: <why no command can check it>"/);
+  // Without the rule, "manual:" is ordinary text in the criterion.
+  assert.deepEqual(acceptanceCriteria("/x/02-b.md", "- [ ] AC1: reads well — manual: by eye\n", { numbered: true }), [{ id: "AC1", criterion: "reads well — manual: by eye", command: null }]);
+  // The ticket templates still need filling in under the rule.
+  for (const t of ["direct-ticket.md", "repair-ticket.md"]) {
+    assert.throws(() => acceptanceCriteria(`/x/01-${t}`, readFileSync(join(HERE, "..", "..", "templates", t), "utf8"), explicit), /template placeholder/, t);
+  }
 });
 
 test("criteria: init and import refuse an un-numbered or repeated criterion, naming the ticket and line", () => {
@@ -355,7 +370,7 @@ test("criteria: init and import refuse an un-numbered or repeated criterion, nam
   assert.equal(existsSync(join(bad.runDir, "state.json")), false);
   assert.equal(spawnSync("git", ["-C", bad.repo, "rev-parse", "--verify", "workloop/feat"], { env: bad.env }).status, 128);
 
-  const dup = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `npm test`\n- [ ] AC1: two\n" } });
+  const dup = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `npm test`\n- [ ] AC1: two — manual: a reviewer reads it\n" } });
   dup.no(/01-a\.md:6: AC1 is already the ID of the criterion on line 5/, "init", "--feature", "feat", "--repo", dup.repo, "--check", CHECK);
 
   const sb = sandbox();
@@ -364,30 +379,31 @@ test("criteria: init and import refuse an un-numbered or repeated criterion, nam
   assert.equal(sb.state().tasks["04"], undefined);
 });
 
-test("criteria: the direct and repair ticket templates number their criteria", () => {
+test("criteria: the direct and repair ticket templates number their criteria and end each with a command or a manual reason", () => {
   const templates = join(HERE, "..", "..", "templates");
-  const direct = readFileSync(join(templates, "direct-ticket.md"), "utf8").replace("`<command that proves it>`", "`npm test`");
-  assert.deepEqual(acceptanceCriteria("/x/01-a.md", direct, { numbered: true }), [
+  const explicit = { numbered: true, explicit: true };
+  const direct = readFileSync(join(templates, "direct-ticket.md"), "utf8").replace("`<command that proves it>`", "`npm test`")
+    .replaceAll("<why no command can check it>", "a judgement about wording");
+  assert.deepEqual(acceptanceCriteria("/x/01-a.md", direct, explicit), [
     { id: "AC1", criterion: "<criterion>", command: "npm test" },
-    { id: "AC2", criterion: "The run's checks pass.", command: null },
+    { id: "AC2", criterion: "<criterion no command can check>", command: null, manual: "a judgement about wording" },
   ]);
   const repair = readFileSync(join(templates, "repair-ticket.md"), "utf8").replace("`<the command under Reproduce>`", "`npm test`");
-  assert.deepEqual(acceptanceCriteria("/x/02-fix-a.md", repair, { numbered: true }).map((c) => [c.id, c.criterion]), [
-    ["AC1", "The command under Reproduce gives the expected result"],
-    ["AC2", "A regression test fails on `<sha>` and passes with the fix."],
-    ["AC3", "The run's checks pass."],
+  assert.deepEqual(acceptanceCriteria("/x/02-fix-a.md", repair, explicit), [
+    { id: "AC1", criterion: "The command under Reproduce gives the expected result", command: "npm test" },
+    { id: "AC2", criterion: "A regression test fails on `<sha>` and passes with the fix", command: null, manual: "the reviewer runs it on both commits" },
   ]);
 });
 
 test("criteria: init and import record each ticket's confirmed set", () => {
   const sb = sandbox();
-  assert.deepEqual(sb.state().tasks["01"].criteria, [{ id: "AC1", criterion: "works", command: null }]);
+  assert.deepEqual(sb.state().tasks["01"].criteria, [{ id: "AC1", criterion: "works", command: null, manual: "a reviewer reads it" }]);
   assert.deepEqual(sb.state().tasks["02"].criteria, [], "a ticket with no checklist confirms an empty set");
-  writeFileSync(join(sb.runDir, "issues", "04-d.md"), "# 04: D\n\nBlocked by: None\n\n- [ ] AC1: works — check: `node --version`\n- [ ] AC2: manual\n");
+  writeFileSync(join(sb.runDir, "issues", "04-d.md"), "# 04: D\n\nBlocked by: None\n\n- [ ] AC1: works — check: `node --version`\n- [ ] AC2: reads well — manual: a judgement about wording\n");
   sb.ok("import");
   assert.deepEqual(sb.state().tasks["04"].criteria, [
     { id: "AC1", criterion: "works", command: "node --version" },
-    { id: "AC2", criterion: "manual", command: null },
+    { id: "AC2", criterion: "reads well", command: null, manual: "a judgement about wording" },
   ]);
   // An import leaves the confirmed set of a ticket already in the run alone: only
   // `criteria <NN>` replaces it, after the user agreed.
@@ -395,14 +411,14 @@ test("criteria: init and import record each ticket's confirmed set", () => {
   sb.ok("import");
   assert.deepEqual(sb.state().tasks["04"].criteria, [
     { id: "AC1", criterion: "works", command: "node --version" },
-    { id: "AC2", criterion: "manual", command: null },
+    { id: "AC2", criterion: "reads well", command: null, manual: "a judgement about wording" },
   ]);
 });
 
 test("criteria: dispatch, freeze and integrate refuse a changed set, naming the ticket, the changed IDs and the command", () => {
   const sb = sandbox({ tickets: {
-    "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node --version`\n- [ ] AC2: two\n",
-    "02-b.md": "# 02: B\n\nBlocked by: None\n\n- [ ] AC1: three — check: `node --version`\n- [ ] AC2: four\n",
+    "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node --version`\n- [ ] AC2: two — manual: a reviewer reads it\n",
+    "02-b.md": "# 02: B\n\nBlocked by: None\n\n- [ ] AC1: three — check: `node --version`\n- [ ] AC2: four — manual: a reviewer reads it\n",
   } });
   const two = join(sb.runDir, "issues", "02-b.md");
   const twoTicket = (criteria) => `# 02: B\n\nBlocked by: None\n\n${criteria}`;
@@ -411,22 +427,22 @@ test("criteria: dispatch, freeze and integrate refuse a changed set, naming the 
     assert.match(out, new RegExp(`\`criteria ${id} --reason "<the user's decision>"\``));
   };
   // A reworded criterion, an added ID, a removed ID and a changed command all count.
-  writeFileSync(two, twoTicket("- [ ] AC1: three, reworded — check: `node --version`\n- [ ] AC2: four\n"));
+  writeFileSync(two, twoTicket("- [ ] AC1: three, reworded — check: `node --version`\n- [ ] AC2: four — manual: a reviewer reads it\n"));
   refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02", "--prepare"), "02", "AC1");
   writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node --version`\n"));
   refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02", "--prepare"), "02", "AC2");
-  writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node --version`\n- [ ] AC2: four\n- [ ] AC3: new\n"));
+  writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node --version`\n- [ ] AC2: four — manual: a reviewer reads it\n- [ ] AC3: new — manual: a reviewer reads it\n"));
   refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02", "--prepare"), "02", "AC3");
-  writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node -e \"0\"`\n- [ ] AC2: four\n"));
+  writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node -e \"0\"`\n- [ ] AC2: four — manual: a reviewer reads it\n"));
   refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02", "--prepare"), "02", "AC1");
-  writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node --version`\n- [ ] AC2: four\n"));
+  writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node --version`\n- [ ] AC2: four — manual: a reviewer reads it\n"));
   deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
 
   // freeze, reached through `review`.
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   sb.work("01");
   const one = join(sb.runDir, "issues", "01-a.md");
-  writeFileSync(one, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node -e \"0\"`\n- [ ] AC2: two\n");
+  writeFileSync(one, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node -e \"0\"`\n- [ ] AC2: two — manual: a reviewer reads it\n");
   refused(sb.no(/#01: its acceptance criteria changed/, "review", "01", "--prepare"), "01", "AC1");
   assert.equal(sb.state().tasks["01"].status, "running", "a refused freeze leaves the task running");
   sb.ok("criteria", "01", "--reason", "the user chose the cheaper command");
@@ -434,7 +450,7 @@ test("criteria: dispatch, freeze and integrate refuse a changed set, naming the 
   sb.reviewed("01");
 
   // integrate.
-  writeFileSync(one, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node -e \"0\"`\n- [ ] AC2: two, reworded\n");
+  writeFileSync(one, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node -e \"0\"`\n- [ ] AC2: two, reworded — manual: a reviewer reads it\n");
   refused(sb.no(/#01: its acceptance criteria changed/, "integrate", "01"), "01", "AC2");
   assert.equal(sb.state().tasks["01"].status, "in_review", "a refused integrate merges nothing");
   sb.ok("criteria", "01", "--reason", "the user reworded AC2");
@@ -1325,7 +1341,7 @@ test("changes requested: integrate refuses, send waits for idle agents and opens
 // S1 and S3 and non-blocking P2. Its two confirmed criteria are what S3 cites, so
 // every blocking finding here is inside the review's boundary.
 function reworkable() {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n\n- [ ] AC1: the first criterion\n- [ ] AC2: the parser reads `x`\n" } });
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n\n- [ ] AC1: the first criterion — manual: a reviewer reads it\n- [ ] AC2: the parser reads `x` — manual: a reviewer reads it\n" } });
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   sb.work("01");
   deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
@@ -1387,7 +1403,7 @@ test("rework: a merge-tip send, a send after a pass and a send while running car
   deliver(mergeTip, mergeAction);
 
   // A nudge after a pass is not a rework.
-  const passed = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n\n- [ ] AC1: one\n" } });
+  const passed = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   deliver(passed, JSON.parse(passed.ok("dispatch", "01", "--prepare")));
   passed.work("01");
   deliver(passed, JSON.parse(passed.ok("review", "01", "--prepare")));
@@ -1620,10 +1636,16 @@ test("boundary: a Basis cites a confirmed criterion or a floor class; anything e
   const report = "Verdict: pass\n\n## Out of scope\n- the helper could move to its own module\n2) naming in src/b.ts\n\n## Notes\nnot a suggestion\n";
   assert.deepEqual(outOfScope(report), ["the helper could move to its own module", "naming in src/b.ts"]);
   assert.deepEqual(outOfScope("## Spec\nnothing here\n"), []);
+  // One suggestion per item: a wrapped item joins, a blank line ends it, prose after one stands
+  // alone, and a fenced block — the Result/Summary lines a report ends with — is skipped.
+  assert.deepEqual(outOfScope([
+    "## Out of scope", "", "- the helper could move", "  to its own module", "1. naming in src/b.ts", "", "A closing remark.",
+    "```text", "Result: pass", "## Not a heading", "```", "- one after the fence", "## Next", "- not a suggestion",
+  ].join("\n")), ["the helper could move to its own module", "naming in src/b.ts", "A closing remark.", "one after the fence"]);
 });
 
 test("boundary: status reports an out-of-boundary blocking finding as a suggestion, and integrate needs no override", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   assert.equal(sb.state().config.maxReworkRounds, 2, "the cap defaults to 2 rounds");
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   sb.work("01");
@@ -1645,7 +1667,7 @@ test("boundary: status reports an out-of-boundary blocking finding as a suggesti
 });
 
 test("boundary: a rework accounts for, and an override records, only the in-boundary blocking findings", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n- [ ] AC2: two\n" } });
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n- [ ] AC2: two — manual: a reviewer reads it\n" } });
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   sb.work("01");
 
@@ -1672,7 +1694,7 @@ test("boundary: a rework accounts for, and an override records, only the in-boun
 });
 
 test("boundary: the reviewer brief states the boundary, the floor classes and the verdict rule", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   sb.work("01");
 
@@ -1700,7 +1722,7 @@ test("boundary: the reviewer brief states the boundary, the floor classes and th
 });
 
 test("boundary: a direct run's reviewer brief carries the same boundary, and a scope overstep needs a basis to block", () => {
-  const sb = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\nScope: f01.txt\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\nScope: f01.txt\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   rmSync(join(sb.runDir, "spec.md"));
   sb.ok("init", "--direct", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
@@ -1746,7 +1768,7 @@ test("boundary: a re-review brief adds the previous review, its candidate and th
 });
 
 test("boundary: a re-review cites the most recent completed review, and every displaced review survives to finish", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   const briefOf = (sha) => readFileSync(join(sb.runDir, "briefs", `01-review-${sha.slice(0, 8)}.md`), "utf8");
   const suggest = (review, text) => writeFileSync(review.path, `${readFileSync(review.path, "utf8")}\n## Out of scope\n- ${text}\n`);
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
@@ -1796,16 +1818,17 @@ test("boundary: a re-review cites the most recent completed review, and every di
   sb.finalPass();
   const out = sb.ok("finish");
   // Every displaced review's finding and suggestion, each named exactly once.
-  const once = (needle) => (out.split(needle).length - 1);
-  assert.equal(once("- #01 S1 · Standards"), 1, out);
-  assert.equal(once("suggestion from review one"), 1);
-  assert.equal(once("- #01 P9 · Standards"), 1);
-  assert.equal(once("suggestion from review two"), 1);
-  assert.equal(once("suggestion from review three"), 1);
+  const once = (text, needle) => (text.split(needle).length - 1);
+  const listed = readFileSync(join(sb.runDir, "suggestions.md"), "utf8");
+  assert.equal(once(out, "- #01 S1 · Standards"), 1, out);
+  assert.equal(once(listed, "suggestion from review one"), 1, listed);
+  assert.equal(once(out, "- #01 P9 · Standards"), 1);
+  assert.equal(once(listed, "suggestion from review two"), 1);
+  assert.equal(once(listed, "suggestion from review three"), 1);
 });
 
 test("boundary: a rework send past the cap refuses and says to ask the user; --extra-round --reason records it", () => {
-  const sb = sandbox({ init: ["--max-rework-rounds", "1"], tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ init: ["--max-rework-rounds", "1"], tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   assert.equal(sb.state().config.maxReworkRounds, 1);
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   const round = (n) => {
@@ -1857,7 +1880,7 @@ test("boundary: a rework send past the cap refuses and says to ask the user; --e
 });
 
 test("boundary: only a rework send opens a round, so a send after a pass and a merge-tip send leave the cap intact", () => {
-  const sb = sandbox({ init: ["--max-rework-rounds", "1"], tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ init: ["--max-rework-rounds", "1"], tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   sb.work("01");
 
@@ -1894,7 +1917,7 @@ test("boundary: only a rework send opens a round, so a send after a pass and a m
 });
 
 test("boundary: a run without the marker keeps the reviewer brief it always had, first review and re-review alike", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   sb.legacy();
   const briefOf = (sha) => readFileSync(join(sb.runDir, "briefs", `01-review-${sha.slice(0, 8)}.md`), "utf8");
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
@@ -1923,7 +1946,7 @@ test("boundary: a run without the marker keeps the reviewer brief it always had,
   assert.match(second, /- A finding is blocking if the work shouldn't be integrated until it's fixed\./);
 
   // A direct legacy run keeps the addendum it always had, with no basis rule.
-  const direct = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\nScope: f01.txt\n\n- [ ] AC1: one\n" } });
+  const direct = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\nScope: f01.txt\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   rmSync(join(direct.runDir, "spec.md"));
   direct.ok("init", "--direct", "--feature", "feat", "--repo", direct.repo, "--check", CHECK);
   direct.legacy();
@@ -1937,7 +1960,7 @@ test("boundary: a run without the marker keeps the reviewer brief it always had,
 });
 
 test("boundary: a prepared send past the cap records its extra round only when the send is confirmed", () => {
-  const sb = sandbox({ init: ["--max-rework-rounds", "0"], tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ init: ["--max-rework-rounds", "0"], tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   sb.work("01");
 
@@ -1955,7 +1978,7 @@ test("boundary: a prepared send past the cap records its extra round only when t
 test("boundary: a review is judged against the criteria confirmed when it started, so a later criteria change does not reclassify it", () => {
   // (a) A finding outside the boundary when raised stays outside after AC2 is confirmed.
 
-  const later = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const later = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   const ticket = join(later.runDir, "issues", "01-a.md");
   deliver(later, JSON.parse(later.ok("dispatch", "01", "--prepare")));
   later.work("01");
@@ -1963,21 +1986,21 @@ test("boundary: a review is judged against the criteria confirmed when it starte
   later.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "AC2: a criterion that came later" }]);
   assert.match(later.ok("status"), /out-of-boundary findings: 1 blocking finding/);
   later.ok("integrate", "01"); // nothing in-boundary was blocking
-  writeFileSync(ticket, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n- [ ] AC2: a criterion that came later\n");
+  writeFileSync(ticket, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n- [ ] AC2: a criterion that came later — manual: a reviewer reads it\n");
   later.ok("criteria", "01", "--reason", "the user added AC2");
   later.finalPass();
   const out = later.ok("finish");
   assert.match(out, /out-of-boundary findings — raised outside the confirmed criteria and floor classes; the user decides:\n- #01 S1 · Standards · src\/x\.ts:1 · AC2: a criterion that came later/);
 
   // (b) A finding inside the boundary when raised stays inside after AC2 is removed.
-  const earlier = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n- [ ] AC2: two\n" } });
+  const earlier = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n- [ ] AC2: two — manual: a reviewer reads it\n" } });
   const file = join(earlier.runDir, "issues", "01-a.md");
   deliver(earlier, JSON.parse(earlier.ok("dispatch", "01", "--prepare")));
   earlier.work("01");
   deliver(earlier, JSON.parse(earlier.ok("review", "01", "--prepare")));
   earlier.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "AC2: two" }]);
   assert.doesNotMatch(earlier.ok("status"), /out-of-boundary findings/);
-  writeFileSync(file, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n");
+  writeFileSync(file, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n");
   earlier.ok("criteria", "01", "--reason", "the user dropped AC2");
   // The review still gates: it was issued against AC2, which the user has since removed.
   earlier.no(/verdict is changes_requested/, "integrate", "01");
@@ -1989,7 +2012,7 @@ test("boundary: a review is judged against the criteria confirmed when it starte
 });
 
 test("boundary: a run without the marker keeps unbounded reviews, suggestions and no cap", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   sb.legacy();
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   sb.work("01");
@@ -2015,7 +2038,7 @@ test("boundary: a run without the marker keeps unbounded reviews, suggestions an
 });
 
 test("boundary: finish lists every extra round, out-of-boundary finding and Out of scope suggestion, or says there were none", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   sb.ok("config", "--max-rework-rounds", "0");
   deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
   sb.work("01");
@@ -2023,7 +2046,8 @@ test("boundary: finish lists every extra round, out-of-boundary finding and Out 
   deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
   sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "the naming could be clearer" }]);
   const first = sb.state().tasks["01"].review.path;
-  writeFileSync(first, `${readFileSync(first, "utf8")}\n## Out of scope\n- src/a.ts could be split into two modules\n- the README could mention this\n`);
+  // A wrapped item is one suggestion, and the fenced Result block after the list is none.
+  writeFileSync(first, `${readFileSync(first, "utf8")}\n## Out of scope\n- src/a.ts could be split\n  into two modules\n- the README could mention this\n\n\`\`\`text\nResult: changes_requested\nSummary: one naming nit\n\`\`\`\n`);
   // The only blocking finding is out of boundary, so the rework needs no accounting;
   // the cap is 0, so the round itself needs the user's decision.
   deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Rename it; S1 is a suggestion the user accepts.", "--extra-round", "--reason", "the user chose one round")));
@@ -2035,9 +2059,15 @@ test("boundary: finish lists every extra round, out-of-boundary finding and Out 
   const out = sb.ok("finish");
   assert.match(out, /rework past the cap — the user decided each one:\n- #01 round 1 of cap 0: the user chose one round/);
   assert.match(out, /out-of-boundary findings — raised outside the confirmed criteria and floor classes; the user decides:\n- #01 S1 · Standards · src\/x\.ts:1 · the naming could be clearer/);
-  assert.match(out, /suggestions from `## Out of scope` — the user decides:\n- #01: src\/a\.ts could be split into two modules\n- #01: the README could mention this/);
+  const file = join(sb.runDir, "suggestions.md");
+  assert.ok(out.includes(`suggestions from \`## Out of scope\`: 2 (#01 2) — the user decides; all of them, by ticket and review: ${file}`), out);
+  assert.doesNotMatch(out, /could be split/, "the list itself is in the file, not in finish's output");
+  const listed = readFileSync(file, "utf8");
+  assert.match(listed, /^# Out-of-scope suggestions: repo\/feat\n/);
+  assert.match(listed, /\n## #01 A\n\n### reviews\/01-[0-9a-f]+\.md\n\n- src\/a\.ts could be split into two modules\n- the README could mention this\n/);
+  assert.doesNotMatch(listed, /Result:|Summary:/);
 
-  const none = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one\n" } });
+  const none = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   deliver(none, JSON.parse(none.ok("dispatch", "01", "--prepare")));
   none.work("01");
   deliver(none, JSON.parse(none.ok("review", "01", "--prepare")));
@@ -2048,6 +2078,7 @@ test("boundary: finish lists every extra round, out-of-boundary finding and Out 
   assert.match(clean, /rework past the cap: none/);
   assert.match(clean, /out-of-boundary findings: none/);
   assert.match(clean, /out-of-scope suggestions: none/);
+  assert.equal(existsSync(join(none.runDir, "suggestions.md")), false);
 });
 
 test("integrate merges with --no-ff, retains sessions, and unblocks dependents", () => {
@@ -2084,27 +2115,66 @@ test("integrate rolls back when checks fail on the merge", () => {
   assert.equal(s.tasks["01"].status, "in_review");
 });
 
-test("acceptance: init and import refuse a placeholder command and warn, without refusing, on a ticket with none", () => {
+test("acceptance: init and import refuse a criterion with neither a command nor a reason it is manual, and a placeholder in either", () => {
   const bad = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: works — check: `<command that proves it>`\n" } });
   bad.no(/template placeholder/, "init", "--feature", "feat", "--repo", bad.repo, "--check", CHECK);
   assert.equal(existsSync(join(bad.runDir, "state.json")), false);
   assert.equal(spawnSync("git", ["-C", bad.repo, "rev-parse", "--verify", "workloop/feat"], { env: bad.env }).status, 128);
 
-  const sb = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: works\n", "02-b.md": "# 02: B\n\nBlocked by: None\n\n- [ ] AC1: works — check: `npm test`\n" } });
-  const out = sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
-  assert.match(out, /warning: ticket 01 \(A\) names no acceptance command/);
-  assert.doesNotMatch(out, /ticket 02 \(B\) names no acceptance command/);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  // Import refuses a newly written ticket whose command is still a placeholder.
-  writeFileSync(join(sb.runDir, "issues", "03-c.md"), "# 03: C\n\nBlocked by: None\n\n- [ ] AC1: works — check: `<cmd>`\n");
+  // A bare criterion is refused, naming the ticket, the line and both ways to end it.
+  const bare = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: works\n" } });
+  bare.no(/01-a\.md:5: AC1 names no command and no reason it is manual; end it with "— check: `<command>`", or with "— manual: <why no command can check it>"/,
+    "init", "--feature", "feat", "--repo", bare.repo, "--check", CHECK);
+  assert.equal(existsSync(join(bare.runDir, "state.json")), false);
+
+  // A ticket with no checklist confirms an empty set, and nothing warns about it any more.
+  const sb = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: reads well — manual: a judgement about wording\n", "02-b.md": "# 02: B\n\nBlocked by: None\n" } });
+  assert.doesNotMatch(sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK), /warning/);
+  sb.ok("dispatch", "01", "--prepare");
+  // Import holds new tickets to the same rule.
+  const add = (text) => writeFileSync(join(sb.runDir, "issues", "03-c.md"), `# 03: C\n\nBlocked by: None\n\n${text}\n`);
+  add("- [ ] AC1: works — check: `<cmd>`");
   sb.no(/template placeholder/, "import");
+  add("- [ ] AC1: works");
+  sb.no(/03-c\.md:5: AC1 names no command and no reason it is manual/, "import");
+  add("- [ ] AC1: works — manual: <why no command can check it>");
+  sb.no(/03-c\.md:5: the manual reason for AC1 is a template placeholder; say why no command can check it/, "import");
+  add("- [ ] AC1: works — manual:");
+  sb.no(/03-c\.md:5: the manual reason for AC1 is empty/, "import");
+  add("- [ ] AC1: works — check: `npm test` — manual: and a person looks");
+  sb.no(/03-c\.md:5: AC1 has both "check:" and "manual:"/, "import");
   assert.equal(sb.state().tasks["03"], undefined);
-  writeFileSync(join(sb.runDir, "issues", "03-c.md"), "# 03: C\n\nBlocked by: None\n");
-  assert.match(sb.ok("import"), /warning: ticket 03 \(C\) names no acceptance command/);
-  // A direct run's reviewer re-runs the ticket's commands either way; the warning is for full runs.
-  const direct = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\nScope: f01.txt\n" } });
+  add("- [ ] AC1: works — check: `node --version`");
+  assert.doesNotMatch(sb.ok("import"), /warning/);
+  assert.deepEqual(sb.state().tasks["03"].criteria, [{ id: "AC1", criterion: "works", command: "node --version" }]);
+
+  // A direct run holds its ticket to the same rule.
+  const direct = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\nScope: f01.txt\n\n- [ ] AC1: works\n" } });
   rmSync(join(direct.runDir, "spec.md"));
-  assert.doesNotMatch(direct.ok("init", "--direct", "--feature", "feat", "--repo", direct.repo, "--check", CHECK), /names no acceptance command/);
+  direct.no(/AC1 names no command and no reason it is manual/, "init", "--direct", "--feature", "feat", "--repo", direct.repo, "--check", CHECK);
+});
+
+test("acceptance: a manual reason is part of the confirmed criterion, and a run from before the rule reads a bare criterion as manual", () => {
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: reads well — manual: a judgement about wording\n" } });
+  const ticket = join(sb.runDir, "issues", "01-a.md");
+  writeFileSync(ticket, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: reads well — manual: a person reads it aloud\n");
+  sb.no(/#01: its acceptance criteria changed since the user confirmed them \(AC1\)/, "dispatch", "01", "--prepare");
+  sb.ok("criteria", "01", "--reason", "the user changed how AC1 is checked");
+  assert.deepEqual(sb.state().tasks["01"].criteria, [{ id: "AC1", criterion: "reads well", command: null, manual: "a person reads it aloud" }]);
+  sb.ok("dispatch", "01", "--prepare");
+
+  // State without the marker predates the rule: a bare criterion still imports as manual.
+  const older = sandbox();
+  const file = join(older.runDir, "state.json");
+  const raw = JSON.parse(readFileSync(file, "utf8"));
+  delete raw.explicitAcceptance;
+  writeFileSync(file, JSON.stringify(raw, null, 2));
+  writeFileSync(join(older.runDir, "issues", "04-d.md"), "# 04: D\n\nBlocked by: None\n\n- [ ] AC1: works\n- [ ] AC2: reads well — manual: kept as text\n");
+  older.ok("import");
+  assert.deepEqual(older.state().tasks["04"].criteria, [
+    { id: "AC1", criterion: "works", command: null },
+    { id: "AC2", criterion: "reads well — manual: kept as text", command: null },
+  ]);
 });
 
 test("acceptance: integrate runs the checks, then this ticket's commands, then the regression set, and stores them", () => {
@@ -2903,7 +2973,7 @@ test("acceptance: an acceptance command falls under the check time limit", () =>
 
 test("acceptance: status shows the regression set's size, and --json lists each task's commands", () => {
   const sb = sandbox({ tickets: {
-    "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one works — check: `node -e \"0\"`\n- [ ] AC2: a manual criterion, no command\n- [ ] AC3: two works — check: `node --version`\n",
+    "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one works — check: `node -e \"0\"`\n- [ ] AC2: a manual criterion, no command — manual: a reviewer reads it\n- [ ] AC3: two works — check: `node --version`\n",
     "02-b.md": "# 02: B\n\nBlocked by: 01\n",
   } });
   assert.doesNotMatch(sb.ok("status"), /regression set/);
@@ -3848,7 +3918,7 @@ test("final review: a round with no report is neither a reviewed tip nor the pre
 });
 
 test("final review: a run without numbered criteria gets no re-review section and no repair-cycle cap", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: works\n" } });
+  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: works — manual: a reviewer reads it\n" } });
   sb.complete("01");
   sb.legacy();
   sb.ok("config", "--max-rework-rounds", "0");
@@ -4009,7 +4079,8 @@ test("final review: a finding outside the mapping, criteria, ledger and floor cl
   sb.no(/X1 is outside the final review's boundary .* it is a suggestion and needs no waiver/, "final-review", "--waive", "X1", "--reason", "user accepted it");
   const out = sb.ok("finish");
   assert.match(out, /out-of-boundary findings — raised outside the confirmed criteria and floor classes; the user decides:\n- final review X1 · Cross-ticket · src\/x\.ts:1 · the modules are laid out oddly/);
-  assert.match(out, /suggestions from `## Out of scope` — the user decides:\n- final review: src\/x\.ts could be split into two modules/);
+  assert.match(out, /suggestions from `## Out of scope`: 1 \(final review 1\) — the user decides; all of them, by ticket and review: /);
+  assert.match(readFileSync(join(sb.runDir, "suggestions.md"), "utf8"), /\n## Final review\n\n### reviews\/final-1-[0-9a-f]+\.md\n\n- src\/x\.ts could be split into two modules\n/);
   assert.doesNotMatch(out, /waived findings — /);
   assert.equal(sb.state().waivers, undefined);
 });
