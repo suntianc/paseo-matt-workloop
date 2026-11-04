@@ -1043,7 +1043,8 @@ test("dispatch branches off the integration branch, verifies HEAD, writes the br
   const { labels, workspaceId, initialPrompt } = action.arguments;
   assert.equal(action.tool, "create_agent");
   assert.deepEqual(labels, { workloop: "repo-feat", task: "01", attempt: "a1", role: "executor", action: action.action });
-  assert.equal(sb.db().workspaces.find((w) => w.workspaceId === workspaceId).cwd, t.worktree);
+  // paseo answers with backslashes on Windows; the run records the forward-slash spelling.
+  assert.equal(slash(sb.db().workspaces.find((w) => w.workspaceId === workspaceId).cwd), t.worktree);
   assert.equal(sb.db().agents.length, 0);
   assert.doesNotMatch(initialPrompt, /\n/);
   const brief = readFileSync(join(sb.runDir, "briefs", "01-a1.md"), "utf8");
