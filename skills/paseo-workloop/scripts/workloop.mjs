@@ -1940,7 +1940,7 @@ async function cmdInit(opts) {
   if (!r2.ok) rollback(`checks fail on the base ${baseRef} already (${r2.timedOut ? timedOut(r2.cmd, checkTimeout) : `\`${r2.cmd}\``}), nothing kept. Fix them or choose checks that pass:\n${r2.output}`);
 
   const state = {
-    version: 1, project, feature: opts.feature, runKey: `${project}-${opts.feature}`, mode: opts.direct ? "direct" : "full",
+    version: 1, host: "rex", project, feature: opts.feature, runKey: `${project}-${opts.feature}`, mode: opts.direct ? "direct" : "full",
     repo, spec, tickets: ticketsDir, baseRef, baseSha,
     integration: { branch, worktree: integ, tip: baseSha },
     config, tasks: {}, seq: 0, createdAt: now(), reviewBoundary: 1, explicitAcceptance: 1,
@@ -2952,6 +2952,8 @@ export async function main(argv) {
   if (cmd === "init") return cmdInit(opts);
   if (cmd === "scratch") return cmdScratch(opts); // before resolveRunDir: a run need not exist, and --run is ignored
   const dir = resolveRunDir(opts.run);
+  // A run the Paseo workloop started keeps its agents in Paseo; this copy cannot see them.
+  if (JSON.parse(readFileSync(statePath(dir), "utf8")).host !== "rex") fail(`${dir} was started by the Paseo workloop; continue it with that copy of the skill (this one is rex-local)`);
   const needId = ["dispatch", "freeze", "review", "send", "integrate", "cleanup", "retry", "hold", "unhold", "cancel", "criteria"];
   if (needId.includes(cmd) && !id) fail(`${cmd} needs a ticket number`);
   if (cmd === "status") return printStatus(dir, loadState(dir), opts.live, opts.json);

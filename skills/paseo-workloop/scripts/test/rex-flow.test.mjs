@@ -243,3 +243,14 @@ test("a dispatch Rex refused leaves the task running with its worktree, and the 
   assert.equal(readFileSync(join(again.worktree, "kept.txt"), "utf8"), "work in the tree survives\n");
   assert.equal(Object.keys(sb.state().agents).length, 1, "one agent");
 });
+
+test("a run the Paseo workloop started is refused, naming the copy that can continue it", () => {
+  const sb = sandbox();
+  const file = join(sb.runDir, "state.json");
+  const s = JSON.parse(readFileSync(file, "utf8"));
+  assert.equal(s.host, "rex");
+  delete s.host;
+  writeFileSync(file, JSON.stringify(s));
+  sb.no(/was started by the Paseo workloop; continue it with that copy of the skill \(this one is rex-local\)/, "status");
+  sb.no(/was started by the Paseo workloop/, "dispatch", "01");
+});
