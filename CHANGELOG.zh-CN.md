@@ -11,7 +11,7 @@
 ### 变更
 
 - **不兼容变更：** 不带 `--prepare` 的 `dispatch`、`review`、`send` 改为拒绝，与 `final-review` 一致；`dispatch --dry-run` 仍只打印。通过 `paseo agent run` / `paseo agent send` 启动或发消息的旧路径已删除，连同对未记录的同标签 agent 的认领，以及 CLI 启动会丢失 profile features 的警告。已记录 run 中全部 342 次 dispatch、review、send 都走预备路径。`status --live` 现在提示用回执对账未记录的同标签 agent，[恢复参考](skills/paseo-workloop/reference/recovery.md)同步说明。
-- **调整：** 本版本创建的 run 中，每条验收标准须以 `— check: \`<命令>\`` 或 `— manual: <为何没有命令能验证>` 结尾。`init` 和 `import` 拒绝两者皆无、两者皆有、理由为空或仍是占位符的标准，并指出 ticket 与行号。理由属于已确认标准的一部分，修改须经 `criteria --reason`。此规则取代原先对整张 ticket 没有命令的警告。[Direct](skills/paseo-workloop/templates/direct-ticket.md) 与[修复](skills/paseo-workloop/templates/repair-ticket.md) ticket 模板展示两种结尾，并删去每次合入都会检查的 “The run's checks pass.”。
+- **调整：** 本版本创建的 run 中，每条验收标准须以 ``— check: `<命令>` `` 或 `— manual: <为何没有命令能验证>` 结尾。`init` 和 `import` 拒绝两者皆无、两者皆有、理由为空或仍是占位符的标准，并指出 ticket 与行号。理由属于已确认标准的一部分，修改须经 `criteria --reason`。此规则取代原先对整张 ticket 没有命令的警告。[Direct](skills/paseo-workloop/templates/direct-ticket.md) 与[修复](skills/paseo-workloop/templates/repair-ticket.md) ticket 模板展示两种结尾，并删去每次合入都会检查的 “The run's checks pass.”。
 - **调整：** `finish` 把每条 `## Out of scope` 建议按 ticket 和评审分组写入 run 目录下的 `suggestions.md`，只打印每个 ticket 的建议条数和文件路径，不再列出全文。
 - **修复：** 跨多行的一条建议会被读成多条，评审在 `## Out of scope` 下收尾的围栏块（`Result:`、`Summary:`）也会被当成建议。现在每个条目算一条建议，围栏块跳过；在一个已记录 run 上，275 行打印输出变为 115 条建议。`workloop-audit` 按同一方式计数。
 
