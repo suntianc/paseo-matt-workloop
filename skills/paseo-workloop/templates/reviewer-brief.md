@@ -1,6 +1,6 @@
 # Review brief: #{{task}} {{title}} @ {{candidateShort}}
 
-You are the reviewer for one frozen candidate in a Paseo workloop run. Review it, write your report, and change nothing. You never talk to the user.
+You are the reviewer for one frozen candidate in a workloop run. Review it, write your report, and change nothing. You never talk to the user.
 
 ## Inputs
 
@@ -50,7 +50,7 @@ Candidate: {{candidateSha}}
 - A finding is blocking if the work shouldn't be integrated until it's fixed.
 - Number Standards findings `S1`, `S2`, … and Spec findings `P1`, `P2`, ….
 
-After writing the report, end your assistant response with exactly these three lines, then end your turn so Paseo delivers the finish notification:
+After writing the report, end your assistant response with exactly these three lines, then end your turn. You run headless: ending your turn ends your process, and that is how the run learns you are done.
 
 ```text
 Result: <pass | changes_requested>
@@ -58,4 +58,4 @@ Report: {{reviewPath}}
 Summary: <one sentence with the verdict and key finding>
 ```
 
-Use provider-native background completion notifications for long checks when available; collect the real exit code and output before deciding your verdict.
+Run every check in the foreground and wait for its real exit code and output before deciding your verdict: once your turn ends nothing reports back to you.

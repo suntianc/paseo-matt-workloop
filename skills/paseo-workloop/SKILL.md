@@ -1,9 +1,11 @@
 ---
 name: paseo-workloop
-description: Take a development task from conversation to verified work. Handle small clear changes directly, or coordinate scoped tickets, independent review and integration with Paseo agents. Also use for run recovery, retrospective and archival.
+description: Take a development task from conversation to verified work. Handle small clear changes directly, or coordinate scoped tickets, independent review and integration with headless agents (dsh, devin) running in Rex tabs. Also use for run recovery, retrospective and archival.
 ---
 
-# Paseo Workloop
+# Paseo Workloop (rex-local)
+
+This variant needs no Paseo: you orchestrate from an interactive Claude Code session, and every executor or reviewer turn is a headless CLI process in a tab of the run's Rex session.
 
 Choose enough process for the task. Keep the user's goal and existing authorization in view; routine choices belong to you, while material scope and design questions belong in the conversation.
 
@@ -13,8 +15,8 @@ Discussion and read-only investigation can stay in the conversation. For impleme
 
 | Route | A useful fit | How it works |
 | --- | --- | --- |
-| **Quick** | Clear goal, local reversible change, straightforward verification | Work in this session; no ticket or Paseo workers required. |
-| **Direct** | A bounded change benefits from a delegated executor and independent review | One scoped ticket, reviewed and integrated through Paseo. |
+| **Quick** | Clear goal, local reversible change, straightforward verification | Work in this session; no ticket or delegated agents required. |
+| **Direct** | A bounded change benefits from a delegated executor and independent review | One scoped ticket, executed and reviewed by delegated agents, then integrated. |
 | **Full** | Design choices, dependencies or parallel work need coordination | A spec and tickets, independent reviews, serial integration, and an independent final review of the whole run. |
 
 Judge uncertainty and impact, not line count. A wording fix usually fits Quick; a one-line authorization change may deserve independent review. These are defaults, not a scoring system.
@@ -31,19 +33,19 @@ In a project that keeps a requirement ledger, recall before you clarify: `node <
 
 Make the authorized change while preserving existing work. Choose verification that demonstrates the requested result: a focused test for behavior, or content/link/diff checks for a small document edit. Independent review is useful when the risk warrants it, rather than mandatory for every edit.
 
-Explain what changed, what you checked and any remaining limit. Quick needs neither a run directory nor a ticket, and does not require a Paseo daemon. If hidden dependencies or design choices expand the task, carry the existing work and findings into Direct or Full; do not silently drop the changes or restart discovery.
+Explain what changed, what you checked and any remaining limit. Quick needs neither a run directory nor a ticket, and does not require Rex. If hidden dependencies or design choices expand the task, carry the existing work and findings into Direct or Full; do not silently drop the changes or restart discovery.
 
 ## Direct and Full
 
 Read [the run procedure](reference/run.md) when starting or continuing a ticketed run. It covers runtime prerequisites, briefs, dispatch, reviews and integration. The script owns state and Git operations; you make the judgment calls.
 
-Before integration, rework continues with the original executor, session and worktree; after it, a defect gets a new repair ticket, session and worktree from the current tip. Prior sessions stay as evidence.
+Before integration, rework continues with the original executor, conversation and worktree; after it, a defect gets a new repair ticket, agent and worktree from the current tip. Prior agents' turns stay as evidence.
 
-For interrupted operations or an unrecoverable session, read [recovery](reference/recovery.md). For notifications and heartbeat reconciliation, read [async supervision](reference/async-supervision.md).
+For interrupted operations or an unrecoverable conversation, read [recovery](reference/recovery.md). For turns, Rex tabs and `wait`, read [supervising turns](reference/async-supervision.md).
 
 ## Finish, retro and archive
 
-`finish` verifies delivery and retains sessions. In a full run it accepts only the independent final reviewer's report for the current integration tip: a pass, or a `changes_requested` whose blocking findings the user let through. Assess the whole run for recurring problems or repeated wasted effort using [retro](../retro/SKILL.md). Record findings with `retro --file <report>`, or a brief no-retro decision with `retro --skip --reason <why>`. Then `archive` preserves activity transcripts and archives the sessions together. The user's decision on suggestions does not hold archival open.
+`finish` verifies delivery and retains every agent's turns. In a full run it accepts only the independent final reviewer's report for the current integration tip: a pass, or a `changes_requested` whose blocking findings the user let through. Assess the whole run for recurring problems or repeated wasted effort using [retro](../retro/SKILL.md). Record findings with `retro --file <report>`, or a brief no-retro decision with `retro --skip --reason <why>`. Then `archive` gathers every agent's turns into evidence and closes the run's Rex session. The user's decision on suggestions does not hold archival open.
 
 Users can request retro at any point, including during Quick or after archival. A mid-run retro covers evidence so far and does not stop execution. Retro produces findings and suggestions only; adopting them is a separate user decision.
 

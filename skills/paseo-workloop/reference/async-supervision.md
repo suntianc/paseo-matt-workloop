@@ -1,103 +1,56 @@
-# Asynchronous supervision
+# Supervising turns
 
-Use completion notifications for ordinary progress and a 55-minute heartbeat for missed notifications, stalled commands and permissions. This is not real-time supervision: do not add a monitor model or frequent status summaries unless the user asks.
+Every executor, reviewer and final reviewer is an **agent**: one conversation with a headless CLI (`dsh` or `devin`) in one worktree. Each prompt it gets is a **turn**: a process in a tab of the run's Rex session, which exits when the turn is over. Nothing runs between turns, and nothing reports in the middle of one. This is not real-time supervision: do not add a monitor model or frequent status summaries unless the user asks.
 
-## Dispatch, review and rework
+## Starting turns
 
-Run `WL dispatch NN --prepare`, `WL review NN --prepare`, `WL send NN --prepare --file <message>`, or `WL final-review --prepare` for a full run's independent final reviewer.
+`WL dispatch NN`, `WL review NN`, `WL send NN --file <message>` and `WL final-review` each check the usual budgets and guards, write the brief or message, start the turn in a new tab, record it, and return at once. There is nothing to acknowledge.
 
-The script checks the usual budgets, worktree and review guards, persists a pending action, arms a fallback heartbeat before yielding to the external MCP call, and prints JSON:
+A turn after an agent's first goes on in the same conversation: the script reads the conversation id the previous turn recorded and passes it to the CLI (`dsh --session-id`, `devin -r`). If the previous turn left none, `send` refuses and names the file; `retry` the task instead. The previous turn's tab closes when the next one starts; its files stay.
 
-```json
-{
-  "action": "<unique action id>",
-  "kind": "dispatch",
-  "tool": "create_agent",
-  "arguments": {
-    "notifyOnFinish": true
-  }
-}
-```
+The run's Rex session is `wl-<project>-<feature>`, made the first time a turn needs it, and made again if it was closed. Its first tab is a plain shell the run does not use.
 
-The actual `arguments` also contain the selected provider/model/settings, workspace, labels and task prompt. Pass **only `arguments`**, unchanged, to the named Paseo MCP tool. The call must be agent-scoped to the owning orchestrator on the same daemon. A top-level or remote external MCP call has no equivalent parent callback.
+## Turn files
 
-1. Execute that one MCP request.
-2. Once its response has arrived, and in a later tool call than the MCP request itself, pass the response unchanged to `ack` on stdin (`final` instead of `NN` for the final reviewer):
+For turn `n` of agent `<id>`, under `<run dir>/turns/`:
 
-   ```sh
-   WL ack NN --receipt - <<'EOF'
-   <the MCP response, exactly as the tool returned it>
-   EOF
-   ```
+| File | Holds |
+|---|---|
+| `<id>-<n>.prompt.md` | what the turn was told |
+| `<id>-<n>.spec.json` | provider, settings, the conversation it goes on in, its paths |
+| `<id>-<n>.log` | everything the CLI printed (dsh: its JSON events) |
+| `<id>-<n>.json` | the conversation id as soon as it is known, then the exit code and end time |
 
-   The script takes a bare response for the action pending now and saves it as `messages/receipt-<NN>-<action>.json`; acknowledge right after the call, before preparing anything else for that ticket. The `{ "action": "<action id>", "result": <response> }` wrapper still works with `--receipt <file>` and is checked against the pending action id. Never write a receipt before the response exists. Rework changes task state only after dispatch acknowledgement, and duplicate acknowledgement is harmless.
-3. Dispatch any other eligible frontier work, then run `WL watch` and end this turn, reporting that workers are running and that you resume on notification.
+[agent-run.mjs](../scripts/agent-run.mjs) runs in the tab and writes the last two; the tab shows a readable view of the same output while the turn runs. `evidence` and `archive` gather every agent's turns into `evidence/<id>.txt`.
 
-The executor and reviewer finish with `Result`, `Report`, and `Summary` lines. Read the report and verify the live status before advancing; the notification and three lines do not replace acceptance evidence. A `question`, `blocked`, `changes_requested`, error, or missing report requires a decision by the orchestrator.
+## Waiting
 
-## Interruption and errors
+Run `WL wait [--for <minutes>]` as a background command, then end your turn. It holds no lock, so every other command works meanwhile. It returns:
 
-Run `WL action NN` (or `WL action final`) to retrieve a pending request. **Printing the request again is not permission to execute it again.**
+- **when a running turn ends**, saying how it exited and what it left: the executor's report status, the reviewer's verdict, or, when there is no fresh report, the log to read and the ways on; then the next steps;
+- **at once when nothing runs**, naming any turn that ended without a report while nobody was waiting, then the next steps;
+- **after the limit** (110 minutes by default, inside the two hours a Claude Code background command may run), saying how long ago each running turn last printed. Arm it again.
 
-- If the tool was never called, execute it once and acknowledge it.
-- If creation may have succeeded, query the run/task/action labels (including archived agents), recover the matching agent ID and response, and acknowledge the existing worker. Never start another worker just because the acknowledgement was lost.
-- If a send may have succeeded, inspect its activity and recover its dispatch receipt. Do not resend automatically. A report can already have been rewritten before the acknowledgement arrives.
-- A confirmed creation error with no matching agent can be acknowledged with its actual `isError: true` response; no success is recorded and preparation can be retried after correcting the cause. Errors after creation and ambiguous send errors retain the pending action for reconciliation.
-- Restore notifications with an agent-scoped MCP follow-up only after the worker is idle and the intended continuation has been established.
+A turn ending is a wake-up, not acceptance: read the report and act on the table in [run.md](run.md).
 
-After a daemon restart, treat notification subscriptions as unverified. Reconcile live state and restore the watch; do not assume a stored parent label means a callback is armed. See [recovery.md](recovery.md).
+- Arm `wait` before every pause while a turn runs, including after answering an unrelated user message. Nothing else wakes you.
+- One `wait` is enough; a second one does no harm.
+- Never poll in a shell loop or sleep, and never read logs to pass the time.
 
-## Heartbeat behavior
+## Stopping and taking over
 
-`WL watch` performs a current health check and maintains one run-owned single-run heartbeat for about 55 minutes later. **Paseo 0.12 hides heartbeats from both `schedule ls` and `schedule inspect`. Never use their output to infer a heartbeat does not exist.**
+A running turn cannot be steered: every message is a turn of its own. To stop one, press Ctrl-C in its tab (or ask the user to); `wait` reports it as interrupted and `status --live` shows the agent `error:<code>` or `closed`. Then `send` a complete restatement of what remains, or `retry`.
 
-[heartbeat.mjs](../scripts/heartbeat.mjs) maintains a durable `heartbeatLedger` in run state:
+The user may also take over a conversation by hand once its turn has ended: in the tab, run the CLI interactively on the same conversation (`dsh --session-id <id>`, `devin -r <id>`). When they are done, `send` the agent a message saying what changed, so its next turn starts from the tree as it is.
 
-- Persist a unique creation intent before calling the daemon. After receiving its ID, persist it alongside every old ID before starting deletion.
-- Delete each recorded ID through `paseo heartbeat delete`; remove an ID from the ledger only after a matching deletion receipt or the CLI's explicit heartbeat-not-found response. Connection errors and ambiguous replies retain the ID and fail the command. An unfinished cleanup blocks another creation.
-- On upgrade, import the old `heartbeat` pointer and all heartbeat receipts in this run's `events.jsonl`. On the daemon machine, read `$PASEO_HOME/schedules/*.json` to recover owned records with this run's name, including a creation interrupted before its ID was saved. These files are read-only; deletion still uses the CLI's ownership checks. This is a dated internal format, not a remote discovery API.
-- A successful renewal leaves one tracked heartbeat. When no worker is running, delete all tracked IDs. Finished runs and the Stop hook also retry ledger cleanup even if the old `heartbeat` pointer is empty.
+## Rex and the orchestrator
 
-For an ambiguous creation on another daemon, or when its local store cannot confirm the result, `watch` preserves the creation intent and **does not create another heartbeat**. Recover actual IDs from the creation receipt or delivered heartbeat message, then run:
+The Rex server, not the app window, owns the processes in its tabs: closing the window or quitting the app does not stop a turn. Run Claude Code itself in a Rex tab when you can, so the orchestrator survives the same way. If the Claude Code session does close, turns keep running: reopen the session, run `WL status --live`, and arm `wait` again.
 
-```sh
-WL watch --heartbeat-id <actual-id> [--heartbeat-id <another-actual-id>]
-```
+If the Rex server stops, its tabs and their processes go with it. `status --live` then shows those agents `closed`; their turn files remain, and the CLI keeps its own conversation, so `send` goes on in it, or `retry` replaces the agent.
 
-The supplied IDs are recorded before cleanup and checked by the owning daemon's `heartbeat delete`. Do not supply guessed IDs. If you have positively confirmed that creation never happened, clear only that intent with `WL watch --clear-heartbeat-create --reason "<verification evidence>"`. A timeout or empty schedule list is not such evidence.
+## Errors
 
-For older runs, remote unrecorded IDs missing from both state and audit receipts cannot be enumerated by this CLI. They need the daemon's storage or their original receipts/messages; the fix does not claim it can discover those unknown IDs. Do not edit run state or the daemon's schedule files to hide incomplete cleanup.
-
-At delivery, the prompt runs `WL watch` **again** before deciding what to do:
-
-- Healthy running workers: reply only `好`. The watch has already renewed the fallback.
-- At least 45 minutes without activity, missing activity timestamps, permissions, query failures or pending MCP actions: inspect the affected workers and decide what to do. Staleness is a signal to investigate, not grounds to kill or retry automatically.
-- Stopped workers: process their reports and continue the workloop. All stopped does not mean all tickets accepted.
-
-A worker's provider/runtime can emit different kinds of activity. Timestamps are only a coarse liveness signal, not proof of useful progress. With a 55-minute check cadence, the 45-minute threshold is noticed at the next heartbeat; detection is not guaranteed at minute 45. Cache pricing and TTL depend on the provider; the heartbeat makes no cost or cache guarantee.
-
-### Optional Claude Code Stop hook
-
-For automatic renewal after every orchestrator turn, merge this entry into the **target project's** `.claude/settings.local.json`, preserving its other settings and hooks. Replace the path with the installed skill path on that machine; quote the script path for that machine's shell.
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          { "type": "command", "command": "node /absolute/path/to/paseo-workloop/scripts/stop-hook.mjs", "timeout": 50 }
-        ]
-      }
-    ]
-  }
-}
-```
-
-[stop-hook.mjs](../scripts/stop-hook.mjs) only checks runs owned by the current `PASEO_AGENT_ID`. It is inert outside Paseo, emits no blocking Stop decision, and does not modify configuration. Other providers can use their supported end-of-turn hooks to run the same command. Without a hook, run `WL watch` explicitly before each pause; the heartbeat prompt also renews itself.
-
-## Long commands
-
-`WL integrate` and `WL finish` are long commands: start one with the provider's own background completion notification, keep the job/session identifier, return control, and collect the real result on completion. Their checks run as a check phase outside the run lock, each stops at the run's time limit, and `watch` keeps the heartbeat armed and reports a phase whose process died. See the Integration section of [run.md](run.md). Do not invent a universal background-command flag: when there is none, use a managed job and the same fallback health checks, and state that limitation.
-
-`WL patrol` is a diagnostic snapshot: default window 1 second, maximum 60 seconds. Its deadline includes `agent inspect` calls; all Paseo CLI calls also time out after 30 seconds (`PASEO_TIMEOUT_MS`). A timed-out write may already have reached the daemon, so reconcile it before retrying.
+- **Rex cannot be asked** (not running, or the CLI not found): commands that need an agent's state refuse with `cannot tell whether … is still running` instead of guessing. Start Rex, or set `REX_CLI`, and run the command again.
+- **A command interrupted after it opened a tab but before it saved state** leaves a turn the run does not know. Look at the run's Rex session for a tab the run did not record (`status --live` lists the recorded ones), stop and close it, then run the command again.
+- **A turn exits at once with an error**: its log names the cause (a CLI not signed in, a wrong permission preset, an unknown dsh profile). Launch settings are the user's: tell them, then `send` again after they fix it.

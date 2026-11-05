@@ -1,5 +1,7 @@
 # Paseo compatibility notes
 
+> **rex-local:** this branch runs agents in Rex tabs and does not use Paseo. This page describes the Paseo-based main line and is kept only for reference.
+
 These are the Paseo facts a current run depends on: the ones `workloop.mjs` does not absorb for you, because they change what you do. Paseo changes quickly, and a version this file does not name is unverified.
 
 - **Windows.** The CLI is a `.cmd` shim, which Node can only start through a shell. Set `PASEO_CLI` to the CLI's `.js` entry point to bypass the shell.

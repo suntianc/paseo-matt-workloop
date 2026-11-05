@@ -1,5 +1,7 @@
 # Paseo compatibility history
 
+> **rex-local:** this branch runs agents in Rex tabs and does not use Paseo. This page describes the Paseo-based main line and is kept only for reference.
+
 Dated observations, kept for the next re-verification after a Paseo upgrade. What a current run depends on is in [paseo-compat.md](paseo-compat.md).
 
 Observations were made on two setups:
