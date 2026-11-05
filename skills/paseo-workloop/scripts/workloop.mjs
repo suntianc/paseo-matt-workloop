@@ -1813,7 +1813,7 @@ function tidyDocsReminder(s) {
 function nextSteps(dir, s) {
   if (s.finishedAt) return ["archived; retrospective evidence remains in the run directory"];
   if (s.completion) return [s.retro?.completion === s.completion.at
-    ? "archive — retrospective assessed; archive the retained sessions together"
+    ? "archive — retrospective assessed; archive the retained agents and worktrees together"
     : "assess the whole run: retro --file <report> or retro --skip --reason <why>, then archive"];
   const out = [];
   const tasks = tasksOf(s);
@@ -2453,7 +2453,7 @@ function completeIntegrate(dir, s, phase, checks, minutes, overrideFlag, overrid
     ["integrate", { task: t.id, attempt: t.attempt, sha: t.candidateSha, tip: h, override: override || undefined }],
   ]);
   say(`#${t.id} integrated: ${s.integration.branch} ${short(phase.prevTip)} -> ${short(h)}`);
-  say("Sessions and worktree retained for the run retrospective; archive after finish and retro.");
+  say("Agent turns and worktree retained for the run retrospective; archive after finish and retro.");
   const unlocked = frontier(s).filter((x) => x.blockedBy.includes(t.id));
   if (unlocked.length) say(`unblocked: ${unlocked.map((x) => `#${x.id}`).join(", ")}`);
 }
@@ -2499,7 +2499,7 @@ function cmdRetry(dir, s, id, opts) {
   Object.assign(t, { status: "ready", attempt: next, agentId: null, launch: null, branch: reuse ? old.branch : null, worktree: reuse ? old.worktree : null, baseSha: reuse ? baseSha : null, candidateSha: null, fixedPoint: null, review: null, reviewers: [], messages: 0, promptedAt: null, reuseWorktree: reuse, handoff });
   record(dir, s, "retry", { task: t.id, attempt: next, reason: opts.reason, reuseWorktree: reuse });
   say(`#${t.id} reset to ready as attempt ${next}.`);
-  if (old.worktree) say(`${reuse ? "reusing" : "the old attempt is kept:"} worktree ${old.worktree}, branch ${old.branch}. Sessions remain available for retro.`);
+  if (old.worktree) say(`${reuse ? "reusing" : "the old attempt is kept:"} worktree ${old.worktree}, branch ${old.branch}. The old agent's turns remain available for retro.`);
 }
 
 function cmdHold(dir, s, id, opts, on) {
@@ -2679,7 +2679,7 @@ function cmdArchive(dir, s) {
   for (const t of tasksOf(s)) if (t.status === "done" && !t.cleanedAt) cleanupTask(dir, s, t);
   for (const a of agents) archiveAgent(s, a.id);
   // Cancelled/replaced workspaces can contain unmerged or uncommitted work.
-  // Archive their sessions but retain those trees for a separate user decision.
+  // Close their tabs but retain those trees for a separate user decision.
   const retained = new Map();
   for (const t of tasksOf(s)) for (const a of [...t.history, t]) {
     if (a.worktree && existsSync(a.worktree)) retained.set(a.worktree, { worktree: a.worktree, branch: a.branch });
