@@ -25,8 +25,10 @@ if (cmd === "ls") {
 } else if (cmd === "new") {
   const id = `session:fake-${++db.n}`;
   const block = `block:fake-${++db.n}`;
+  const separator = argv.indexOf("--");
+  const command = separator < 0 ? [] : argv.slice(separator + 1);
   db.sessions.push({ id, label: argv[1], cwd: flag(argv, "-c") });
-  db.blocks.push({ id: block, session: id, label: "shell", cwd: flag(argv, "-c"), argv: [], exit: null, closed: false, shell: true });
+  db.blocks.push({ id: block, session: id, label: flag(argv, "--window") || "shell", cwd: flag(argv, "-c"), argv: command, exit: null, closed: false, shell: !command.length, keepOpen: argv.includes("--keep-open") });
   save(db);
   out({ session_id: id, initial_windows: [{ window_id: `window:fake-${db.n}`, block_ids: [block] }] });
 } else if (what === "window new") {

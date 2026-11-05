@@ -328,12 +328,13 @@ function newAgent(s, { role, task, attempt, cwd, launch }) {
   s.agents[id] = { id, role, task, attempt: attempt ?? null, cwd: pathArg(cwd), provider: launch.provider, settings: settingsOf(launch), launch: describe(launch), session: null, turns: [], createdAt: now() };
   return id;
 }
-// The run's Rex session, made the first time a turn needs it (or again, if it was closed).
-function rexSession(s) {
-  if (s.rex?.session && host.sessionExists(s.rex.session)) return s.rex.session;
+// Start the first turn in the session's initial tab; later turns get new tabs.
+function openTurn(s, title, cwd, argv) {
+  if (s.rex?.session && host.sessionExists(s.rex.session)) return host.openTab(s.rex.session, title, cwd, argv);
   const label = `wl-${s.project}-${s.feature}`;
-  s.rex = { session: host.newSession(label, s.repo), label, createdAt: now() };
-  return s.rex.session;
+  const tab = host.newSession(label, title, cwd, argv);
+  s.rex = { session: tab.session, label, createdAt: now() };
+  return tab;
 }
 // Starts the agent's next turn with `prompt` in a new tab. A turn after the first
 // goes on in the same conversation; the previous turn's tab closes, and its files
@@ -343,16 +344,15 @@ function startTurn(dir, s, id, prompt, title) {
   const prev = a.turns.at(-1);
   if (prev && !a.session) a.session = turnMeta(prev)?.session ?? null;
   if (prev && !a.session) fail(`agent ${id}'s last turn left no conversation id (${turnFiles(prev.base).meta}), so a new turn cannot go on in it; \`retry\` the task instead`);
-  const session = rexSession(s);
   const n = a.turns.length + 1;
   mkdirSync(join(dir, "turns"), { recursive: true });
   const base = pathArg(join(dir, "turns", `${id}-${n}`));
   const f = turnFiles(base);
   writeFileSync(f.prompt, prompt);
   writeFileSync(f.spec, `${JSON.stringify({ provider: a.provider, settings: a.settings, session: a.session, prompt: f.prompt, log: f.log, meta: f.meta, cwd: a.cwd, title }, null, 2)}\n`);
-  const tab = host.openTab(session, title, a.cwd, [process.execPath, AGENT_RUN, f.spec]);
+  const tab = openTurn(s, title, a.cwd, [process.execPath, AGENT_RUN, f.spec]);
   a.turns.push({ n, title, block: tab.block, window: tab.window, base, startedAt: now() });
-  if (prev) host.closeTab(session, prev.block);
+  if (prev) host.closeTab(s.rex.session, prev.block);
   return a.turns.at(-1);
 }
 // Closes every tab the agent's turns left open; their files stay in the run.

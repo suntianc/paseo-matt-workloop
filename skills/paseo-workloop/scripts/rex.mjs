@@ -40,10 +40,14 @@ export function sessionExists(id) {
   return (data.sessions || []).some((x) => x.session_id === id);
 }
 
-export function newSession(label, cwd) {
-  const data = json(rex(["new", label, "-c", cwd, "--json"]).out, "new");
+// Start the first turn in the initial tab, avoiding an unused default shell.
+export function newSession(label, title, cwd, argv) {
+  const data = json(rex(["new", label, "-c", cwd, "--window", title, "--keep-open", "--json", "--", ...argv]).out, "new");
   if (!data.session_id) throw new RexError(`rex new did not name the session: ${JSON.stringify(data)}`);
-  return data.session_id;
+  const window = data.initial_windows?.[0];
+  const block = window?.block_ids?.[0];
+  if (!block) throw new RexError(`rex new did not name the tab's block: ${JSON.stringify(data)}`);
+  return { session: data.session_id, block, window: window.window_id ?? null };
 }
 
 // A tab running argv in cwd. It stays open after the program exits, so its output

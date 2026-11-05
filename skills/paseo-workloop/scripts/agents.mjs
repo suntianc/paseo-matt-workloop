@@ -6,8 +6,8 @@
 // A turn is one headless process: it gets its prompt, works, and exits. The run
 // learns that a turn ended from the process exiting, and what it did from the
 // report file its brief names.
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // Settings: "required" must be in the launch settings; "optional" may be;
 // anything else is refused, so a setting a CLI ignores is never silently dropped.
@@ -28,28 +28,16 @@ export const ADAPTERS = {
         return e?.type === "session" && typeof e.sessionId === "string" ? e.sessionId : null;
       } catch { return null; }
     },
-    render: renderDsh,
   },
-  // Devin CLI. `mode` is its permission mode (auto, accept-edits, smart, dangerous).
-  // Print mode cannot answer the workspace-trust prompt, and a fresh worktree is
-  // never trusted, so the check is off.
+  // Devin's ACP stream includes tool events and can load its existing print sessions.
   devin: {
     settings: { mode: "required", model: "optional" },
     argv: ({ mode, model }, session, promptFile) => [
-      "devin", "--permission-mode", mode, "--respect-workspace-trust=false",
-      ...(model ? ["--model", model] : []), ...(session ? ["-r", session] : []), "--prompt-file", promptFile, "-p",
+      process.execPath, fileURLToPath(new URL("./devin-acp.mjs", import.meta.url)), "--mode", mode,
+      ...(model ? ["--model", model] : []), ...(session ? ["--session", session] : []), "--prompt-file", promptFile,
     ],
     stdin: false,
-    // Print mode does not print its session; the newest one in the working directory
-    // is this turn's. A worktree runs one Devin turn at a time, so it is never another's.
-    sessionAfter(cwd) {
-      const r = spawnSync("devin", ["list", "--format", "json"], { cwd, encoding: "utf8", timeout: 30000 });
-      try {
-        const list = JSON.parse(r.stdout || "[]");
-        const newest = list.sort((a, b) => (a.last_activity_at ?? 0) - (b.last_activity_at ?? 0)).at(-1);
-        return newest?.id ?? null;
-      } catch { return null; }
-    },
+    sessionFromLine: (line) => field(line, "session", "id"),
   },
   // Codex CLI. `mode` is its sandbox (read-only, workspace-write, danger-full-access),
   // set through config because `exec resume` takes no --sandbox; `thinking` is its
@@ -65,7 +53,6 @@ export const ADAPTERS = {
     stdin: true,
     // {"type":"thread.started","thread_id":"…"} opens every turn, a resumed one too.
     sessionFromLine: (line) => field(line, "thread.started", "thread_id"),
-    render: renderCodex,
   },
   // pi. It has no permission modes: its tools run as the user. `model` is a pattern
   // or provider/id; `thinking` is its level. A turn after the first opens the session
@@ -79,7 +66,6 @@ export const ADAPTERS = {
     stdin: false,
     // {"type":"session","id":"…"} is its first event.
     sessionFromLine: (line) => field(line, "session", "id"),
-    render: renderPi,
   },
 };
 
@@ -92,8 +78,6 @@ function field(line, type, key) {
     return e?.type === type && typeof e[key] === "string" ? e[key] : null;
   } catch { return null; }
 }
-const firstLine = (text, n = 200) => String(text ?? "").split("\n")[0].slice(0, n);
-
 // Why a role's launch settings cannot start a turn, or null.
 export function settingsProblem(role, l) {
   const a = ADAPTERS[l.provider];
@@ -102,55 +86,4 @@ export function settingsProblem(role, l) {
   const extra = ["model", "mode", "profile", "thinking"].filter((k) => l[k] && !a.settings[k]);
   if (extra.length) return `${role}: ${l.provider} takes no ${extra.join(", ")}${l.provider === "dsh" ? " (its model and effort come from the dsh profile; set --profile)" : ""}`;
   return null;
-}
-
-// dsh's events, for a person watching the tab: what it says and the tools it calls.
-function renderDsh(line) {
-  let e;
-  try { e = JSON.parse(line); } catch { return `${line}\n`; }
-  switch (e?.type) {
-    case "session": return `── session ${e.sessionId}\n`;
-    case "text": return `${e.text}\n`;
-    case "tool_call": {
-      const input = e.input || {};
-      const what = input.description || input.command || input.path || input.file_path || JSON.stringify(input).slice(0, 160);
-      return `▸ ${e.tool}: ${String(what).split("\n")[0].slice(0, 200)}\n`;
-    }
-    case "tool_result": return e.status && e.status !== "completed" ? `  ✗ ${e.status}\n` : "";
-    case "final": return `── ${e.reason?.kind ?? "final"}: ${String(e.text ?? "").split("\n").slice(-3).join("\n")}\n`;
-    case "error": return `!! ${e.message}\n`;
-    default: return "";
-  }
-}
-
-// Codex's events: what it says, the commands it runs and how they end.
-function renderCodex(line) {
-  let e;
-  try { e = JSON.parse(line); } catch { return `${line}\n`; }
-  const item = e?.item || {};
-  if (e?.type === "thread.started") return `── session ${e.thread_id}\n`;
-  if (e?.type === "item.completed" && item.type === "agent_message") return `${item.text}\n`;
-  if (e?.type === "item.started" && item.type === "command_execution") return `▸ shell: ${firstLine(item.command)}\n`;
-  if (e?.type === "item.completed" && item.type === "command_execution" && item.exit_code) return `  ✗ exit ${item.exit_code}\n`;
-  if (e?.type === "turn.completed") return "── turn completed\n";
-  if (e?.type === "turn.failed" || e?.type === "error") return `!! ${e.error?.message ?? e.message ?? line}\n`;
-  return "";
-}
-
-// pi's events: the assistant's text when a message ends, and its tool calls.
-function renderPi(line) {
-  let e;
-  try { e = JSON.parse(line); } catch { return `${line}\n`; }
-  if (e?.type === "session") return `── session ${e.id}\n`;
-  if (e?.type === "message_end" && e.message?.role === "assistant") {
-    const text = (e.message.content || []).filter((c) => c.type === "text" && c.text).map((c) => c.text).join("\n");
-    return text ? `${text}\n` : "";
-  }
-  if (e?.type === "tool_execution_start") {
-    const a = e.args || {};
-    return `▸ ${e.toolName}: ${firstLine(a.command || a.path || a.file_path || JSON.stringify(a))}\n`;
-  }
-  if (e?.type === "tool_execution_end" && e.isError) return `  ✗ ${e.toolName} failed\n`;
-  if (e?.type === "agent_end") return "── done\n";
-  return "";
 }

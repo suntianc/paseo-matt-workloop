@@ -104,6 +104,8 @@ test("a ticket goes from dispatch to archive with every agent a turn in the run'
   assert.ok(existsSync(t.worktree) && t.worktree.startsWith(sb.runDir), "the worktree is under the run");
   const tab = sb.block(exec.turns[0].block);
   assert.equal(tab.session, s.rex.session);
+  assert.deepEqual(sb.db().blocks.filter((b) => b.session === s.rex.session && !b.closed).map((b) => b.id), [tab.id], "the first agent is the session's only tab");
+  assert.equal(tab.label, "#01 exec a1");
   assert.equal(tab.cwd, t.worktree);
   assert.ok(tab.keepOpen, "the tab stays open after the turn, so its output can be read");
   assert.match(tab.argv.join(" "), /agent-run\.mjs .*turns\/.*-1\.spec\.json$/);
@@ -235,8 +237,8 @@ test("a turn that exits without a report names its log and the ways on", async (
 
 test("a dispatch Rex refused leaves the task running with its worktree, and the rerun adopts it", () => {
   const sb = sandbox();
-  sb.env.FAKE_REX_FAIL = "window new";
-  sb.no(/rex window new failed .*fake failure of window new/, "dispatch", "01");
+  sb.env.FAKE_REX_FAIL = "new";
+  sb.no(/rex new .*failed .*fake failure of new/, "dispatch", "01");
   const t = sb.state().tasks["01"];
   assert.equal(t.status, "running");
   assert.equal(t.agentId, undefined, "no agent is recorded for a turn that never started");
@@ -249,6 +251,29 @@ test("a dispatch Rex refused leaves the task running with its worktree, and the 
   assert.equal(sb.g(sb.repo, "worktree", "list", "--porcelain").split("\n").filter((l) => l === `branch refs/heads/${t.branch}`).length, 1, "one worktree for the branch");
   assert.equal(readFileSync(join(again.worktree, "kept.txt"), "utf8"), "work in the tree survives\n");
   assert.equal(Object.keys(sb.state().agents).length, 1, "one agent");
+});
+
+test("later turns share the session; a closed session is recreated with only the new turn", () => {
+  const ticket = (name) => `# ${name}\n\nBlocked by: None\n\n- [ ] AC1: works — manual: a reviewer reads it\n`;
+  const sb = sandbox({ tickets: { "01-a.md": ticket("01"), "02-b.md": ticket("02"), "03-c.md": ticket("03") } });
+  sb.ok("config", "--max-executors", "3");
+  sb.ok("dispatch", "01");
+  const firstSession = sb.state().rex.session;
+  sb.env.FAKE_REX_FAIL = "window new";
+  sb.no(/rex window new failed .*fake failure of window new/, "dispatch", "02");
+  delete sb.env.FAKE_REX_FAIL;
+  sb.ok("dispatch", "02");
+  assert.equal(sb.state().rex.session, firstSession);
+  assert.deepEqual(sb.db().blocks.filter((b) => b.session === firstSession && !b.closed).map((b) => b.label), ["#01 exec a1", "#02 exec a1"]);
+
+  sb.editDb((d) => {
+    d.sessions.find((s) => s.id === firstSession).killed = true;
+    for (const block of d.blocks) if (block.session === firstSession) block.closed = true;
+  });
+  sb.ok("dispatch", "03");
+  const nextSession = sb.state().rex.session;
+  assert.notEqual(nextSession, firstSession);
+  assert.deepEqual(sb.db().blocks.filter((b) => b.session === nextSession && !b.closed).map((b) => b.label), ["#03 exec a1"]);
 });
 
 test("a run the Paseo workloop started is only shown: plain status works, everything else is refused", () => {

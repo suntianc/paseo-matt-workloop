@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node build.mjs" },
+  "devDependencies": {
+    "@earendil-works/pi-tui": "0.74.2",
+    "cli-highlight": "2.1.11",
+    "diff": "8.0.2",
+    "esbuild": "0.25.12"
+  }
+}
