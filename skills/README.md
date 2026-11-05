@@ -102,4 +102,4 @@ node tools/link-check.mjs                                   # relative links and
 node tools/upstream-sync.mjs <clone> --check                # upstream skills are unmodified
 ```
 
-The workloop tests use real git repositories and a stand-in for the Paseo CLI ([fake-paseo.mjs](paseo-workloop/scripts/test/fake-paseo.mjs)), so they show the logic is right but not that it matches Paseo itself. If you upgrade Paseo, re-verify the compatibility notes.
+The workloop tests use real git repositories and a stand-in for the Rex CLI ([fake-rex.mjs](paseo-workloop/scripts/test/fake-rex.mjs)), so they show the logic is right but not that it matches Rex or the agent CLIs themselves. If you upgrade Rex, dsh or devin, run one real ticket through a run again.
