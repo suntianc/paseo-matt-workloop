@@ -251,15 +251,28 @@ test("a dispatch Rex refused leaves the task running with its worktree, and the 
   assert.equal(Object.keys(sb.state().agents).length, 1, "one agent");
 });
 
-test("a run the Paseo workloop started is refused, naming the copy that can continue it", () => {
+test("a run the Paseo workloop started is only shown: plain status works, everything else is refused", () => {
   const sb = sandbox();
   const file = join(sb.runDir, "state.json");
   const s = JSON.parse(readFileSync(file, "utf8"));
   assert.equal(s.host, "rex");
   delete s.host;
+  s.config.executor = { profile: "wl-executor" }; // a Paseo run names Paseo profiles
   writeFileSync(file, JSON.stringify(s));
-  sb.no(/was started by the Paseo workloop; continue it with that copy of the skill \(this one is rex-local\)/, "status");
-  sb.no(/was started by the Paseo workloop/, "dispatch", "01");
+  const events = readFileSync(join(sb.runDir, "events.jsonl"), "utf8");
+  const out = sb.ok("status");
+  assert.match(out, /^run repo\/feat · Paseo run · base/);
+  assert.match(out, /01 +ready +a1/);
+  assert.doesNotMatch(out, /UNRESOLVED|launch\.json/, "its launch settings are Paseo's, not shown as this copy's");
+  assert.match(out, /next: started by the Paseo workloop: continue it with that copy of the skill \(this one is rex-local\)/);
+  const json = JSON.parse(sb.ok("status", "--json"));
+  assert.equal(json.launch, null);
+  assert.deepEqual(json.next, ["started by the Paseo workloop: continue it with that copy of the skill (this one is rex-local)"]);
+  for (const args of [["status", "--live"], ["dispatch", "01"], ["note", "--text", "x"], ["wait"]]) {
+    sb.no(/was started by the Paseo workloop; continue it with that copy of the skill \(this one is rex-local\)\. `status` without --live shows it\./, ...args);
+  }
+  assert.equal(readFileSync(join(sb.runDir, "events.jsonl"), "utf8"), events, "nothing was recorded");
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), s, "the state is untouched");
 });
 
 test("a role's thinking setting reaches its turn, and pi starts with no mode", () => {

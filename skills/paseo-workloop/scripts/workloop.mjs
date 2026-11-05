@@ -2849,6 +2849,11 @@ function liveStatus(id) {
   }
 }
 
+const isRexRun = (s) => s.host === "rex";
+const PASEO_RUN = "started by the Paseo workloop: continue it with that copy of the skill (this one is rex-local)";
+// A Paseo run's next steps are that copy's, and its launch settings are Paseo profiles.
+const nextFor = (dir, s) => (isRexRun(s) || s.finishedAt ? nextSteps(dir, s) : [PASEO_RUN]);
+
 function printStatus(dir, s, live, asJson = false) {
   const rows = tasksOf(s).map((t) => {
     const rep = t.status === "running" ? executorReport(dir, t)?.status : null;
@@ -2862,8 +2867,8 @@ function printStatus(dir, s, live, asJson = false) {
   });
   const checking = s.checking ? { ...s.checking, interrupted: Boolean(interrupted(s)) } : null;
   const suggestions = boundarySuggestions(s);
-  if (asJson) return say(JSON.stringify({ run: dir, mode: s.mode || "full", integration: s.integration, checking, completion: s.completion, retro: s.retro, archivedAt: s.finishedAt, config: s.config, launch: launchTable(s.config), waivers: s.waivers || [], extraRounds: s.extraRounds || [], suggestions, finalReview: s.finalReview ?? null, finalReviews: s.finalReviews ?? [], tasks: rows, next: nextSteps(dir, s) }, null, 2));
-  say(`run ${s.project}/${s.feature}${isDirect(s) ? " (direct)" : ""} · base ${s.baseRef}@${short(s.baseSha)} · ${s.integration.branch}@${short(s.integration.tip)}${s.finishedAt ? " · FINISHED" : ""}`);
+  if (asJson) return say(JSON.stringify({ run: dir, mode: s.mode || "full", integration: s.integration, checking, completion: s.completion, retro: s.retro, archivedAt: s.finishedAt, config: s.config, launch: isRexRun(s) ? launchTable(s.config) : null, waivers: s.waivers || [], extraRounds: s.extraRounds || [], suggestions, finalReview: s.finalReview ?? null, finalReviews: s.finalReviews ?? [], tasks: rows, next: nextFor(dir, s) }, null, 2));
+  say(`run ${s.project}/${s.feature}${isDirect(s) ? " (direct)" : ""}${isRexRun(s) ? "" : " · Paseo run"} · base ${s.baseRef}@${short(s.baseSha)} · ${s.integration.branch}@${short(s.integration.tip)}${s.finishedAt ? " · FINISHED" : ""}`);
   const reviewing = tasksOf(s).filter((t) => t.review && !reviewReport(t)).length;
   say(`executors ${executorsBusy(s)}/${s.config.maxExecutors} · reviews pending ${reviewing} (max ${s.config.maxReviewers})`);
   const regression = regressionSet(s);
@@ -2877,7 +2882,7 @@ function printStatus(dir, s, live, asJson = false) {
     say(`out-of-boundary findings: ${suggestions.length} blocking finding${suggestions.length === 1 ? "" : "s"} outside the reviews' boundary — the user decides these, and nothing gates on them:`);
     for (const f of suggestions) say(`- #${f.task} ${f.id} · ${f.axis} · ${f.location} · ${f.basis}`);
   }
-  if (!s.finishedAt) printLaunch(s.config);
+  if (!s.finishedAt && isRexRun(s)) printLaunch(s.config);
   if (s.checking) say(describeCheckPhase(s.checking));
   const cols = ["id", "status", "attempt", "agent", "live", "candidate", "report", "title"];
   const width = Object.fromEntries(cols.map((c) => [c, Math.max(c.length, ...rows.map((r) => String(r[c]).length))]));
@@ -2896,7 +2901,8 @@ function printStatus(dir, s, live, asJson = false) {
       if (h !== s.integration.tip) say(`warning: integration worktree is at ${short(h)}, state says ${short(s.integration.tip)}`);
     }
   }
-  printNext(dir, s);
+  const steps = nextFor(dir, s);
+  if (steps.length) say(`next: ${steps.join("\n      ")}`);
 }
 
 // One line per role; `full` (the config command) prints an unresolved role's whole message.
@@ -2987,8 +2993,12 @@ export async function main(argv) {
   if (cmd === "init") return cmdInit(opts);
   if (cmd === "scratch") return cmdScratch(opts); // before resolveRunDir: a run need not exist, and --run is ignored
   const dir = resolveRunDir(opts.run);
-  // A run the Paseo workloop started keeps its agents in Paseo; this copy cannot see them.
-  if (JSON.parse(readFileSync(statePath(dir), "utf8")).host !== "rex") fail(`${dir} was started by the Paseo workloop; continue it with that copy of the skill (this one is rex-local)`);
+  // A run the Paseo workloop started keeps its agents in Paseo; this copy cannot see
+  // them, so it only shows such a run (`status`, which reads state alone) and refuses
+  // the rest rather than mixing a second kind of agent into it.
+  if (!isRexRun(loadState(dir)) && !(cmd === "status" && !opts.live)) {
+    fail(`${dir} was started by the Paseo workloop; continue it with that copy of the skill (this one is rex-local). \`status\` without --live shows it.`);
+  }
   const needId = ["dispatch", "freeze", "review", "send", "integrate", "cleanup", "retry", "hold", "unhold", "cancel", "criteria"];
   if (needId.includes(cmd) && !id) fail(`${cmd} needs a ticket number`);
   if (cmd === "status") return printStatus(dir, loadState(dir), opts.live, opts.json);
