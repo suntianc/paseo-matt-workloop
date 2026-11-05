@@ -1,6 +1,6 @@
 {
   "name": "paseo-matt-workloop",
-  "version": "3.2.2",
+  "version": "4.0.0",
   "description": "Paseo workloop and Matt Pocock agent skills, with a safe npx installer",
   "type": "module",
   "bin": {

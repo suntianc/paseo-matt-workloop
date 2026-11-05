@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md) · **简体中文**
 
-## [未发布]
+## [4.0.0] - 2026-11-04
 
 ### 摘要
 
@@ -17,12 +17,21 @@
 
 ### 升级说明
 
-调用裸 `dispatch`、`review`、`send` 的脚本须加 `--prepare`，执行打印出的 MCP 请求并用 `ack` 确认，技能本身早已如此要求。本版本之前创建的 run 仍把没有 `check:` 或 `manual:` 的标准读作手工验收；只有之后创建的 run 需要新结尾。运行需要 Node.js 20+、npm 和 Git。
+调用裸 `dispatch`、`review`、`send` 的脚本须加 `--prepare`，执行打印出的 MCP 请求并用 `ack` 确认，技能本身早已如此要求。本版本之前创建的 run 仍把没有 `check:` 或 `manual:` 的标准读作手工验收；只有之后创建的 run 需要新结尾。进行中的 run 可以直接更新：它不带新规则的标记，预备命令也没有变化。运行需要 Node.js 20+、npm 和 Git。
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v4.0.0 install
+```
+
+已有托管安装使用同一目标目录执行 `npx --yes github:suntianc/paseo-matt-workloop#v4.0.0 update`；`update` 拉取当前 `main`，固定安装器 tag 不会固定更新内容。项目安装在命令末尾添加 `--target <项目 skills 目录>`。
 
 ### 验证
 
 - 全部 390 个本地测试通过（`npm test`），覆盖裸 `dispatch`、`review`、`send` 被拒且不改状态、dry run 仍只打印、状态无法解释的同标签 agent 阻止再次派发、`init`、`import`、`criteria` 与 Direct run 中的验收规则、旧 run 保留裸标准，以及 `suggestions.md` 合并折行条目并跳过围栏块。
 - 在四个有建议的已记录 run 上对比提取结果：275 → 115、132 → 83、61 → 17、36 → 36 条，没有残留收尾块。
+- `npm run check:links` 解析了 66 个 Markdown 文件中的全部相对链接和 `skill://` 引用。
+- v4.0.0 安装包（133 个文件）通过 npx 安装到含空格、经 macOS `/tmp` 符号链接访问的临时路径，共 21 个技能；安装结果的链接检查（67 个 Markdown 文件）通过，`workloop.mjs`、`validate.mjs`、`tidy-docs.mjs`、`req.mjs`、`audit.mjs` 均打印用法。本地 `Agent.md`、`AGENTS.md` 不在制品中。
+- 代码提交（`10eeb1e`..`7cdaa6f`）在 Ubuntu 和 Windows、Node 20 和 22 上的 CI 全部通过，其中 `7cdaa6f` 修正了一个按 Windows 分隔符比较工作区路径的测试；发布提交只改动版本号和 changelog。本次未在本地运行 Windows 和 Linux。
 
 ## [3.2.2] - 2026-11-03
 
@@ -275,3 +284,5 @@ npx --yes github:suntianc/paseo-matt-workloop#main update
 [3.2.1]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.1
 
 [3.2.2]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.2
+
+[4.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v4.0.0

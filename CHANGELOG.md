@@ -2,7 +2,7 @@
 
 **English** · [简体中文](CHANGELOG.zh-CN.md)
 
-## [Unreleased]
+## [4.0.0] - 2026-11-04
 
 ### Summary
 
@@ -17,12 +17,21 @@ Three changes trim the workflow on evidence from the maintainer's 19 recorded ru
 
 ### Upgrade
 
-Scripts that call bare `dispatch`, `review` or `send` must pass `--prepare`, execute the printed MCP request and acknowledge it with `ack`, as the skill already directs. Runs created before this version keep reading a criterion without `check:` or `manual:` as manual; only runs created after it need the new ending. Requires Node.js 20+, npm and Git.
+Scripts that call bare `dispatch`, `review` or `send` must pass `--prepare`, execute the printed MCP request and acknowledge it with `ack`, as the skill already directs. Runs created before this version keep reading a criterion without `check:` or `manual:` as manual; only runs created after it need the new ending. A run already in progress can be updated: it carries no marker for the new rule, and its prepared commands are unchanged. Requires Node.js 20+, npm and Git.
+
+```sh
+npx --yes github:suntianc/paseo-matt-workloop#v4.0.0 install
+```
+
+For an existing managed installation, run `npx --yes github:suntianc/paseo-matt-workloop#v4.0.0 update` with the same target. `update` fetches current `main`; pinning the installer tag does not pin the update payload. For a project installation, append `--target <project skills directory>`.
 
 ### Verification
 
 - All 390 local tests pass (`npm test`), including the refusal of bare `dispatch`, `review` and `send` with no state change, a dry run that still only prints, a labelled agent no state accounts for refusing a second dispatch, the acceptance rule at `init`, `import` and `criteria` and for direct runs, older runs keeping bare criteria, and `suggestions.md` with wrapped items joined and fenced blocks skipped.
 - Extraction was compared on the four recorded runs with suggestions: 275 → 115, 132 → 83, 61 → 17 and 36 → 36 items, with no closing block left.
+- `npm run check:links` resolves every relative link and `skill://` reference across 66 markdown files.
+- The v4.0.0 tarball (133 files) installed 21 skills through npx into a temporary path containing a space and reached through the macOS `/tmp` symlink; the installed link check (67 markdown files) passed, and `workloop.mjs`, `validate.mjs`, `tidy-docs.mjs`, `req.mjs` and `audit.mjs` printed their usage. The local `Agent.md` and `AGENTS.md` are not in the artifact.
+- The code commits (`10eeb1e`..`7cdaa6f`) passed CI on Ubuntu and Windows with Node 20 and 22, after `7cdaa6f` fixed a test that compared a workspace path in Windows separators; the release commit changes only the version and the changelogs. Windows and Linux were not run locally.
 
 ## [3.2.2] - 2026-11-03
 
@@ -275,3 +284,5 @@ A fixed installer tag pins `install`; `update` always fetches current `main`. Ru
 [3.2.1]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.1
 
 [3.2.2]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v3.2.2
+
+[4.0.0]: https://github.com/suntianc/paseo-matt-workloop/releases/tag/v4.0.0
