@@ -5,7 +5,7 @@ description: Take a development task from conversation to verified work. Handle 
 
 # Paseo Workloop (rex-local)
 
-This variant needs no Paseo: you orchestrate from an interactive Claude Code session, and every executor or reviewer turn is a headless CLI process in a tab of the run's Rex session.
+This variant needs no Paseo: you orchestrate from an interactive Claude Code, codex or pi session, and every executor or reviewer turn is a headless CLI process in a tab of the run's Rex session.
 
 Choose enough process for the task. Keep the user's goal and existing authorization in view; routine choices belong to you, while material scope and design questions belong in the conversation.
 

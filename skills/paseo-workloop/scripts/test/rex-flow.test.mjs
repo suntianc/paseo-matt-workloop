@@ -28,6 +28,7 @@ function sandbox({ launch = LAUNCH, init = true, tickets = { "01-a.md": "# 01: A
   };
   delete env.WORKLOOP_RUN;
   delete env.FAKE_REX_FAIL;
+  delete env.CODEX_THREAD_ID; // tests may run inside a codex session
   mkdirSync(env.WORKLOOP_ROOT, { recursive: true });
   if (launch) writeFileSync(join(env.WORKLOOP_ROOT, "launch.json"), JSON.stringify(launch));
   const g = (cwd, ...args) => {
@@ -266,4 +267,44 @@ test("a role's thinking setting reaches its turn, and pi starts with no mode", (
   assert.match(sb.ok("review", "01"), /reviewer pi model=magpie\/x thinking=low ← .*launch\.json started on/);
   const rev = sb.state().agents[sb.state().tasks["01"].review.agentId];
   assert.deepEqual(JSON.parse(readFileSync(`${rev.turns[0].base}.spec.json`, "utf8")).settings, { model: "magpie/x", thinking: "low" });
+});
+
+test("wait --wake codex queues what it printed into the codex session that started it", async () => {
+  const sb = sandbox();
+  const log = join(sb.root, "codex.jsonl");
+  Object.assign(sb.env, { WORKLOOP_CODEX_CLI: join(HERE, "fake-codex.mjs"), FAKE_CODEX_LOG: log });
+  sb.no(/wait --wake codex needs CODEX_THREAD_ID: start it from the codex session it should wake/, "wait", "--wake", "codex");
+  sb.env.CODEX_THREAD_ID = "thread-1";
+  sb.no(/wait --wake takes codex, not "pi" \(Claude Code and pi with pi-background-run wake/, "wait", "--wake", "pi");
+  // Nothing runs: waking would only bring the orchestrator back to start this again.
+  sb.no(/no turn is running, so there is nothing to wake you for/, "wait", "--wake", "codex");
+  assert.ok(!existsSync(log), "no queue call");
+
+  sb.ok("dispatch", "01");
+  const w = sb.start("wait", "--wake", "codex");
+  await new Promise((r) => setTimeout(r, 300));
+  sb.work("01");
+  const r = await w;
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /woke codex session thread-1/);
+  const calls = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(calls.length, 1);
+  const [cmd, flag, thread, mflag, message, resume] = calls[0];
+  assert.deepEqual([cmd, flag, thread, mflag, resume], ["queue", "--thread", "thread-1", "--message", "--resume"]);
+  assert.match(message, /^\[workloop repo\/feat\]\nturn ended: "#01 exec a1" \(exit 0\); #01 reports done in .*reports\/01-a1\.md\nnext: review 01/);
+  assert.match(message, /start `node .*workloop\.mjs' --run '.*' wait --wake codex` in a background terminal again\.$/);
+});
+
+test("wait --wake codex says so when the queue fails, and a timeout wakes the session too", async () => {
+  const sb = sandbox();
+  const log = join(sb.root, "codex.jsonl");
+  Object.assign(sb.env, { WORKLOOP_CODEX_CLI: join(HERE, "fake-codex.mjs"), FAKE_CODEX_LOG: log, CODEX_THREAD_ID: "thread-2" });
+  sb.ok("dispatch", "01");
+  const timedOut = await sb.start("wait", "--for", "0.01", "--wake", "codex");
+  assert.equal(timedOut.code, 0, timedOut.out);
+  assert.match(JSON.parse(readFileSync(log, "utf8").trim()).at(4), /no turn ended in 0\.01m; "#01 exec a1" last printed/);
+  sb.env.FAKE_CODEX_EXIT = "1";
+  const failed = await sb.start("wait", "--for", "0.01", "--wake", "codex");
+  assert.notEqual(failed.code, 0);
+  assert.match(failed.out, /could not wake codex session thread-2: Error: fake queue failure/);
 });

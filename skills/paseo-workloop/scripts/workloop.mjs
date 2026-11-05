@@ -2739,33 +2739,65 @@ const describeEnd = (p) => (p.exit_code === 0 ? "exit 0"
 // `wait [--for <minutes>]` returns when one of the running turns ends, or at the
 // limit. Run it as a background command and end the turn: its exit is what wakes the
 // orchestrator. It holds no lock, so every other command works meanwhile.
+//
+// `--wake codex` is for a codex orchestrator, whose background terminals do not wake
+// it: what `wait` would print is queued into its session (CODEX_THREAD_ID) with
+// `codex queue --resume`, which opens a turn when it is idle and follows the current
+// one when it is busy. Only this script's own words go into that message.
 async function cmdWait(dir, opts) {
   const minutes = opts.for == null ? DEFAULT_WAIT : Number(opts.for);
   if (!Number.isFinite(minutes) || minutes <= 0) fail("wait --for takes a positive number of minutes");
+  const wake = opts.wake == null ? null : wakeTarget(opts.wake);
   const s = loadState(dir);
   if (s.finishedAt) return say("this run is archived; nothing runs");
+  const lines = [];
+  const tell = (line) => { say(line); lines.push(line); };
+  const next = (st) => { const steps = nextSteps(dir, st); if (steps.length) tell(`next: ${steps.join("\n      ")}`); };
   const running = runningTurns(s);
   if (!running.length) {
-    say("no turn is running");
+    // Waking now would only wake the orchestrator to arm this again.
+    if (wake) fail("no turn is running, so there is nothing to wake you for; run `status` for the next step");
+    tell("no turn is running");
     // A turn that ended while nobody waited, and left nothing to go on, is said here:
     // the next steps read reports only, so they would pass over it.
     for (const id of currentAgents(s)) {
       const a = inspectAgent(id);
-      if (a.turn && /left no fresh report/.test(turnOutcome(dir, s, id))) say(`"${a.turn.title}" ended (${a.status}${a.exitCode != null ? ` ${a.exitCode}` : ""}); ${turnOutcome(dir, s, id)}`);
+      if (a.turn && /left no fresh report/.test(turnOutcome(dir, s, id))) tell(`"${a.turn.title}" ended (${a.status}${a.exitCode != null ? ` ${a.exitCode}` : ""}); ${turnOutcome(dir, s, id)}`);
     }
-    return printNext(dir, s);
+    return next(s);
   }
   say(`waiting on ${running.map((r) => `"${r.title}"`).join(", ")} (up to ${minutes}m)`);
   const ended = await host.waitAny(s.rex.session, running.map((r) => r.block), Math.round(minutes * 60000));
   const s2 = loadState(dir);
   if (!ended) {
     const still = runningTurns(s2).map((r) => `"${r.title}" last printed ${ago(r.updatedAt)}`);
-    say(`no turn ended in ${minutes}m${still.length ? `; ${still.join(", ")}` : ""}`);
-    return say("next: run `wait` in the background again, then end this turn");
+    tell(`no turn ended in ${minutes}m${still.length ? `; ${still.join(", ")}` : ""}`);
+    tell("next: run `wait` in the background again, then end this turn");
+  } else {
+    const r = running.find((x) => x.block === ended.block);
+    tell(`turn ended: "${r.title}" (${describeEnd(ended.payload)}); ${turnOutcome(dir, s2, r.agent.id)}`);
+    next(s2);
   }
-  const r = running.find((x) => x.block === ended.block);
-  say(`turn ended: "${r.title}" (${describeEnd(ended.payload)}); ${turnOutcome(dir, s2, r.agent.id)}`);
-  printNext(dir, s2);
+  if (wake) deliverWake(dir, s2, wake, lines);
+}
+
+// Where `wait --wake` sends its news. Read at the start, from the orchestrator's own
+// environment, so a wait started anywhere else cannot wake the wrong session.
+function wakeTarget(kind) {
+  if (kind !== "codex") fail(`wait --wake takes codex, not "${kind}" (Claude Code and pi with pi-background-run wake on a background command's exit by themselves)`);
+  const thread = process.env.CODEX_THREAD_ID;
+  if (!thread) fail("wait --wake codex needs CODEX_THREAD_ID: start it from the codex session it should wake");
+  return { kind, thread };
+}
+function deliverWake(dir, s, wake, lines) {
+  const wl = `node ${shellArg(pathArg(fileURLToPath(import.meta.url)))} --run ${shellArg(pathArg(dir))}`;
+  const text = [`[workloop ${s.project}/${s.feature}]`, ...lines,
+    `Act on it. Before you end your turn, if a turn still runs, start \`${wl} wait --wake codex\` in a background terminal again.`].join("\n");
+  const bin = process.env.WORKLOOP_CODEX_CLI || "codex";
+  const [cmd, pre] = /\.[cm]?js$/i.test(bin) ? [process.execPath, [bin]] : [bin, []];
+  const r = spawnSync(cmd, [...pre, "queue", "--thread", wake.thread, "--message", text, "--resume"], { cwd: s.repo, encoding: "utf8", timeout: 60000 });
+  if (r.error || r.status !== 0) fail(`could not wake codex session ${wake.thread}: ${(r.error?.message || r.stderr || r.stdout || `exit ${r.status}`).trim()}`);
+  say(`woke codex session ${wake.thread}`);
 }
 
 // The agents whose report the run is waiting for: each open task's executor (or,
@@ -2905,8 +2937,10 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
   status [--live] [--json]             table + next steps; --live asks Rex about each agent
   dispatch <NN> [--note t] [--note-file f] [--dry-run] [--provider ...]
                                        worktree, brief, and the executor's first turn in a Rex tab
-  wait [--for 110]                     return when a running turn ends (or after the minutes);
-                                       run it as a background command, then end your turn
+  wait [--for 110] [--wake codex]      return when a running turn ends (or after the minutes);
+                                       run it as a background command, then end your turn;
+                                       --wake codex queues what it printed into the codex
+                                       session (CODEX_THREAD_ID) that started it
   freeze <NN>                          record the executor's commit as the candidate
   criteria <NN> --reason r             record the user's agreement to a change in its criteria
   review <NN> [--again]                freeze if needed, start a reviewer; after a rework the
@@ -2941,7 +2975,7 @@ Every turn is a headless process in a tab of the run's Rex session; \`wait\` rep
 const OPTIONS = Object.fromEntries([
   ...["run", "repo", "feature", "base", "spec", "tickets", "max-executors", "max-reviewers", "profile", "provider", "model", "mode", "thinking",
     "review-profile", "review-provider", "review-model", "review-mode", "review-thinking", "note", "note-file", "text", "file", "override", "reason",
-    "check-timeout", "waive", "max-rework-rounds", "for"].map((k) => [k, { type: "string" }]),
+    "check-timeout", "waive", "max-rework-rounds", "for", "wake"].map((k) => [k, { type: "string" }]),
   ...["check", "setup", "clear-launch"].map((k) => [k, { type: "string", multiple: true }]),
   ...["json", "live", "keep", "again", "merge-tip", "dry-run", "help", "direct", "new-worktree", "skip", "extra-round"].map((k) => [k, { type: "boolean" }]),
 ]);

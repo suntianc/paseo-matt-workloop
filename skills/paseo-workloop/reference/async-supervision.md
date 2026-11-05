@@ -25,7 +25,17 @@ For turn `n` of agent `<id>`, under `<run dir>/turns/`:
 
 ## Waiting
 
-Run `WL wait [--for <minutes>]` as a background command, then end your turn. It holds no lock, so every other command works meanwhile. It returns:
+`WL wait [--for <minutes>]` holds no lock, so every other command works meanwhile. Start it so that its end wakes you, then end your turn:
+
+| Your CLI | How to start it | What wakes you |
+|---|---|---|
+| Claude Code | `WL wait` as a background command | the command's exit |
+| pi, with [pi-background-run](https://github.com/stablekernel/pi-background-run) loaded | `WL wait` through the `bgrun` tool | the job's exit; read the digest it brings |
+| codex | `WL wait --wake codex` in a background terminal; don't poll it | a message `wait` queues into your session (`codex queue --thread $CODEX_THREAD_ID --resume`), carrying what it printed |
+
+A codex background terminal does not wake codex when it ends, which is why `--wake codex` queues the news itself; the message waits for your current turn to finish if you are busy. `--wake codex` refuses when nothing runs, so it never wakes you just to be armed again. Run `integrate` and `finish` the same way your CLI runs long commands; on codex, end the command with `; codex queue --thread "$CODEX_THREAD_ID" --message "<what finished>; run status" --resume` so its end wakes you too.
+
+`wait` returns:
 
 - **when a running turn ends**, saying how it exited and what it left: the executor's report status, the reviewer's verdict, or, when there is no fresh report, the log to read and the ways on; then the next steps;
 - **at once when nothing runs**, naming any turn that ended without a report while nobody was waiting, then the next steps;
@@ -33,7 +43,7 @@ Run `WL wait [--for <minutes>]` as a background command, then end your turn. It 
 
 A turn ending is a wake-up, not acceptance: read the report and act on the table in [run.md](run.md).
 
-- Arm `wait` before every pause while a turn runs, including after answering an unrelated user message. Nothing else wakes you.
+- Arm `wait` before every pause while a turn runs, including after answering an unrelated user message. Nothing else wakes you. A CLI with none of the ways above cannot orchestrate a run: say so rather than polling.
 - One `wait` is enough; a second one does no harm.
 - Never poll in a shell loop or sleep, and never read logs to pass the time.
 
@@ -45,7 +55,7 @@ The user may also take over a conversation by hand once its turn has ended: in t
 
 ## Rex and the orchestrator
 
-The Rex server, not the app window, owns the processes in its tabs: closing the window or quitting the app does not stop a turn. Run Claude Code itself in a Rex tab when you can, so the orchestrator survives the same way. If the Claude Code session does close, turns keep running: reopen the session, run `WL status --live`, and arm `wait` again.
+The Rex server, not the app window, owns the processes in its tabs: closing the window or quitting the app does not stop a turn. Run the orchestrator's CLI itself in a Rex tab when you can, so it survives the same way. If its session does close, turns keep running: reopen the session, run `WL status --live`, and arm `wait` again.
 
 If the Rex server stops, its tabs and their processes go with it. `status --live` then shows those agents `closed`; their turn files remain, and the CLI keeps its own conversation, so `send` goes on in it, or `retry` replaces the agent.
 
