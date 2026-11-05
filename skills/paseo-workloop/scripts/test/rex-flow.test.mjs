@@ -1,0 +1,227 @@
+// The rex-local flow end to end, against real git and a fake rex CLI: agents are
+// turns in Rex tabs, a turn's end is its process exiting, and `wait` is what
+// reports it. Guards against: a turn started on a guessed provider, a busy or
+// unknown agent treated as idle, a rework that cannot go on in the executor's
+// conversation, a `wait` that misses a turn that already ended or never returns.
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const CLI = join(HERE, "..", "workloop.mjs");
+const FAKE = join(HERE, "fake-rex.mjs");
+const CHECK = `node -e "process.exit(0)"`;
+const LAUNCH = { executor: { provider: "dsh", mode: "danger-full-access" }, reviewer: { provider: "devin", mode: "dangerous", model: "review-model" } };
+
+function sandbox({ launch = LAUNCH, init = true, tickets = { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: works — manual: a reviewer reads it\n" } } = {}) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "workloop-rex-")));
+  const repo = join(root, "repo");
+  writeFileSync(join(root, "gitconfig"), "");
+  const env = {
+    ...process.env, WORKLOOP_ROOT: join(root, "wl"), REX_CLI: FAKE, FAKE_REX_DB: join(root, "rex.json"),
+    GIT_CONFIG_GLOBAL: join(root, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com",
+  };
+  delete env.WORKLOOP_RUN;
+  delete env.FAKE_REX_FAIL;
+  mkdirSync(env.WORKLOOP_ROOT, { recursive: true });
+  if (launch) writeFileSync(join(env.WORKLOOP_ROOT, "launch.json"), JSON.stringify(launch));
+  const g = (cwd, ...args) => {
+    const r = spawnSync("git", ["-C", cwd, ...args], { env, encoding: "utf8" });
+    assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  const runDir = join(root, "wl", "repo", "feat");
+  mkdirSync(join(runDir, "issues"), { recursive: true });
+  g(root, "init", "-q", "-b", "main", repo);
+  writeFileSync(join(repo, "shared.txt"), "base\n");
+  g(repo, "add", "shared.txt");
+  g(repo, "commit", "-q", "-m", "base");
+  writeFileSync(join(runDir, "spec.md"), "# Spec\n");
+  for (const [f, c] of Object.entries(tickets)) writeFileSync(join(runDir, "issues", f), c);
+  const wl = (...args) => {
+    const r = spawnSync(process.execPath, [CLI, "--run", "repo/feat", ...args], { env, cwd: repo, encoding: "utf8" });
+    return { code: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  const ok = (...args) => { const r = wl(...args); assert.equal(r.code, 0, r.out); return r.out; };
+  const no = (pattern, ...args) => { const r = wl(...args); assert.notEqual(r.code, 0, r.out); assert.match(r.out, pattern); return r.out; };
+  const state = () => JSON.parse(readFileSync(join(runDir, "state.json"), "utf8"));
+  const db = () => JSON.parse(readFileSync(env.FAKE_REX_DB, "utf8"));
+  const editDb = (fn) => { const d = db(); fn(d); writeFileSync(env.FAKE_REX_DB, JSON.stringify(d)); };
+  const block = (id) => db().blocks.find((b) => b.id === id);
+  // A turn ends: its meta file says how, as agent-run writes it, and its tab's program exits.
+  const endTurn = (agentId, { code = 0, session = `sess-${agentId}` } = {}) => {
+    const turn = state().agents[agentId].turns.at(-1);
+    writeFileSync(`${turn.base}.json`, JSON.stringify({ provider: "x", session, exitCode: code }));
+    editDb((d) => { d.blocks.find((b) => b.id === turn.block).exit = code; });
+    return turn;
+  };
+  // The executor commits, writes its report, and its turn ends.
+  const work = (id, { status = "done", file = `f${id}.txt` } = {}) => {
+    const t = state().tasks[id];
+    writeFileSync(join(t.worktree, file), `ticket ${id} ${Date.now()}\n`);
+    g(t.worktree, "add", "-A");
+    g(t.worktree, "commit", "-q", "-m", `work ${id}`);
+    writeFileSync(join(runDir, "reports", `${id}-${t.attempt}.md`), `Status: ${status}\nCommit: ${g(t.worktree, "rev-parse", "HEAD")}\n\n## Summary\nDid it.\n`);
+    return endTurn(t.agentId);
+  };
+  const reviewed = (id, verdict = "pass", findings = "") => {
+    const t = state().tasks[id];
+    writeFileSync(t.review.path, `Verdict: ${verdict}\nCandidate: ${t.candidateSha}\n${findings}`);
+    return endTurn(t.review.agentId);
+  };
+  const start = (...args) => {
+    const child = spawn(process.execPath, [CLI, "--run", "repo/feat", ...args], { env, cwd: repo });
+    let out = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", (d) => { out += d; });
+    return new Promise((resolve) => child.on("close", (code) => resolve({ code, out })));
+  };
+  const initArgs = ["init", "--feature", "feat", "--repo", repo, "--check", CHECK];
+  if (init) ok(...initArgs);
+  return { initArgs, root, repo, env, runDir, g, wl, ok, no, state, db, editDb, block, endTurn, work, reviewed, start };
+}
+
+test("a ticket goes from dispatch to archive with every agent a turn in the run's Rex session", async () => {
+  const sb = sandbox();
+  const out = sb.ok("dispatch", "01");
+  assert.match(out, /dispatched: dsh mode=danger-full-access ← .*launch\.json in Rex tab "#01 exec a1"/);
+  const s = sb.state();
+  const t = s.tasks["01"];
+  const exec = s.agents[t.agentId];
+  assert.equal(exec.role, "executor");
+  assert.ok(existsSync(t.worktree) && t.worktree.startsWith(sb.runDir), "the worktree is under the run");
+  const tab = sb.block(exec.turns[0].block);
+  assert.equal(tab.session, s.rex.session);
+  assert.equal(tab.cwd, t.worktree);
+  assert.ok(tab.keepOpen, "the tab stays open after the turn, so its output can be read");
+  assert.match(tab.argv.join(" "), /agent-run\.mjs .*turns\/.*-1\.spec\.json$/);
+  const spec = JSON.parse(readFileSync(tab.argv.at(-1), "utf8"));
+  assert.deepEqual([spec.provider, spec.settings, spec.session], ["dsh", { mode: "danger-full-access" }, null]);
+  assert.match(readFileSync(spec.prompt, "utf8"), /Read the task brief at .*briefs/);
+
+  // While the turn runs, nothing that needs an idle executor proceeds.
+  sb.no(/executor .* is running \(Rex tab "#01 exec a1"\)/, "freeze", "01");
+  assert.match(sb.ok("status", "--live"), /01 +running +a1 .* running/);
+
+  // `wait` reports the turn that ends, and what it left.
+  const waiting = sb.start("wait", "--for", "1");
+  await new Promise((r) => setTimeout(r, 300));
+  sb.work("01");
+  const w = await waiting;
+  assert.equal(w.code, 0, w.out);
+  assert.match(w.out, /waiting on "#01 exec a1"/);
+  assert.match(w.out, /turn ended: "#01 exec a1" \(exit 0\); #01 reports done/);
+  assert.match(w.out, /next: .*review 01/);
+
+  // The reviewer is devin with its model, in the same worktree.
+  assert.match(sb.ok("review", "01"), /reviewer devin model=review-model mode=dangerous .* started on [0-9a-f]{8} in Rex tab "#01 review/);
+  const r1 = sb.state().tasks["01"].review;
+  assert.equal(sb.state().agents[r1.agentId].cwd, t.worktree);
+  sb.reviewed("01", "changes_requested", "\n## Findings\n| ID | Axis | Location | Basis | Blocking | Fix acceptance |\n|----|------|----------|-------|----------|----------------|\n| S1 | Standards | f01.txt:1 | AC1: quoted | yes | fixed |\n");
+
+  // The rework is the executor's next turn, in the conversation its first turn named.
+  writeFileSync(join(sb.root, "rework.md"), "Fix S1: reproduce it, then fix the cause.");
+  assert.match(sb.ok("send", "01", "--file", join(sb.root, "rework.md")), /message 1 sent; the executor goes on in Rex tab "#01 exec a1 · 1"/);
+  const exec2 = sb.state().agents[t.agentId];
+  assert.equal(exec2.turns.length, 2);
+  const spec2 = JSON.parse(readFileSync(`${exec2.turns[1].base}.spec.json`, "utf8"));
+  assert.equal(spec2.session, `sess-${t.agentId}`);
+  assert.match(readFileSync(spec2.prompt, "utf8"), /Fix S1[\s\S]*This continues task #01/);
+  assert.ok(sb.block(exec2.turns[0].block).closed, "the previous turn's tab closes; its files stay");
+  assert.ok(existsSync(`${exec2.turns[0].base}.prompt.md`));
+
+  sb.work("01", { file: "fix.txt" });
+  sb.ok("review", "01");
+  sb.reviewed("01");
+  assert.match(sb.ok("integrate", "01"), /#01 integrated/);
+
+  // The final review: its own worktree and tab, then finish and archive.
+  const tip = sb.state().integration.tip;
+  writeFileSync(join(sb.runDir, "final-review.md"), `Integration tip: ${tip}\n\n## Acceptance\n\n| Row | Spec item | Evidence on the integrated tree |\n|-----|-----------|---------------------------------|\n| M1 | item | evidence |\n`);
+  assert.match(sb.ok("final-review"), /final review round 1: devin .* started in Rex tab "final r1/);
+  const round = sb.state().finalReview;
+  writeFileSync(round.path, `Verdict: pass\nIntegration tip: ${tip}\n`);
+  const fw = sb.start("wait");
+  await new Promise((r) => setTimeout(r, 300));
+  sb.endTurn(round.agentId);
+  assert.match((await fw).out, /turn ended: "final r1 [0-9a-f]{8}" \(exit 0\); verdict pass/);
+  sb.ok("finish");
+  sb.ok("retro", "--skip", "--reason", "test");
+  sb.ok("archive");
+  const done = sb.state();
+  assert.ok(done.finishedAt);
+  assert.ok(sb.db().sessions.find((x) => x.id === done.rex.session).killed, "archive closes the run's Rex session");
+  const index = JSON.parse(readFileSync(join(sb.runDir, "evidence", "index.json"), "utf8"));
+  assert.equal(index.agents.length, 4); // executor, two reviewers, final reviewer
+  const transcript = readFileSync(join(sb.runDir, "evidence", `${t.agentId}.txt`), "utf8");
+  assert.match(transcript, /=== turn 1 · #01 exec a1[\s\S]*=== turn 2 · #01 exec a1 · 1[\s\S]*Fix S1/);
+});
+
+test("no launch settings, an unknown provider, or a setting the CLI does not take refuses before anything is created", () => {
+  const none = sandbox();
+  unlinkSync(join(none.env.WORKLOOP_ROOT, "launch.json"));
+  none.no(/executor: no launch settings: the run sets no --provider, and .*launch\.json has no "executor" entry/, "dispatch", "01");
+  assert.ok(!existsSync(join(none.runDir, "worktrees")), "no worktree was made");
+  const sb = sandbox();
+  sb.no(/executor: provider "paseo" is not one this run can start \(dsh, devin\)/, "dispatch", "01", "--provider", "paseo");
+  sb.no(/executor: dsh takes no model \(its model and effort come from the dsh profile; set --profile\)/, "dispatch", "01", "--model", "m");
+  // init reads them too, so a run never starts with a role it cannot launch.
+  const missing = sandbox({ launch: { ...LAUNCH, executor: { provider: "dsh" } }, init: false });
+  missing.no(/executor: dsh needs --mode/, ...missing.initArgs);
+});
+
+test("an agent Rex cannot report on is not idle", () => {
+  const sb = sandbox();
+  sb.ok("dispatch", "01");
+  sb.work("01");
+  sb.env.FAKE_REX_FAIL = "block call";
+  sb.no(/cannot tell whether executor .* is still running: rex block call process failed \(exit 1\): Error: fake failure of block call/, "freeze", "01");
+  delete sb.env.FAKE_REX_FAIL;
+  assert.match(sb.ok("freeze", "01"), /#01 frozen at/);
+});
+
+test("a turn that left no conversation id cannot be gone on in; retry is the way", () => {
+  const sb = sandbox();
+  sb.ok("dispatch", "01");
+  const t = sb.state().tasks["01"];
+  sb.endTurn(t.agentId, { session: null });
+  sb.no(/left no conversation id .*; `retry` the task instead/, "send", "01", "--text", "go on");
+  assert.equal(sb.state().agents[t.agentId].turns.length, 1, "no second turn was started");
+});
+
+test("wait returns at once when nothing runs, and after its limit when nothing ends", async () => {
+  const sb = sandbox();
+  assert.match(sb.ok("wait"), /no turn is running\nnext: .*dispatch 01/);
+  sb.ok("dispatch", "01");
+  const r = await sb.start("wait", "--for", "0.01");
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /no turn ended in 0\.01m; "#01 exec a1" last printed/);
+  assert.match(r.out, /run `wait` in the background again/);
+  sb.no(/wait --for takes a positive number of minutes/, "wait", "--for", "soon");
+});
+
+test("a turn that ended before wait started is reported, not waited for", () => {
+  const sb = sandbox();
+  sb.ok("dispatch", "01");
+  sb.endTurn(sb.state().tasks["01"].agentId, { code: 3 });
+  // It is no longer running, so there is nothing to wait on; wait says what it left.
+  const out = sb.ok("wait");
+  assert.match(out, /no turn is running\n"#01 exec a1" ended \(error 3\); it left no fresh report: read its output in .*-1\.log/);
+  assert.match(sb.ok("status", "--live"), /01 +running +a1 .* error:3/);
+});
+
+test("a turn that exits without a report names its log and the ways on", async () => {
+  const sb = sandbox();
+  sb.ok("dispatch", "01");
+  const t = sb.state().tasks["01"];
+  const w = sb.start("wait");
+  await new Promise((r) => setTimeout(r, 300));
+  sb.endTurn(t.agentId, { code: 1 });
+  const out = (await w).out;
+  assert.match(out, /turn ended: "#01 exec a1" \(exit 1, exit status 1\); it left no fresh report: read its output in .*turns\/.*-1\.log, then `send 01 --text <what to do>` to go on, or `retry 01 --reason <why>`/);
+});

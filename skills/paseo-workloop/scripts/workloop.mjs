@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// workloop — run state and Paseo/git mechanics for the paseo-workloop skill.
+// workloop — run state and Rex/git mechanics for the paseo-workloop skill
+// (rex-local: executors and reviewers are headless CLI turns in Rex tabs).
 //
 // The orchestrating agent makes the judgement calls; this script owns the
 // bookkeeping and the invariants (verified bases, budgets, frozen candidates,
-// review before integration, cleanup guards) and makes every Paseo and git
-// call, so they happen the same way every time.
+// review before integration, cleanup guards) and starts every agent turn and
+// makes every git call, so they happen the same way every time.
 //
 // Zero dependencies, Node >= 18.  `node workloop.mjs help` lists the commands.
 import { spawn, spawnSync } from "node:child_process";
@@ -17,9 +18,11 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { HeartbeatError, maintainHeartbeat } from "./heartbeat.mjs";
+import { ADAPTERS, PROVIDERS, settingsProblem } from "./agents.mjs";
+import * as host from "./rex.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const AGENT_RUN = join(HERE, "agent-run.mjs");
 const SKILL_DIR = resolve(HERE, "..");
 const SKILLS_ROOT = resolve(SKILL_DIR, "..");
 const TEMPLATES = join(SKILL_DIR, "templates");
@@ -34,14 +37,13 @@ const say = (...a) => console.log(...a);
 const now = () => new Date().toISOString();
 const short = (sha) => (sha ? sha.slice(0, 8) : "-");
 const tail = (s, n) => s.split("\n").slice(-n).join("\n");
-// How long ago a recorded time was, for next steps such as a prepared action that
-// was never acknowledged: a request left over from yesterday reads as one.
+// How long ago a recorded time was, such as a running turn's last output: a turn
+// silent since yesterday reads as one.
 const ago = (iso) => {
   const min = Math.floor((Date.now() - Date.parse(iso)) / 60000);
   if (!Number.isFinite(min)) return "at an unknown time";
   return min < 1 ? "just now" : min < 120 ? `${min}m ago` : min < 48 * 60 ? `${Math.floor(min / 60)}h ago` : `${Math.floor(min / 1440)}d ago`;
 };
-const pendingStep = (label, p) => `action ${label} — reconcile pending MCP action ${p.action} (prepared ${ago(p.preparedAt)}); do not repeat an unacknowledged call`;
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // ---------------------------------------------------------------- processes
@@ -271,66 +273,96 @@ export function winQuote(arg) {
 }
 const shellArg = (s) => WIN ? winQuote(s) : `'${String(s).replace(/'/g, "'\\''")}'`;
 
-// The single Paseo backend. PASEO_CLI may be a command on PATH, a path to the
-// CLI binary/.cmd shim, or a path to the CLI's JS entry (run with this node).
-function paseo(args, { timeout = Number(process.env.PASEO_TIMEOUT_MS || 30000), raw = false } = {}) {
-  if (!Number.isFinite(timeout) || timeout <= 0) fail("Paseo timeout must be a positive number of milliseconds");
-  const cli = process.env.PASEO_CLI || "paseo";
-  const opts = { encoding: "utf8", maxBuffer: 64 << 20, timeout: Math.ceil(timeout), killSignal: "SIGKILL" };
-  let r;
-  if (/\.[cm]?js$/i.test(cli)) r = spawnSync(process.execPath, [cli, ...args], opts);
-  else if (WIN) r = spawnSync([cli, ...args].map(winQuote).join(" "), { ...opts, shell: true });
-  else r = spawnSync(cli, args, opts);
-  const what = `paseo ${args.slice(0, 2).join(" ")}`;
-  if (r.error?.code === "ETIMEDOUT") fail(`${what} timed out after ${Math.ceil(timeout)}ms. Reconcile live state before retrying a write; it may have reached the daemon.`);
-  if (r.error) fail(`${what}: ${r.error.message} (set PASEO_CLI if paseo is not on PATH)`);
-  const text = r.stdout || "";
-  if (raw) {
-    if (r.status !== 0) fail(`${what} failed: ${(r.stderr || text).trim()}`);
-    return text;
-  }
-  if (r.status === 0 && !text.trim()) return null;
-  const start = text.search(/[[{]/);
-  let data;
-  try { data = JSON.parse(text.slice(start)); } catch {
-    fail(`${what}: unexpected output (exit ${r.status}):\n${`${text}\n${r.stderr || ""}`.trim().slice(0, 2000)}`);
-  }
-  if (r.status !== 0 || (data && !Array.isArray(data) && data.error)) {
-    const error = new UserError(`${what} failed: ${JSON.stringify(data?.error ?? data)}`);
-    error.paseoCode = data?.error?.code;
-    error.paseoMessage = data?.error?.message;
-    throw error;
-  }
-  return data;
-}
 const pathArg = (p) => (WIN ? p.replace(/\\/g, "/") : p);
 const untilde = (p) => (p && /^~(?=$|[\\/])/.test(p) ? join(homedir(), p.slice(1)) : p);
 
-// Paseo JSON uses camelCase in some commands and PascalCase in others.
-function pick(o, ...keys) {
-  for (const k of keys) for (const kk of [k, k[0].toUpperCase() + k.slice(1)]) if (o?.[kk] != null) return o[kk];
+// --------------------------------------------------------------- agents
+//
+// An agent is one conversation with a CLI (an executor's, a reviewer's) in one
+// worktree. Each prompt it gets is a turn: a headless process in its own Rex tab
+// (agent-run.mjs) that exits when the turn is over. The run keeps its agents in
+// state, `s.agents[id]`, with every turn's tab and files; a turn's meta file
+// carries the conversation id the next turn goes on in.
+//
+// A command reads one run, so the agents `inspectAgent` and `requireIdle` look up
+// are those of the state `loadState` last read.
+let CURRENT = null;
+const turnFiles = (base) => ({ prompt: `${base}.prompt.md`, log: `${base}.log`, meta: `${base}.json`, spec: `${base}.spec.json` });
+function turnMeta(turn) {
+  try { return JSON.parse(readFileSync(turnFiles(turn.base).meta, "utf8")); } catch { return null; }
 }
-function inspectAgent(id, options) {
-  const a = paseo(["agent", "inspect", id, "--json"], options);
-  return {
-    id,
-    status: String(pick(a, "status") ?? "unknown").toLowerCase(),
-    archived: !!pick(a, "archived"),
-    pending: (pick(a, "pendingPermissions") || []).length,
-    updatedAt: pick(a, "lastActivityAt", "updatedAt") ?? null,
-    parentAgentId: pick(a, "parentAgentId") ?? null,
-  };
+function agentRecord(id) {
+  const a = CURRENT?.s.agents?.[id];
+  if (!a) {
+    const e = new UserError(`agent ${id} is not one of this run's`);
+    e.agentMissing = true;
+    throw e;
+  }
+  return a;
 }
-function listAgents(labels, { all = false } = {}) {
-  const args = ["agent", "ls", "-g", "--json"];
-  if (all) args.push("-a");
-  for (const [k, v] of Object.entries(labels)) args.push("--label", `${k}=${v}`);
-  return (paseo(args) || []).map((a) => ({
-    id: pick(a, "id", "agentId"), name: pick(a, "name", "title") ?? "",
-    status: String(pick(a, "status") ?? "unknown").toLowerCase(),
-    cwd: pick(a, "cwd") ?? "",
-  }));
+// running · idle (its last turn exited 0) · error (it exited otherwise) · closed (its
+// tab went before the turn said how it ended) · missing (no turn started) · unknown
+// (Rex could not be asked).
+function inspectAgent(id) {
+  const a = agentRecord(id);
+  const turn = a.turns.at(-1);
+  if (!turn) return { id, status: "missing", archived: true, pending: 0, updatedAt: null };
+  const meta = turnMeta(turn);
+  let logAt = null;
+  try { logAt = statSync(turnFiles(turn.base).log).mtime.toISOString(); } catch { /* nothing printed yet */ }
+  const base = { id, pending: 0, updatedAt: logAt ?? meta?.startedAt ?? turn.startedAt, turn, archived: Boolean(a.archivedAt) };
+  let p;
+  try { p = host.processState(CURRENT.s.rex.session, turn.block); } catch (e) {
+    if (!(e instanceof host.RexError)) throw e;
+    return { ...base, status: "unknown", error: e.message };
+  }
+  if (p.state === "running") return { ...base, status: "running" };
+  const code = p.exitCode ?? meta?.exitCode ?? null;
+  return { ...base, status: code == null ? "closed" : code === 0 ? "idle" : "error", exitCode: code };
 }
+const settingsOf = (l) => Object.fromEntries(["model", "mode", "profile"].filter((k) => l[k]).map((k) => [k, l[k]]));
+function newAgent(s, { role, task, attempt, cwd, launch }) {
+  s.agents ||= {};
+  let id;
+  do id = randomUUID().slice(0, 8); while (s.agents[id]);
+  s.agents[id] = { id, role, task, attempt: attempt ?? null, cwd: pathArg(cwd), provider: launch.provider, settings: settingsOf(launch), launch: describe(launch), session: null, turns: [], createdAt: now() };
+  return id;
+}
+// The run's Rex session, made the first time a turn needs it (or again, if it was closed).
+function rexSession(s) {
+  if (s.rex?.session && host.sessionExists(s.rex.session)) return s.rex.session;
+  const label = `wl-${s.project}-${s.feature}`;
+  s.rex = { session: host.newSession(label, s.repo), label, createdAt: now() };
+  return s.rex.session;
+}
+// Starts the agent's next turn with `prompt` in a new tab. A turn after the first
+// goes on in the same conversation; the previous turn's tab closes, and its files
+// stay in the run.
+function startTurn(dir, s, id, prompt, title) {
+  const a = s.agents[id];
+  const prev = a.turns.at(-1);
+  if (prev && !a.session) a.session = turnMeta(prev)?.session ?? null;
+  if (prev && !a.session) fail(`agent ${id}'s last turn left no conversation id (${turnFiles(prev.base).meta}), so a new turn cannot go on in it; \`retry\` the task instead`);
+  const session = rexSession(s);
+  const n = a.turns.length + 1;
+  mkdirSync(join(dir, "turns"), { recursive: true });
+  const base = pathArg(join(dir, "turns", `${id}-${n}`));
+  const f = turnFiles(base);
+  writeFileSync(f.prompt, prompt);
+  writeFileSync(f.spec, `${JSON.stringify({ provider: a.provider, settings: a.settings, session: a.session, prompt: f.prompt, log: f.log, meta: f.meta, cwd: a.cwd, title }, null, 2)}\n`);
+  const tab = host.openTab(session, title, a.cwd, [process.execPath, AGENT_RUN, f.spec]);
+  a.turns.push({ n, title, block: tab.block, window: tab.window, base, startedAt: now() });
+  if (prev) host.closeTab(session, prev.block);
+  return a.turns.at(-1);
+}
+// Closes every tab the agent's turns left open; their files stay in the run.
+function archiveAgent(s, id) {
+  const a = s.agents?.[id];
+  if (!a || a.archivedAt) return;
+  if (s.rex?.session) for (const t of a.turns) host.closeTab(s.rex.session, t.block);
+  a.archivedAt = now();
+}
+
 function normPath(p) {
   if (!p) return "";
   let q = untilde(p);
@@ -356,6 +388,7 @@ function loadState(dir) {
   // Runs created before the setting existed use the default, as does a state file
   // with a value that is not a positive number of minutes.
   if (!(Number(s.config?.checkTimeout) > 0)) s.config = { ...s.config, checkTimeout: DEFAULT_CHECK_TIMEOUT };
+  CURRENT = { dir, s };
   return s;
 }
 
@@ -375,7 +408,7 @@ function saveState(dir, state) { writeAtomic(statePath(dir), `${JSON.stringify(s
 // line but never leaves the log ahead of the state. A command whose result is a
 // state change plus more than one event records them in one save, so the change
 // and the events that explain it are either both recorded or neither.
-const CLEARS_COMPLETION = ["import", "config", "decisions", "worktree", "prepare", "dispatch", "send", "freeze", "review", "integrate", "retry", "cancel"];
+const CLEARS_COMPLETION = ["import", "config", "decisions", "worktree", "dispatch", "send", "freeze", "review", "integrate", "retry", "cancel"];
 function recordAll(dir, state, events) {
   if (events.some(([kind]) => CLEARS_COMPLETION.includes(kind))) state.completion = null;
   const lines = events.map(([kind, fields = {}]) => {
@@ -720,7 +753,7 @@ function suggestionsSummary(path, scope) {
 // lives in state as `waivers` (absent in older runs, which reads as empty), and
 // each entry is also an event. `ledgerAdd` only mutates the state: the caller
 // writes it in the same save as the change it belongs to, so an interruption
-// cannot leave a send acknowledged with its waiver missing.
+// cannot leave a send recorded with its waiver missing.
 function ledgerAdd(s, entry) {
   const full = { ...entry, at: entry.at ?? now() };
   s.waivers = [...(s.waivers || []), full];
@@ -798,7 +831,7 @@ function overrideWaiver(s, t, sha, reason) {
 //
 // A full run's verdict is not the orchestrator's. Once every ticket is closed the
 // orchestrator writes the acceptance mapping into `final-review.md`, and
-// `final-review --prepare` starts an independent reviewer in its own worktree at the
+// `final-review` starts an independent reviewer in its own worktree at the
 // integration tip. `finish` accepts only that reviewer's report for that tip: `pass`,
 // or `changes_requested` whose blocking findings are all in the ledger as final
 // waivers. A round is one review of one tip; a second round at the same tip needs
@@ -828,7 +861,7 @@ export function mappingRows(text) {
   return rows;
 }
 
-// Why `final-review --prepare` cannot start a reviewer, or null.
+// Why `final-review` cannot start a reviewer, or null.
 function mappingProblem(dir, s) {
   const path = mappingPath(dir);
   const m = readMapping(dir);
@@ -836,10 +869,10 @@ function mappingProblem(dir, s) {
   // Written after the last merge, so it maps the tip that exists rather than an
   // earlier one, and it names that tip itself.
   if (s.lastIntegratedAt && m.mtime < Date.parse(s.lastIntegratedAt)) {
-    return `${path} is older than the last integration (${s.lastIntegratedAt}); rewrite the mapping for the current tip ${short(s.integration.tip)}, then prepare again`;
+    return `${path} is older than the last integration (${s.lastIntegratedAt}); rewrite the mapping for the current tip ${short(s.integration.tip)}, then start it again`;
   }
   if (!m.tip || !s.integration.tip.startsWith(m.tip)) {
-    return `${path} is for integration tip ${m.tip ?? "(none)"}, but the tip is ${short(s.integration.tip)}; rewrite it for the current tip, then prepare again`;
+    return `${path} is for integration tip ${m.tip ?? "(none)"}, but the tip is ${short(s.integration.tip)}; rewrite it for the current tip, then start it again`;
   }
   return null;
 }
@@ -919,20 +952,17 @@ function finalWaived(s, round, finding) {
 function finalGate(dir, s) {
   const round = s.finalReview;
   if (!round || round.tip !== s.integration.tip) {
-    return `no final review round for the current tip ${short(s.integration.tip)}: write the acceptance mapping in ${mappingPath(dir)} (template: ${join(TEMPLATES, MAPPING)}), then \`final-review --prepare\``;
-  }
-  if (round.pendingAction) {
-    return `the final review's MCP action ${round.pendingAction.action} is pending; reconcile it with \`action final\` / \`ack final\` first`;
+    return `no final review round for the current tip ${short(s.integration.tip)}: write the acceptance mapping in ${mappingPath(dir)} (template: ${join(TEMPLATES, MAPPING)}), then \`final-review\``;
   }
   if (!round.agentId) {
-    return `the final review round ${round.round} has no acknowledged reviewer: its launch was never confirmed, so nothing it wrote is that round's verdict. Start another round with \`final-review --prepare --again\` and acknowledge its receipt`;
+    return `the final review round ${round.round} has no reviewer recorded: its start was interrupted, so nothing it wrote is that round's verdict. Start another round with \`final-review --again\``;
   }
   const r = finalReport(round);
   if (!r) {
     return `the final reviewer (round ${round.round}) has not written ${round.path} yet since ${round.startedAt}; wait for it, then finish, write repair tickets or waive its findings`;
   }
   if (!r.tip || !s.integration.tip.startsWith(r.tip)) {
-    return `the final review's report is for integration tip ${r.tip ?? "(none)"}, but the tip is ${short(s.integration.tip)}; start a new round with \`final-review --prepare\``;
+    return `the final review's report is for integration tip ${r.tip ?? "(none)"}, but the tip is ${short(s.integration.tip)}; start a new round with \`final-review\``;
   }
   if (r.verdict === "pass") return null;
   if (r.verdict !== "changes_requested") {
@@ -940,12 +970,12 @@ function finalGate(dir, s) {
   }
   const { blocking } = splitFinalBlocking(s, round, r.text);
   if (blocking === null) {
-    return `the final review requested changes, and its findings table cannot be read, so its blocking findings cannot be bounded or waived; fix the report or start another round with \`final-review --prepare --again\``;
+    return `the final review requested changes, and its findings table cannot be read, so its blocking findings cannot be bounded or waived; fix the report or start another round with \`final-review --again\``;
   }
   const open = blocking.filter((f) => !finalWaived(s, round, f));
   if (!open.length) return null;
   const ids = open.map((f) => f.id).join(", ");
-  return `the final review requested changes and ${ids} ${open.length === 1 ? "is" : "are"} not waived: write repair tickets (then a new round on the new tip with \`final-review --prepare\`), `
+  return `the final review requested changes and ${ids} ${open.length === 1 ? "is" : "are"} not waived: write repair tickets (then a new round on the new tip with \`final-review\`), `
     + `or record why ${open.length === 1 ? "it stands" : "they stand"} with \`final-review --waive ${ids} --reason "<why>"\``;
 }
 
@@ -977,18 +1007,17 @@ function finalSteps(dir, s) {
   if (problem) return [`do the acceptance mapping: ${problem}`];
   const round = s.finalReview;
   if (!round || round.tip !== s.integration.tip) {
-    return [`final-review --prepare — start the independent final reviewer at ${short(s.integration.tip)}`];
+    return [`final-review — start the independent final reviewer at ${short(s.integration.tip)}`];
   }
-  if (round.pendingAction) return [pendingStep("final", round.pendingAction)];
-  if (!round.agentId) return [`final review round ${round.round} has no acknowledged reviewer — \`final-review --prepare --again\`, then \`ack final --receipt -\` with its MCP response`];
+  if (!round.agentId) return [`final review round ${round.round} has no reviewer recorded — \`final-review --again\``];
   const r = finalReport(round);
-  if (!r) return [`wait for the final reviewer (round ${round.round}) to write ${round.path} — \`watch\`, then end this turn; then finish, write repair tickets or waive its findings`];
+  if (!r) return [`wait for the final reviewer (round ${round.round}) to write ${round.path} — run \`wait\` in the background, then end this turn; then finish, write repair tickets or waive its findings`];
   if (r.verdict === "pass") return ["finish — the final reviewer passed the current tip"];
-  if (!r.verdict) return [`the final reviewer's report has no verdict; read ${round.path}, then \`final-review --prepare --again\``];
+  if (!r.verdict) return [`the final reviewer's report has no verdict; read ${round.path}, then \`final-review --again\``];
   const { blocking, out } = splitFinalBlocking(s, round, r.text);
   const open = (blocking || []).filter((f) => !finalWaived(s, round, f));
   if (!open.length) {
-    if (blocking === null) return [`the final review's findings table cannot be read; read ${round.path}, then \`final-review --prepare --again\``];
+    if (blocking === null) return [`the final review's findings table cannot be read; read ${round.path}, then \`final-review --again\``];
     // A blocking finding outside the boundary is advice: it gates nothing, so the
     // run is as ready as a pass, and finish lists it for the user.
     if (out?.length) return ["finish — the final review's blocking findings are all outside its boundary (suggestions for the user)"];
@@ -998,10 +1027,10 @@ function finalSteps(dir, s) {
   // Repairs now would put the next round past the cap: the user decides first, as
   // they do for a ticket's rework round past it.
   const capped = numberedCriteria(s) && reviewedTips(s) > reworkCap(s)
-    ? ` The next round would be repair cycle ${reviewedTips(s)}, past the run's cap of ${reworkCap(s)}: ask the user before writing repair tickets, then start it with \`final-review --prepare --extra-round --reason "<their decision>"\`.`
+    ? ` The next round would be repair cycle ${reviewedTips(s)}, past the run's cap of ${reworkCap(s)}: ask the user before writing repair tickets, then start it with \`final-review --extra-round --reason "<their decision>"\`.`
     : "";
   return [`final review changes requested (${ids}): read ${round.path}, then write repair tickets and integrate them (a new round follows at the new tip), `
-    + `or \`final-review --waive ${ids} --reason "<why>"\`; \`final-review --prepare --again\` reviews this tip once more.${capped}`];
+    + `or \`final-review --waive ${ids} --reason "<why>"\`; \`final-review --again\` reviews this tip once more.${capped}`];
 }
 
 // The distinct tips a final reviewer has reported on. Each was followed by repairs,
@@ -1036,28 +1065,26 @@ function finalExtraRound(s, sameTip, round, opts) {
   }
   if (!asked) {
     fail(`final review round ${round} would be repair cycle ${cycle}, past the run's cap of ${cap}. The run waits for the user: decide with them whether to go on, `
-      + `then \`final-review --prepare --extra-round --reason "<the user's decision>"\`; or waive what stands with \`final-review --waive\``);
+      + `then \`final-review --extra-round --reason "<the user's decision>"\`; or waive what stands with \`final-review --waive\``);
   }
   if (!opts.reason?.trim()) fail(`final-review --extra-round needs --reason "<the user's decision>": repair cycle ${cycle} goes past the cap of ${cap}, and finish lists it`);
   return { task: "final", round, cycle, cap, reason: opts.reason.trim() };
 }
 
-// `final-review --prepare` creates the round's worktree through Paseo, writes the
-// brief, and prepares the guarded `create_agent` request `action final` prints.
+// `final-review` creates the round's worktree, writes the brief, and starts the
+// final reviewer's turn.
 function cmdFinalReview(dir, s, opts) {
   if (opts.waive) return cmdFinalWaive(dir, s, opts);
   if (opts.reason && !opts["extra-round"]) fail("final-review --reason belongs to --waive <IDs>, which records why a blocking finding was let through, or to --extra-round, which records the user's decision to go past the cap");
-  if (!opts.prepare) fail("final-review starts an independent final reviewer; pass --prepare (add --again for a second round at the same tip)");
   if (isDirect(s)) fail("a direct run has no final review: its reviewer already re-ran the acceptance commands, so go to `finish`");
   const open = tasksOf(s).filter((t) => !["done", "cancelled"].includes(t.status));
   if (open.length) fail(`final-review needs every ticket closed: ${open.map((t) => `#${t.id} ${t.status}`).join(", ")}`);
   const docs = documentStep(documentReport(s));
   if (docs) fail(`the end-of-run document step still reports work: ${docs}`);
   const current = s.finalReview;
-  if (current?.pendingAction) fail(`the final review has pending MCP action ${current.pendingAction.action}; reconcile it with \`action final\` / \`ack final\` first`);
   const sameTip = Boolean(current && current.tip === s.integration.tip);
   if (sameTip && !opts.again) fail(`the final review already has round ${current.round} for the current tip ${short(current.tip)}; pass --again to start another round`);
-  if (!sameTip && opts.again) fail(`--again starts a second round at the same tip, and no round covers the current tip ${short(s.integration.tip)}; run \`final-review --prepare\``);
+  if (!sameTip && opts.again) fail(`--again starts a second round at the same tip, and no round covers the current tip ${short(s.integration.tip)}; run \`final-review\``);
   const problem = mappingProblem(dir, s);
   if (problem) fail(problem);
   const round = (current?.round ?? s.finalReviews?.at(-1)?.round ?? 0) + 1;
@@ -1072,24 +1099,17 @@ function cmdFinalReview(dir, s, opts) {
   const branch = `wl-${s.feature}-final-${round}`;
   const path = join(dir, "reviews", `final-${round}-${short(tip)}.md`);
 
-  // A prepare interrupted before its state was saved left this round's branch and
+  // A start interrupted before its state was saved left this round's branch and
   // worktree behind; the branch name is deterministic, so adopt them.
   let wt = worktreeFor(s.repo, branch);
   const adopted = Boolean(wt);
-  if (!wt) {
-    const res = paseo(["workspace", "create", "--isolation", "worktree", "--mode", "branch-off", "--new-branch", branch,
-      "--base", s.integration.branch, "--path", pathArg(s.repo), "--json"]);
-    wt = untilde(pick(res, "worktreePath", "path", "cwd")) || worktreeFor(s.repo, pick(res, "branchName", "branch") || branch);
-    if (!wt) fail(`paseo created a worktree but did not say where: ${JSON.stringify(res)}`);
-    const made = pick(res, "branchName", "branch");
-    if (made && made !== branch) fail(`paseo named the branch ${made}, expected ${branch}; reconcile with \`git worktree list\` before retrying`);
-  }
+  if (!wt) wt = addWorktree(dir, s, branch);
   wt = pathArg(wt);
   if (head(wt) !== tip) fail(`the final review's worktree ${wt} is at ${short(head(wt))}, not the integration tip ${short(tip)}. Not starting the reviewer; inspect it before continuing.`);
   if (git(wt, "branch", "--show-current") !== branch) fail(`worktree ${wt} is not on expected branch ${branch}; reconcile before starting the final reviewer`);
   // A tree someone has been editing is not the tip, whatever its HEAD says.
   if (adopted && !isClean(wt)) {
-    fail(`the final review's worktree ${wt} was left by an interrupted prepare with uncommitted or untracked changes. Nothing was changed: inspect them, then commit or discard them yourself before preparing again.`);
+    fail(`the final review's worktree ${wt} was left by an interrupted start with uncommitted or untracked changes. Nothing was changed: inspect them, then commit or discard them yourself before starting again.`);
   }
 
   if (current) s.finalReviews = [...(s.finalReviews || []), current];
@@ -1116,16 +1136,13 @@ function cmdFinalReview(dir, s, opts) {
     notes: notesFrom(opts),
   };
   writeFileSync(brief, render("final-reviewer-brief.md", vars));
-  const labels = { workloop: s.runKey, task: "final", attempt: `r${round}`, role: "reviewer" };
-  const existing = listAgents(labels, { all: true });
-  if (existing.length) fail(`a final reviewer for round ${round} is already registered (${existing[0].id}) with no acknowledged MCP action; reconcile it before preparing another`);
+  const id = newAgent(s, { role: "reviewer", task: "final", attempt: `r${round}`, cwd: wt, launch });
+  const turn = startTurn(dir, s, id, `Read the final review brief at ${pathArg(brief)} and follow it. Review only; change nothing; never ask the user anything.`, `final r${round} ${short(tip)}`);
+  Object.assign(s.finalReview, { agentId: id, launch: describe(launch) });
   // The user's decision is recorded with the round it opens, in the same save.
   const past = extra && extraRoundsAdd(s, extra);
-  return prepareAction(dir, s, s.finalReview, "final-review", "create_agent",
-    createArguments(s.finalReview, launch, labels, `wl ${s.feature} final r${round} ${short(tip)}`,
-      `Read the final review brief at ${pathArg(brief)} and follow it. Review only; change nothing; never ask the user anything.`),
-    { launch: describe(launch) },
-    [["final_review", { round, branch, worktree: wt, tip }], ...(past ? [["extra_round", past]] : [])]);
+  recordAll(dir, s, [["final_review", { round, branch, worktree: wt, tip, agent: id, block: turn.block }], ...(past ? [["extra_round", past]] : [])]);
+  say(`final review round ${round}: ${describe(launch)} started in Rex tab "${turn.title}". Run \`wait\` in the background, then end this turn.`);
 }
 
 // `final-review --waive <IDs> --reason "<why>"`: the blocking findings of the
@@ -1135,12 +1152,11 @@ function cmdFinalWaive(dir, s, opts) {
   if (!listed.length) fail("final-review --waive takes finding IDs, e.g. `--waive X1,A2`");
   if (!opts.reason?.trim()) fail(`final-review --waive needs --reason "<why they are let through>": it records why ${listed.join(", ")} was not fixed`);
   const round = s.finalReview;
-  if (!round) fail("no final review round is recorded; start one with `final-review --prepare`");
-  if (round.tip !== s.integration.tip) fail(`the current final review round is for tip ${short(round.tip)}, and the tip is now ${short(s.integration.tip)}; start a new round with \`final-review --prepare\``);
-  if (round.pendingAction) fail(`the final review has pending MCP action ${round.pendingAction.action}; reconcile it with \`action final\` / \`ack final\` first`);
+  if (!round) fail("no final review round is recorded; start one with `final-review`");
+  if (round.tip !== s.integration.tip) fail(`the current final review round is for tip ${short(round.tip)}, and the tip is now ${short(s.integration.tip)}; start a new round with \`final-review\``);
   const r = finalReport(round);
   if (!r) fail(`the final reviewer has not written ${round.path} yet; waivers answer its report`);
-  if (!r.tip || !s.integration.tip.startsWith(r.tip)) fail(`the final review's report is for integration tip ${r.tip ?? "(none)"}, but the tip is ${short(s.integration.tip)}; start a new round with \`final-review --prepare\``);
+  if (!r.tip || !s.integration.tip.startsWith(r.tip)) fail(`the final review's report is for integration tip ${r.tip ?? "(none)"}, but the tip is ${short(s.integration.tip)}; start a new round with \`final-review\``);
   const all = parseFindings(r.text);
   if (!all) fail(`the findings table of ${round.path} cannot be read, so ${listed.join(", ")} cannot be checked against it`);
   const blocking = all.filter((f) => f.blocking);
@@ -1161,78 +1177,17 @@ function cmdFinalWaive(dir, s, opts) {
   say(`final review: waived ${findings.map((f) => f.id).join(", ")}; finish lists ${findings.length === 1 ? "it" : "them"} for the user`);
 }
 
-// A receipt is the MCP response to the holder's pending action, either bare or as
-// {action, result}. `--receipt -` reads it from stdin, so the orchestrator can pass
-// the tool's response straight through instead of retyping it into a wrapper; a
-// bare or piped receipt is saved under messages/ for the audit trail. A bare
-// response carries no action id, so it is taken for the action pending now:
-// acknowledge right after the MCP call. Returns {result}, or {done} for a repeat.
-function readReceipt(dir, holder, opts, label) {
-  if (!opts.receipt) fail("ack needs --receipt <file>, or --receipt - to read the MCP response from stdin");
-  const stdin = opts.receipt === "-";
-  let text;
-  try { text = readFileSync(stdin ? 0 : resolve(opts.receipt), "utf8"); } catch (e) { fail(`cannot read the receipt ${stdin ? "from stdin" : opts.receipt}: ${e.message}`); }
-  let json;
-  try { json = JSON.parse(text); } catch { fail("the receipt is not JSON: pass the MCP response unchanged, or {action, result}"); }
-  const wrapped = Boolean(json) && typeof json === "object" && !Array.isArray(json) && "action" in json && "result" in json;
-  const p = holder.pendingAction;
-  const who = label === "final" ? "the final review" : `#${label}`;
-  if (wrapped && !p && json.action === holder.lastAction) return { done: `action ${json.action} already acknowledged` };
-  if (!wrapped && !p) {
-    if (holder.lastAction) return { done: `${who} has no pending MCP action; its last one, ${holder.lastAction}, is already acknowledged` };
-    fail(`${who} has no pending MCP action to acknowledge`);
-  }
-  if (!p || (wrapped && json.action !== p.action)) fail("receipt action does not match the pending action");
-  const result = wrapped ? json.result : json;
-  if (stdin || !wrapped) {
-    mkdirSync(join(dir, "messages"), { recursive: true });
-    writeAtomic(join(dir, "messages", `receipt-${label}-${p.action}.json`), `${JSON.stringify({ action: p.action, result }, null, 2)}\n`);
-  }
-  return { result };
-}
-
-// `ack final --receipt`: the same checks as a task's create_agent receipt, against
-// the round's own labels, worktree and parent.
-function ackFinal(dir, s, opts) {
-  const f = s.finalReview;
-  if (!f) fail("this run has no final review round; start one with `final-review --prepare`");
-  const receipt = readReceipt(dir, f, opts, "final");
-  if (receipt.done) return say(receipt.done);
-  const p = f.pendingAction;
-  if (process.env.PASEO_AGENT_ID !== s.orchestratorId) fail("ack must run in the owning orchestrator session");
-  let result = receipt.result;
-  if (!result || typeof result !== "object") fail("receipt has no MCP result");
-  if (result.isError) {
-    if (p.tool === "create_agent" && listAgents(p.arguments.labels, { all: true }).length) fail("MCP failed after creating an agent; pending action retained. Recover its agentId and reconcile before acknowledging; do not create another worker");
-    f.pendingAction = null;
-    record(dir, s, "action-failed", { review: "final", action: p.action });
-    return say(`MCP action ${p.action} failed; no success recorded. Read its error, then prepare a corrected request.`);
-  }
-  if (result.structuredContent) result = result.structuredContent;
-  else if (result.content) {
-    const text = result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
-    try { result = JSON.parse(text); } catch { fail("MCP receipt has no structured JSON result"); }
-  }
-  const agentId = pick(result, "agentId", "id");
-  const matches = listAgents(p.arguments.labels, { all: true });
-  if (matches.length !== 1 || matches[0].id !== agentId || normPath(matches[0].cwd) !== normPath(f.worktree)) fail("MCP receipt agent does not match the prepared labels and worktree; reconcile before acknowledging");
-  if (inspectAgent(agentId).parentAgentId !== s.orchestratorId) fail("MCP worker does not belong to this orchestrator; pending action retained");
-  Object.assign(f, { agentId, launch: p.launch, lastAction: p.action, pendingAction: null });
-  record(dir, s, "final_reviewer", { review: "final", round: f.round, action: p.action, agent: agentId, transport: "mcp" });
-  say(`final review round ${f.round}: reviewer ${agentId} acknowledged; finish notifications requested. Run watch before ending this turn.`);
-}
-
 // ------------------------------------------------------------ check phase
 //
 // `integrate` and `finish` split into three steps: under the lock they record a
 // `checking` entry, then they release it to run the checks, then they take it
-// again to record the result on the reloaded state. That way `status`, `watch`,
+// again to record the result on the reloaded state. That way `status`, `wait`,
 // `note` and `send` keep working while a slow suite runs.
 
 // Every command allowed while a live check phase holds the run. `config` is not
 // among them, so the checks that run are the checks configured; `send` to the
 // task under check also refuses (checkPhaseRefusal).
-const CHECK_PHASE_COMMANDS = ["status", "patrol", "watch", "note", "hold", "unhold", "action", "ack", "send", "import"];
+const CHECK_PHASE_COMMANDS = ["status", "note", "hold", "unhold", "send", "import"];
 
 // A `checking` entry whose process is gone is an interrupted check phase: the
 // work it did in Git is still there, and rerunning the same command recovers it.
@@ -1283,7 +1238,7 @@ function beginCheckPhase(dir, s, fields) {
 const ownsPhase = (s, phase) => s.checking?.pid === phase.pid && s.checking?.startedAt === phase.startedAt;
 // Step 2 and 3: runs the checks outside the lock, then hands the outcome to
 // `complete` under the lock on the reloaded state, so a `note`, `send` or
-// heartbeat written meanwhile survives. Each check's identity goes into the
+// `hold` written meanwhile survives. Each check's identity goes into the
 // entry as `check: {pid, token}` before the check runs (its pid leads its
 // process group on POSIX), so recovery can verify and stop it.
 async function runCheckPhase(dir, phase, commands, cwd, complete) {
@@ -1795,11 +1750,9 @@ function frontier(s) {
 const executorsBusy = (s) => tasksOf(s).filter((t) => t.status === "running").length;
 const isDirect = (s) => s.mode === "direct"; // runs from before modes existed are full runs
 // Reviews in progress, counted from state alone: nextSteps runs on every status and
-// must not call Paseo. A task counts once its candidate is frozen and its review
-// report isn't written yet, or when a prepared review is still waiting for its
-// receipt. A frozen task with no review yet is not counted: `review` would start it.
-const reviewsBusy = (s) => tasksOf(s).filter((t) => (t.status === "in_review" && t.review && !reviewReport(t))
-  || t.pendingAction?.kind === "review").length;
+// does not ask Rex. A task counts once its candidate is frozen and its review report
+// isn't written yet. A frozen task with no review yet is not counted: `review` would start it.
+const reviewsBusy = (s) => tasksOf(s).filter((t) => t.status === "in_review" && t.review && !reviewReport(t)).length;
 
 // ------------------------------------------------- end-of-run document check
 
@@ -1867,21 +1820,20 @@ function nextSteps(dir, s) {
   // Until a check phase ends or is recovered, every other step would be refused.
   if (s.checking) {
     return [interrupted(s) ? `${recoveryCommand(s.checking)} — recover the interrupted check phase`
-      : `wait for \`${recoveryCommand(s.checking)}\` (pid ${s.checking.pid}) to end: collect its exit code and output when its background command notifies you; meanwhile watch, then end this turn`];
+      : `wait for \`${recoveryCommand(s.checking)}\` (pid ${s.checking.pid}) to end: collect its exit code and output when its background command notifies you; meanwhile end this turn`];
   }
   // Suggesting a review the budget can't start only earns a refusal, so say what it waits for.
   const busy = reviewsBusy(s);
   const reviewRequest = (t) => (busy >= s.config.maxReviewers
     ? `#${t.id} waits for a reviewer (budget ${busy}/${s.config.maxReviewers})`
-    : `review ${t.id} --prepare`);
+    : `review ${t.id}`);
   for (const t of tasks) {
-    if (t.pendingAction) { out.push(pendingStep(t.id, t.pendingAction)); continue; }
     if (t.hold) { out.push(`#${t.id} on hold (${t.hold}) — resolve it, then \`unhold ${t.id}\``); continue; }
     if (t.status === "running") {
-      if (!t.agentId) { out.push(`dispatch ${t.id} --prepare`); continue; }
+      if (!t.agentId) { out.push(`dispatch ${t.id}`); continue; }
       const r = executorReport(dir, t);
       if (r?.status === "done") out.push(reviewRequest(t));
-      else if (r?.status === "question" || r?.status === "blocked") out.push(`#${t.id} reported ${r.status} — read ${reportPath(dir, t)}, answer with \`send ${t.id} --prepare\``);
+      else if (r?.status === "question" || r?.status === "blocked") out.push(`#${t.id} reported ${r.status} — read ${reportPath(dir, t)}, answer with \`send ${t.id} --text <answer>\``);
     }
     if (t.status === "in_review") {
       const v = reviewReport(t)?.verdict;
@@ -1892,16 +1844,16 @@ function nextSteps(dir, s) {
         // the candidate is ready to integrate, and nothing needs rework.
         const gate = numberedCriteria(s) ? splitBlocking(t, true).blocking : null;
         if (gate && !gate.length) out.push(`integrate ${t.id} — the review's blocking findings are all outside its boundary (suggestions for the user)`);
-        else if (numberedCriteria(s) && (t.rounds || 0) + 1 > reworkCap(s)) out.push(`#${t.id} changes requested, and at the rework cap (${reworkCap(s)}) — ask the user, then \`send ${t.id} --prepare --extra-round --reason "<their decision>"\``);
-        else out.push(`#${t.id} changes requested — read ${t.review.path}, then \`send ${t.id} --prepare --file <rework.md>\` (or \`integrate ${t.id} --override "<why>"\`)`);
+        else if (numberedCriteria(s) && (t.rounds || 0) + 1 > reworkCap(s)) out.push(`#${t.id} changes requested, and at the rework cap (${reworkCap(s)}) — ask the user, then \`send ${t.id} --extra-round --reason "<their decision>"\``);
+        else out.push(`#${t.id} changes requested — read ${t.review.path}, then \`send ${t.id} --file <rework.md>\` (or \`integrate ${t.id} --override "<why>"\`)`);
       }
     }
     for (const b of t.blockedBy) if (s.tasks[b]?.status === "cancelled" && t.status === "ready") out.push(`#${t.id} is blocked by cancelled #${b} — cancel it or edit its ticket and \`import\``);
   }
-  if (tasks.some((t) => ["running", "in_review"].includes(t.status) && !t.hold)) out.push("watch, then end this turn; resume on a Paseo notification or heartbeat");
+  if (tasks.some((t) => ["running", "in_review"].includes(t.status) && !t.hold)) out.push("run `wait` in the background, then end this turn; it returns when a turn ends");
   const free = s.config.maxExecutors - executorsBusy(s);
   const f = frontier(s);
-  if (f.length && free > 0) out.push(f.slice(0, free).map((t) => `dispatch ${t.id} --prepare`).join(", "));
+  if (f.length && free > 0) out.push(f.slice(0, free).map((t) => `dispatch ${t.id}`).join(", "));
   if (tasks.every((t) => ["done", "cancelled"].includes(t.status))) {
     if (isDirect(s)) out.push("all tickets closed — `finish` (a direct run has no final review)");
     else {
@@ -2008,74 +1960,45 @@ async function cmdInit(opts) {
 // ------------------------------------------------------- launch settings
 
 const ROLES = { executor: "", reviewer: "review-" }; // role -> its option prefix
-const FIELDS = ["provider", "model", "mode", "thinking"];
-const PROFILE_KEYS = { provider: "provider", model: "model", mode: "modeId", thinking: "thinkingOptionId" };
+const FIELDS = ["provider", "model", "mode", "thinking", "profile"];
 
 function agentConfig(opts, prefix) {
   const c = {};
-  for (const k of [...FIELDS, "profile"]) if (opts[prefix + k]) c[k] = opts[prefix + k];
+  for (const k of FIELDS) if (opts[prefix + k]) c[k] = opts[prefix + k];
   return c;
 }
 const describe = (l) => `${l.provider}${FIELDS.slice(1).map((k) => (l[k] ? ` ${k}=${l[k]}` : "")).join("")} ← ${l.source}`;
 
-// Paseo keeps agent profiles in its daemon config, the list the `list_profiles`
-// MCP tool serves. See reference/paseo-compat.md.
-function paseoProfiles() {
-  if (process.env.PASEO_HOST) return { list: [], why: "PASEO_HOST is set, so the daemon's config is not on this machine" };
-  const file = join(untilde(process.env.PASEO_HOME || join(homedir(), ".paseo")), "config.json");
-  try {
-    const list = JSON.parse(readFileSync(file, "utf8")).daemon?.agentProfiles;
-    return { list: Array.isArray(list) ? list.filter((p) => p?.name && p.provider) : [], why: `no profiles in ${file}` };
-  } catch (e) { return { list: [], why: `cannot read ${file}: ${e.code || e.message}` }; }
+// The launch settings a role falls back to, kept for every run in
+// <WORKLOOP_ROOT>/launch.json: {"executor": {"provider": "dsh", "mode": "…"}, "reviewer": {…}}.
+const defaultsPath = () => join(workloopRoot(), "launch.json");
+function launchDefaults() {
+  const file = defaultsPath();
+  if (!existsSync(file)) return {};
+  try { return JSON.parse(readFileSync(file, "utf8")) || {}; } catch (e) { fail(`cannot read ${file}: ${e.message}`); }
 }
 
 // A role's launch settings, most specific first: this command's flags, the run's
-// config, then a Paseo profile (the one the config names, else "wl-<role>").
-// A role with no provider, model or mode at the end is an error, so an agent never
-// silently gets Paseo's default.
+// config, then the defaults file. A role with no provider, or with a setting its CLI
+// does not take or without one it needs, is an error, so an agent never starts on a guess.
 function resolveLaunch(config, role, opts = {}) {
   const prefix = ROLES[role];
-  const { profile: bound, ...explicit } = { ...config[role], ...agentConfig(opts, prefix) };
-  const name = bound || `wl-${role}`;
-  const profiles = paseoProfiles();
-  const hits = profiles.list.filter((p) => p.name.toLowerCase() === name.toLowerCase() || p.id === name);
-  if (hits.length > 1) fail(`${role}: ${hits.length} Paseo profiles are named "${name}"; rename all but one`);
-  const p = hits[0];
-  const known = profiles.list.map((x) => `  - "${x.name}" (${x.provider}${x.model ? `/${x.model}` : ""})${x.notes ? `: ${x.notes.replace(/\s+/g, " ").slice(0, 120)}` : ""}`).join("\n") || `  (${profiles.why})`;
-  if (bound && !p) fail(`${role}: the run names Paseo profile "${bound}", which does not exist. Profiles:\n${known}\nTell the user.`);
-  if (!p && !explicit.provider) {
-    fail(`${role}: no launch settings: no Paseo profile "${name}", and the run sets no --${prefix}provider. Profiles:\n${known}\n`
-      + `Create "${name}" in Paseo (Settings → host → Agents → Agent profiles), bind another with \`config --${prefix}profile <name>\`, or set \`--${prefix}provider\`. Tell the user; don't choose for them.`);
-  }
-  // A profile's model, mode and thinking belong to its provider; overriding the provider drops them.
-  const base = p && (!explicit.provider || explicit.provider === p.provider)
-    ? Object.fromEntries(FIELDS.filter((k) => p[PROFILE_KEYS[k]]).map((k) => [k, p[PROFILE_KEYS[k]]])) : {};
+  const explicit = { ...config[role], ...agentConfig(opts, prefix) };
+  const d = launchDefaults()[role] || {};
+  // The defaults' other settings belong to their provider; naming another drops them.
+  const base = !explicit.provider || explicit.provider === d.provider ? Object.fromEntries(FIELDS.filter((k) => d[k]).map((k) => [k, d[k]])) : {};
   const over = Object.keys(explicit);
-  const source = !base.provider ? "run config" : `profile "${p.name}"${over.length ? ` + ${over.join(", ")} from the run` : ""}`;
-  // Paseo starts an agent as provider/model, and an agent on another provider can't
-  // inherit the orchestrator's mode, so both must be named here.
-  if (!explicit.model && !base.model) {
-    fail(`${role}: no model: the launch settings (${source}) set none, and the run sets no --${prefix}model. `
-      + `Paseo takes provider/model. Tell the user; don't choose for them.`);
+  const source = !base.provider ? "run config" : `${defaultsPath()}${over.length ? ` + ${over.join(", ")} from the run` : ""}`;
+  const l = { ...base, ...explicit, source };
+  if (!l.provider) {
+    fail(`${role}: no launch settings: the run sets no --${prefix}provider, and ${defaultsPath()} has no "${role}" entry. `
+      + `Providers: ${PROVIDERS.join(", ")}. Tell the user; don't choose for them.`);
   }
-  if (!explicit.mode && !base.mode) {
-    fail(`${role}: no mode: the launch settings (${source}) set none, and the run sets no --${prefix}mode. `
-      + `An agent on another provider cannot inherit the orchestrator's mode. Tell the user; don't choose for them.`);
-  }
-  return { ...base, ...explicit, source, features: base.provider ? p.featureValues || {} : {} };
-}
-
-// Resolves, then makes sure Paseo can run the provider at all, before anything is created.
-function launchSettings(config, role, opts) {
-  const l = resolveLaunch(config, role, opts);
-  const id = l.provider.split("/")[0];
-  const all = paseo(["provider", "ls", "--json"]) || [];
-  const p = all.find((x) => pick(x, "provider", "id") === id);
-  const status = String(pick(p, "status") ?? "").toLowerCase();
-  if (!p) fail(`${role}: provider "${id}" (${l.source}) is not one Paseo knows (${all.map((x) => pick(x, "provider", "id")).join(", ")}). Tell the user.`);
-  if (status && status !== "available") fail(`${role}: provider "${id}" (${l.source}) is ${status} in Paseo. Tell the user.`);
+  const problem = settingsProblem(role, l);
+  if (problem) fail(`${problem} (${source}). Tell the user; don't choose for them.`);
   return l;
 }
+const launchSettings = (config, role, opts) => resolveLaunch(config, role, opts);
 
 function launchTable(config) {
   return Object.keys(ROLES).map((role) => {
@@ -2084,99 +2007,6 @@ function launchTable(config) {
       return { role, error: e.message };
     }
   });
-}
-
-// The script prepares guarded MCP calls; the orchestrator executes them in its
-// own agent scope so Paseo can notify it. Persist before yielding to the caller.
-function printAction(holder) { say(JSON.stringify(holder.pendingAction, null, 2)); }
-function prepareAction(dir, s, holder, kind, tool, args, meta = {}, events = []) {
-  const caller = process.env.PASEO_AGENT_ID;
-  if (!caller) fail("MCP preparation needs PASEO_AGENT_ID in the orchestrator's Paseo session");
-  if (s.orchestratorId && s.orchestratorId !== caller) fail(`this run belongs to orchestrator ${s.orchestratorId}; reconcile ownership before dispatching`);
-  s.orchestratorId = caller;
-  const action = randomUUID();
-  if (tool === "create_agent") args.labels = { ...args.labels, action };
-  holder.pendingAction = { action, kind, tool, arguments: args, preparedAt: now(), ...meta };
-  const subject = holder.id != null ? { task: holder.id } : { review: "final" };
-  recordAll(dir, s, [["prepare", { ...subject, action, tool }], ...events]);
-  // Arm recovery before yielding a request to an external tool call. A parent
-  // interrupted between create/send and ack must still have a wake-up source.
-  cmdWatch(dir, s, true);
-  printAction(holder);
-}
-function createArguments(t, launch, labels, title, prompt) {
-  const ws = (paseo(["workspace", "ls", "--json"]) || []).find((w) => normPath(pick(w, "cwd")) === normPath(t.worktree));
-  const workspaceId = pick(ws, "workspaceId", "id");
-  if (!workspaceId) fail(`no Paseo workspace for ${t.worktree}; reconcile before preparing an MCP launch`);
-  return {
-    title, provider: launch.model ? `${launch.provider.split("/")[0]}/${launch.model}` : launch.provider,
-    workspaceId, notifyOnFinish: true, labels, initialPrompt: prompt,
-    settings: {
-      ...(launch.mode ? { modeId: launch.mode } : {}),
-      ...(launch.thinking ? { thinkingOptionId: launch.thinking } : {}),
-      ...(Object.keys(launch.features).length ? { features: launch.features } : {}),
-    },
-  };
-}
-function cmdAction(s, id) {
-  if (id === "final") {
-    const f = s.finalReview;
-    if (!f?.pendingAction) fail("the final review has no pending MCP action");
-    return printAction(f);
-  }
-  const t = task(s, id);
-  if (!t.pendingAction) fail(`#${id} has no pending MCP action`);
-  printAction(t);
-}
-function cmdAck(dir, s, id, opts) {
-  if (id === "final") return ackFinal(dir, s, opts);
-  const t = task(s, id);
-  const receipt = readReceipt(dir, t, opts, t.id);
-  if (receipt.done) return say(receipt.done);
-  const p = t.pendingAction;
-  if (process.env.PASEO_AGENT_ID !== s.orchestratorId) fail("ack must run in the owning orchestrator session");
-  let result = receipt.result;
-  if (!result || typeof result !== "object") fail("receipt has no MCP result");
-  if (result.isError) {
-    if (p.tool === "create_agent" && listAgents(p.arguments.labels, { all: true }).length) fail("MCP failed after creating an agent; pending action retained. Recover its agentId and reconcile before acknowledging; do not create another worker");
-    if (p.tool === "send_agent_prompt") fail("send returned an error; pending action retained because dispatch may have occurred. Reconcile activity and recover the dispatch receipt before retrying");
-    t.pendingAction = null;
-    record(dir, s, "action-failed", { task: t.id, action: p.action });
-    return say(`MCP action ${p.action} failed; no success recorded. Read its error, then prepare a corrected request.`);
-  }
-  if (result.structuredContent) result = result.structuredContent;
-  else if (result.content) {
-    const text = result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
-    try { result = JSON.parse(text); } catch { fail("MCP receipt has no structured JSON result"); }
-  }
-  if (p.tool === "create_agent") {
-    const agentId = pick(result, "agentId", "id");
-    const matches = listAgents(p.arguments.labels, { all: true });
-    if (matches.length !== 1 || matches[0].id !== agentId || normPath(matches[0].cwd) !== normPath(t.worktree)) fail("MCP receipt agent does not match the prepared labels and worktree; reconcile before acknowledging");
-    if (inspectAgent(agentId).parentAgentId !== s.orchestratorId) fail("MCP worker does not belong to this orchestrator; pending action retained");
-    if (p.kind === "dispatch") {
-      Object.assign(t, { agentId, launch: p.launch, transport: "mcp" });
-    } else {
-      displaceReview(t);
-      t.review = { agentId, candidateSha: p.candidateSha, path: p.path, startedAt: p.preparedAt, launch: p.launch, ...(p.criteria && { criteria: p.criteria }) };
-      t.reviewers = [...(t.reviewers || []), agentId];
-    }
-  } else {
-    if (result.success !== true) fail("send receipt does not confirm successful dispatch; do not resend without reconciliation");
-    completeSend(t, p);
-  }
-  t.lastAction = p.action;
-  t.pendingAction = null;
-  // A prepared rework send lets its waivers through only once the send is
-  // confirmed, and then in the same save as that confirmation.
-  const waiver = p.waiver && ledgerAdd(s, p.waiver);
-  const past = p.extraRound && extraRoundsAdd(s, p.extraRound);
-  recordAll(dir, s, [
-    [p.kind, { task: t.id, action: p.action, transport: "mcp" }],
-    ...(waiver ? [waiverEvent(waiver)] : []),
-    ...(past ? [["extra_round", past]] : []),
-  ]);
-  say(`#${t.id}: ${p.kind} acknowledged; finish notifications requested. Run watch before ending this turn.`);
 }
 
 // A send that ends a review keeps that review in history, so finish still sees it.
@@ -2201,7 +2031,7 @@ function cmdConfig(dir, s, opts) {
   const rounds = maxRoundsSetting(opts["max-rework-rounds"]);
   if (rounds != null) c.maxReworkRounds = rounds;
   // Flags only add launch overrides; dropping a role's overrides is how it follows
-  // its Paseo profile again after the user edits that profile. Flags in the same
+  // the defaults file again after the user edits it. Flags in the same
   // command apply after the clear.
   const cleared = [...new Set(opts["clear-launch"] || [])];
   for (const role of cleared) if (!(role in ROLES)) fail(`--clear-launch takes executor or reviewer, not "${role}"`);
@@ -2210,7 +2040,7 @@ function cmdConfig(dir, s, opts) {
   Object.assign(c.reviewer, agentConfig(opts, "review-"));
   record(dir, s, "config", { config: c, ...(cleared.length && { clearedLaunch: cleared }) });
   say(JSON.stringify(c, null, 2));
-  for (const role of cleared) say(`${role}: the run's launch overrides were dropped; agents started from now on use its Paseo profile${Object.keys(c[role]).length ? " plus this command's flags" : ""}`);
+  for (const role of cleared) say(`${role}: the run's launch overrides were dropped; agents started from now on use the defaults in ${defaultsPath()}${Object.keys(c[role]).length ? " plus this command's flags" : ""}`);
   printLaunch(c, true);
 }
 
@@ -2278,22 +2108,13 @@ function cmdDispatch(dir, s, id, opts) {
     say(`\n(dry run: would create branch ${branch} from ${s.integration.branch} at ${short(tip)} and start an executor: ${describe(launch)})`);
     return;
   }
-  // Every dispatch is a guarded MCP request, so each names --prepare: none falls back
-  // to starting a CLI worker itself. After the dry run, which only prints.
-  if (!opts.prepare) fail(`dispatch ${t.id} needs --prepare: it prepares the MCP request you execute and acknowledge`);
 
   // 1. worktree — adopt one left by an interrupted dispatch, else create it.
   let wt = worktreeFor(s.repo, branch);
   if (t.reuseWorktree && (!wt || normPath(wt) !== normPath(t.worktree))) fail(`recovery worktree is missing or moved (branch=${branch}, registered=${JSON.stringify(wt)}, expected=${JSON.stringify(t.worktree)}, normalized=${JSON.stringify([normPath(wt), normPath(t.worktree)])}); reconcile it, or explicitly retry --new-worktree --reason <why>`);
   if (t.reuseWorktree) wt = t.worktree; // Preserve the recorded spelling after verifying directory identity.
-  if (!wt) {
-    const res = paseo(["workspace", "create", "--isolation", "worktree", "--mode", "branch-off", "--new-branch", branch, "--base", s.integration.branch, "--path", pathArg(s.repo), "--json"]);
-    wt = untilde(pick(res, "worktreePath", "path", "cwd")) || worktreeFor(s.repo, pick(res, "branchName", "branch") || branch);
-    if (!wt) fail(`paseo created a worktree but did not say where: ${JSON.stringify(res)}`);
-    const made = pick(res, "branchName", "branch");
-    if (made && made !== branch) fail(`paseo named the branch ${made}, expected ${branch}; reconcile with \`git worktree list\` before retrying`);
-  }
-  wt = pathArg(wt); // paseo answers with backslashes on Windows; state, brief and --cwd must all spell it one way
+  if (!wt) wt = addWorktree(dir, s, branch);
+  wt = pathArg(wt); // state, brief and the agent's cwd all spell it one way
   const h = head(wt);
   if (!t.reuseWorktree && h !== tip) fail(`worktree ${wt} is at ${short(h)}, expected the integration tip ${short(tip)}. Not starting the agent; inspect it before continuing.`);
   if (git(wt, "branch", "--show-current") !== branch) fail(`worktree ${wt} is not on expected branch ${branch}; reconcile before dispatch`);
@@ -2304,22 +2125,33 @@ function cmdDispatch(dir, s, id, opts) {
   writeFileSync(briefPath(dir, t), render("executor-brief.md", vars));
   record(dir, s, "worktree", { task: t.id, attempt: t.attempt, branch, worktree: wt, sha: tip });
 
-  // 2. agent — an interrupted dispatch's worker is reconciled through its receipt;
-  // a second one is never started behind it.
-  const labels = { workloop: s.runKey, task: t.id, attempt: t.attempt, role: "executor" };
-  if (listAgents(labels, { all: true }).length) fail(`an agent carries #${t.id}'s executor labels but no acknowledged MCP action: reconcile it through its receipt (recovery.md) before preparing another`);
+  // 2. agent — its first turn, in a tab of the run's Rex session.
   const prompt = `Read the task brief at ${pathArg(briefPath(dir, t))} and follow it. It is your complete instruction set; never ask the user anything.`;
-  return prepareAction(dir, s, t, "dispatch", "create_agent",
-    createArguments(t, launch, labels, `wl ${s.feature} #${t.id} ${t.attempt}`, prompt), { launch: describe(launch) });
+  const agent = newAgent(s, { role: "executor", task: t.id, attempt: t.attempt, cwd: wt, launch });
+  const turn = startTurn(dir, s, agent, prompt, `#${t.id} exec ${t.attempt}`);
+  Object.assign(t, { agentId: agent, launch: describe(launch) });
+  record(dir, s, "dispatch", { task: t.id, attempt: t.attempt, agent, block: turn.block, launch: t.launch });
+  say(`#${t.id} dispatched: ${describe(launch)} in Rex tab "${turn.title}". Run \`wait\` in the background, then end this turn.`);
+}
+
+// A new branch off the integration branch, checked out in the run's worktrees folder.
+function addWorktree(dir, s, branch) {
+  const path = pathArg(join(dir, "worktrees", branch));
+  if (existsSync(path)) fail(`${path} already exists but is not the worktree of ${branch}; look at it before retrying`);
+  mkdirSync(dirname(path), { recursive: true });
+  git(s.repo, "worktree", "add", "-b", branch, path, s.integration.branch);
+  return path;
 }
 
 function requireIdle(id, role, allowMissing = false) {
   let a;
   try { a = inspectAgent(id); } catch (e) {
-    if (!allowMissing || !["NOT_FOUND", "AGENT_NOT_FOUND"].includes(e.paseoCode)) throw e;
+    if (!allowMissing || !e.agentMissing) throw e;
     return { id, status: "missing", archived: true, missing: true };
   }
-  if (BUSY.has(a.status)) fail(`${role} ${id} is ${a.status}. Wait for it (patrol), or interrupt it with \`paseo agent stop ${id}\` first`);
+  // Not knowing is not idle: a turn Rex cannot report on may still be writing.
+  if (a.status === "unknown") fail(`cannot tell whether ${role} ${id} is still running: ${a.error}`);
+  if (BUSY.has(a.status)) fail(`${role} ${id} is ${a.status} (Rex tab "${a.turn.title}"). Wait for it (\`wait\`), or stop it with Ctrl-C in its tab first`);
   return a;
 }
 
@@ -2367,14 +2199,12 @@ function previousReview(t) {
 }
 
 function cmdReview(dir, s, id, opts) {
-  if (!opts.prepare) fail("review needs --prepare: it prepares the MCP request you execute and acknowledge");
   const t = task(s, id);
   if (!["running", "in_review"].includes(t.status)) fail(`#${t.id} is ${t.status}; nothing to review`);
   if (t.review && !opts.again) fail(`#${t.id} already has review agent ${t.review.agentId} for ${short(t.review.candidateSha)}; pass --again to start another`);
   if (t.review) requireIdle(t.review.agentId, "reviewer");
-  const busy = listAgents({ workloop: s.runKey, role: "reviewer" }).filter((a) => BUSY.has(a.status)).length
-    + tasksOf(s).filter((x) => x.pendingAction?.kind === "review").length;
-  if (busy >= s.config.maxReviewers) fail(`reviewer budget full (${busy}/${s.config.maxReviewers}); patrol, or raise it with \`config --max-reviewers\``);
+  const busy = Object.values(s.agents || {}).filter((a) => a.role === "reviewer" && a.turns.length && BUSY.has(inspectAgent(a.id).status)).length;
+  if (busy >= s.config.maxReviewers) fail(`reviewer budget full (${busy}/${s.config.maxReviewers}); \`wait\` for one, or raise it with \`config --max-reviewers\``);
   const launch = launchSettings(s.config, "reviewer", opts);
   if (t.status === "running") freeze(dir, s, t, true); // review prints only its request
   requireIdle(t.agentId, "executor");
@@ -2404,11 +2234,14 @@ function cmdReview(dir, s, id, opts) {
     outOfScopeExample: parts.outOfScopeExample, verdictRule: parts.verdictRule,
   };
   writeFileSync(brief, render("reviewer-brief.md", vars));
-  const labels = { workloop: s.runKey, task: t.id, attempt: t.attempt, role: "reviewer", candidate: short(t.candidateSha) };
-  return prepareAction(dir, s, t, "review", "create_agent",
-    createArguments(t, launch, labels, `wl ${s.feature} #${t.id} review ${short(t.candidateSha)}`,
-      `Read the review brief at ${pathArg(brief)} and follow it. Review only; change nothing; never ask the user anything.`),
-    { candidateSha: t.candidateSha, path, launch: describe(launch), ...(ids && { criteria: ids }) });
+  const agent = newAgent(s, { role: "reviewer", task: t.id, attempt: t.attempt, cwd: t.worktree, launch });
+  const startedAt = now(); // before starting: a fast reviewer may write its report right away
+  const turn = startTurn(dir, s, agent, `Read the review brief at ${pathArg(brief)} and follow it. Review only; change nothing; never ask the user anything.`, `#${t.id} review ${short(t.candidateSha)}`);
+  displaceReview(t);
+  t.review = { agentId: agent, candidateSha: t.candidateSha, path, startedAt, launch: describe(launch), ...(ids && { criteria: ids }) };
+  t.reviewers = [...(t.reviewers || []), agent];
+  record(dir, s, "review", { task: t.id, agent, block: turn.block, candidate: t.candidateSha });
+  say(`#${t.id}: reviewer ${describe(launch)} started on ${short(t.candidateSha)} in Rex tab "${turn.title}". Run \`wait\` in the background, then end this turn.`);
 }
 
 // A rework round past the run's cap waits for the user: the orchestrator asks, then
@@ -2424,7 +2257,7 @@ function extraRound(s, t, opts) {
   }
   if (!opts["extra-round"]) {
     fail(`#${t.id}: rework round ${round} would pass the run's cap of ${cap}. The task waits for the user: decide with them whether to go on, then `
-      + `\`send ${t.id} --prepare --extra-round --reason "<the user's decision>"\``);
+      + `\`send ${t.id} --extra-round --reason "<the user's decision>"\``);
   }
   if (!opts.reason?.trim()) fail(`send --extra-round needs --reason "<the user's decision>": round ${round} goes past the cap of ${cap}, and finish lists it`);
   return { task: t.id, attempt: t.attempt, round, cap, reason: opts.reason.trim() };
@@ -2438,7 +2271,6 @@ function extraRoundsAdd(s, entry) {
 }
 
 function cmdSend(dir, s, id, opts) {
-  if (!opts.prepare) fail("send needs --prepare: it prepares the MCP request you execute and acknowledge");
   const t = task(s, id);
   if (!["running", "in_review"].includes(t.status) || !t.agentId) fail(`#${t.id} is ${t.status}; no executor to talk to`);
   let body;
@@ -2471,9 +2303,18 @@ function cmdSend(dir, s, id, opts) {
   const footer = `\n\n---\n${method}This continues task #${t.id} (brief: ${pathArg(briefPath(dir, t))}). When you stop, overwrite ${pathArg(reportPath(dir, t))} as the brief describes (first line \`Status: done | question | blocked\`). End with exactly three lines: Result: <done | question | blocked>, Report: ${pathArg(reportPath(dir, t))}, Summary: <one sentence>. Then end your turn.\n`;
   writeFileSync(file, body + footer);
   const sentAt = now(); // before sending: a fast agent may rewrite its report right away
-  return prepareAction(dir, s, t, "send", "send_agent_prompt", {
-    agentId: t.agentId, prompt: body + footer, notifyOnFinish: true, activeTurnBehavior: "steer",
-  }, { sentAt, n, rework, ...(waiver && { waiver }), ...(extra && { extraRound: extra }), ...(accounting?.warning && { warning: accounting.warning }) });
+  const turn = startTurn(dir, s, t.agentId, body + footer, `#${t.id} exec ${t.attempt} · ${n}`);
+  completeSend(t, { sentAt, n, rework });
+  // The waiver and the extra round go in the same save as the send they belong to.
+  const waived = waiver && ledgerAdd(s, waiver);
+  const past = extra && extraRoundsAdd(s, extra);
+  recordAll(dir, s, [
+    ["send", { task: t.id, n, rework: rework || undefined, block: turn.block }],
+    ...(waived ? [waiverEvent(waived)] : []),
+    ...(past ? [["extra_round", past]] : []),
+  ]);
+  if (accounting?.warning) say(`warning: ${accounting.warning}`);
+  say(`#${t.id}: message ${n} sent; the executor goes on in Rex tab "${turn.title}". Run \`wait\` in the background, then end this turn.`);
 }
 
 // Why #t's candidate cannot be integrated, or null. Checked before the merge and
@@ -2481,7 +2322,6 @@ function cmdSend(dir, s, id, opts) {
 function integrateGate(s, t, override) {
   if (t.status !== "in_review") return `#${t.id} is ${t.status}; only a reviewed candidate can be integrated`;
   if (t.hold) return `#${t.id} is on hold: ${t.hold}`;
-  if (t.pendingAction) return `#${t.id}: pending MCP action ${t.pendingAction.action}; reconcile with action/ack first`;
   const open = t.blockedBy.filter((b) => s.tasks[b]?.status !== "done");
   if (open.length) return `#${t.id} is blocked by ${open.join(", ")}`;
   const verdict = reviewReport(t)?.verdict;
@@ -2625,22 +2465,21 @@ function cleanupTask(dir, s, t) {
   if (t.cleanedAt) return say(`#${t.id} already cleaned up`);
   const integ = s.integration.worktree;
   if (!isAncestor(integ, t.candidateSha, s.integration.branch)) fail(`#${t.id}: candidate ${short(t.candidateSha)} is not on ${s.integration.branch}; not cleaning up`);
-  const agents = listAgents({ workloop: s.runKey, task: t.id }).filter((a) => BUSY.has(a.status));
+  const agents = Object.values(s.agents || {}).filter((a) => String(a.task) === String(t.id) && a.turns.length && BUSY.has(inspectAgent(a.id).status));
   if (agents.length) fail(`#${t.id}: agents still running against it: ${agents.map((a) => a.id).join(", ")}`);
   if (t.worktree && existsSync(t.worktree)) {
     if (!isClean(t.worktree)) fail(`#${t.id}: worktree ${t.worktree} has uncommitted changes; look at them before cleaning up`);
-    const ws = paseo(["workspace", "ls", "--json"]).find((w) => normPath(pick(w, "cwd")) === normPath(t.worktree));
-    if (ws) paseo(["workspace", "archive", pick(ws, "workspaceId", "id"), "--json"]);
-    if (existsSync(t.worktree)) git(s.repo, "worktree", "remove", t.worktree);
+    git(s.repo, "worktree", "remove", t.worktree);
   }
   gitTry(s.repo, "worktree", "prune");
   for (const id of [t.agentId, ...(t.reviewers || [])].filter(Boolean)) {
-    if (!requireIdle(id, "run agent", true).archived) paseo(["agent", "archive", id, "--json"]);
+    requireIdle(id, "run agent", true);
+    archiveAgent(s, id);
   }
   if (t.branch && branchExists(s.repo, t.branch)) git(integ, "branch", "-d", t.branch); // -d refuses unmerged work
   t.cleanedAt = now();
   record(dir, s, "cleanup", { task: t.id, attempt: t.attempt });
-  say(`#${t.id} cleaned up (workspace archived, branch ${t.branch} deleted)`);
+  say(`#${t.id} cleaned up (worktree removed, tabs closed, branch ${t.branch} deleted)`);
 }
 
 function cmdRetry(dir, s, id, opts) {
@@ -2759,7 +2598,6 @@ function completeFinish(dir, s, phase, checks, minutes) {
   }
   s.completion ||= { at: now(), tip: s.integration.tip };
   record(dir, s, "finish", { tip: s.integration.tip });
-  if ((s.heartbeat || s.heartbeatLedger?.ids?.length || s.heartbeatLedger?.pendingCreate) && process.env.PASEO_AGENT_ID === s.orchestratorId) cmdWatch(dir, s);
   const commits = git(s.repo, "log", "--oneline", "--first-parent", `${s.baseSha}..${s.integration.tip}`);
   say(`delivery checked. ${s.integration.branch} is at ${short(s.integration.tip)} (base ${s.baseRef} ${short(s.baseSha)}):\n${commits}`);
   // The whole ledger, for the user: these are the findings the run let through,
@@ -2769,64 +2607,41 @@ function completeFinish(dir, s, phase, checks, minutes) {
   if (boundary) say(boundary);
   say(criteriaReport(s));
   say("Nothing was pushed or merged into the base; that is the user's call.");
-  say("Sessions retained. Read the run evidence, assess retro, then archive. Use `evidence` to save CLI transcripts.");
+  say("Agent turns retained. Read the run evidence, assess retro, then archive. Use `evidence` to index the turn logs.");
 }
 
-// Session inventory includes replaced attempts, superseded reviewers and the final
-// reviewer of every round. Live labels recover workers created before a lost
-// receipt; state covers old runs.
+// Every agent the run started: replaced attempts, superseded reviewers and the final
+// reviewer of every round, from the run's own registry.
 function runAgents(s) {
-  const agents = new Map();
-  const rounds = finalRounds(s);
-  const worktrees = new Set([
-    ...tasksOf(s).flatMap((t) => [...t.history, t]).map((a) => a.worktree && normPath(a.worktree)),
-    ...rounds.map((r) => r.worktree && normPath(r.worktree)),
-  ].filter(Boolean));
-  for (const t of tasksOf(s)) {
-    for (const a of [...t.history, t]) {
-      for (const id of [a.agentId, ...(a.reviewers || []), a.review?.agentId].filter(Boolean)) {
-        const entry = agents.get(id) || { id, tasks: [], cwd: a.worktree || t.worktree };
-        entry.tasks.push({ task: t.id, attempt: a.attempt, role: id === a.agentId ? "executor" : "reviewer" });
-        agents.set(id, entry);
-      }
-    }
-  }
-  for (const r of rounds) {
-    if (!r.agentId) continue;
-    agents.set(r.agentId, { id: r.agentId, cwd: r.worktree, tasks: [{ task: "final", attempt: `r${r.round}`, role: "reviewer" }] });
-  }
-  for (const a of listAgents({ workloop: s.runKey }, { all: true })) {
-    if (!agents.has(a.id) && worktrees.has(normPath(a.cwd))) agents.set(a.id, { id: a.id, cwd: a.cwd, tasks: [] });
-  }
-  return [...agents.values()];
+  return Object.values(s.agents || {}).map((a) => ({ id: a.id, cwd: a.cwd, tasks: [{ task: a.task, attempt: a.attempt, role: a.role }] }));
 }
 
+// One file per agent: each turn's prompt and everything its CLI printed, from the
+// turn files the run already holds, so nothing depends on a CLI keeping its sessions.
 function cmdEvidence(dir, s) {
   const folder = join(dir, "evidence");
   if (s.finishedAt && existsSync(join(folder, "index.json"))) return say(`archived run: use the preserved evidence at ${folder}`);
   mkdirSync(folder, { recursive: true });
+  const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "(missing)\n");
   const agents = runAgents(s);
   for (const a of agents) {
+    const rec = s.agents[a.id];
     const file = `${encodeURIComponent(a.id)}.txt`;
-    // An already deleted session is a disclosed evidence gap, not an infinite
-    // archive blocker. Connectivity errors still abort before any cleanup.
-    let missing = false;
-    try { inspectAgent(a.id); } catch (e) {
-      if (!["NOT_FOUND", "AGENT_NOT_FOUND"].includes(e.paseoCode)) throw e;
-      missing = true;
-    }
-    const transcript = missing
-      ? (existsSync(join(folder, file)) ? readFileSync(join(folder, file), "utf8") : `Session ${a.id} is missing in Paseo. No transcript could be recovered; use the retained briefs, reports, messages and events.\n`)
-      : paseo(["agent", "logs", a.id], { raw: true });
-    writeAtomic(join(folder, file), transcript);
-    Object.assign(a, { file, capturedAt: now(), missing });
-    if (missing) say(`evidence gap: session ${a.id} is missing; recorded in the index`);
+    const turns = rec.turns.map((t) => {
+      const f = turnFiles(t.base);
+      const meta = turnMeta(t);
+      const ended = meta ? `exit ${meta.exitCode ?? "?"} · session ${meta.session ?? "?"}` : "no meta file";
+      return `=== turn ${t.n} · ${t.title} · started ${t.startedAt} · ${ended}\n--- prompt\n${read(f.prompt)}\n--- output\n${read(f.log)}\n`;
+    });
+    writeAtomic(join(folder, file), `${rec.provider} ${rec.role} for ${rec.task} (${rec.launch})\n\n${turns.join("\n")}`);
+    const last = rec.turns.at(-1);
+    Object.assign(a, { file, provider: rec.provider, session: rec.session ?? (last ? turnMeta(last)?.session : null) ?? null, turns: rec.turns.length, capturedAt: now() });
   }
-  const index = { capturedAt: now(), completion: s.completion?.at || null, format: "Paseo CLI activity transcripts; tool output may be curated. Original agent IDs retained for deeper inspection.", agents };
+  const index = { capturedAt: now(), completion: s.completion?.at || null, format: "agent-run turn files: each turn's prompt and its CLI's raw output; turns/ keeps the originals.", agents };
   writeAtomic(join(folder, "index.json"), `${JSON.stringify(index, null, 2)}\n`);
   s.evidence = { completion: index.completion, capturedAt: index.capturedAt, path: join(folder, "index.json") };
   record(dir, s, "evidence", { agents: agents.length });
-  say(`saved ${agents.length} session transcripts: ${folder}`);
+  say(`saved ${agents.length} agent transcripts: ${folder}`);
 }
 
 function cmdRetro(dir, s, opts) {
@@ -2854,16 +2669,15 @@ function cmdArchive(dir, s) {
   const agents = runAgents(s);
   for (const a of agents) requireIdle(a.id, "run agent", true);
   if (existsSync(s.integration.worktree)) checkIntegration(s);
-  // Snapshot every session before the first destructive cleanup. On an
-  // interrupted archive reuse that snapshot, even if Paseo no longer serves it.
+  // Snapshot every agent's turns before the first destructive cleanup. On an
+  // interrupted archive reuse that snapshot.
   if (!s.archiveStartedAt) {
     cmdEvidence(dir, s);
     s.archiveStartedAt = now();
     record(dir, s, "archive-start");
   }
-  if ((s.heartbeat || s.heartbeatLedger?.ids?.length || s.heartbeatLedger?.pendingCreate) && process.env.PASEO_AGENT_ID === s.orchestratorId) cmdWatch(dir, s);
   for (const t of tasksOf(s)) if (t.status === "done" && !t.cleanedAt) cleanupTask(dir, s, t);
-  for (const a of agents) if (!requireIdle(a.id, "run agent", true).archived) paseo(["agent", "archive", a.id, "--json"]);
+  for (const a of agents) archiveAgent(s, a.id);
   // Cancelled/replaced workspaces can contain unmerged or uncommitted work.
   // Archive their sessions but retain those trees for a separate user decision.
   const retained = new Map();
@@ -2881,8 +2695,6 @@ function cmdArchive(dir, s) {
     const safe = isClean(r.worktree) && head(r.worktree) === r.tip && ref === r.tip
       && existsSync(s.integration.worktree) && isAncestor(s.integration.worktree, r.tip, s.integration.branch);
     if (!safe) { retained.set(r.worktree, { worktree: r.worktree, branch: r.branch }); continue; }
-    const ws = paseo(["workspace", "ls", "--json"]).find((w) => normPath(pick(w, "cwd")) === normPath(r.worktree));
-    if (ws) paseo(["workspace", "archive", pick(ws, "workspaceId", "id"), "--json"]);
     if (existsSync(r.worktree)) git(s.repo, "worktree", "remove", r.worktree);
     // From the integration worktree, so `-d` checks against the branch that contains the tip.
     if (branchExists(s.repo, r.branch)) gitTry(s.integration.worktree, "branch", "-d", r.branch); // -d refuses unmerged work
@@ -2897,6 +2709,8 @@ function cmdArchive(dir, s) {
   }
   gitTry(s.repo, "worktree", "prune");
   if (existsSync(s.integration.worktree)) git(s.repo, "worktree", "remove", s.integration.worktree);
+  // The run's Rex session goes with it; every tab in it was the run's.
+  if (s.rex?.session) host.killSession(s.rex.session);
   s.finishedAt = now();
   s.retainedWorktrees = [...retained.values()];
   record(dir, s, "archive", { retainedWorktrees: s.retainedWorktrees, scratchFreed: freed });
@@ -2904,92 +2718,112 @@ function cmdArchive(dir, s) {
   if (retained.size) say(`unmerged or dirty work retained for your decision:\n${[...retained.values()].map((a) => `  ${a.worktree} (${a.branch})`).join("\n")}`);
 }
 
-// ------------------------------------------------------- status and patrol
+// ------------------------------------------------------- status and waiting
 
-function cmdWatch(dir, s, quiet = false, opts = {}) {
-  const owner = process.env.PASEO_AGENT_ID;
-  if (!owner) fail("watch needs PASEO_AGENT_ID so its heartbeat targets this conversation");
-  if (s.orchestratorId && s.orchestratorId !== owner) fail(`watch belongs to orchestrator ${s.orchestratorId}`);
-  s.orchestratorId = owner;
-  const problems = [];
-  let busy = 0;
-  let uncertain = false;
-  // A live check phase is work in progress; an interrupted one needs the orchestrator.
-  if (liveCheck(s)) busy++;
-  else if (s.checking) { uncertain = true; problems.push(describeCheckPhase(s.checking)); }
-  for (const t of tasksOf(s)) {
-    if (s.finishedAt || !["running", "in_review"].includes(t.status)) continue;
-    if (t.pendingAction) problems.push(`#${t.id}: pending MCP action; reconcile its receipt`);
-    else if (!t.hold && ((t.status === "running" && !t.agentId) || (t.status === "in_review" && !t.review))) {
-      uncertain = true;
-      problems.push(`#${t.id}: no ${t.status === "running" ? "executor" : "reviewer"} recorded; prepare the next guarded launch`);
-    }
-    // Include held workers and the current reviewer: a report does not prove
-    // they stopped. Superseded reviewers were required idle before rework.
-    const ids = [...new Set([t.agentId, t.review?.agentId].filter(Boolean))];
-    for (const id of ids) {
-      let a;
-      try { a = inspectAgent(id); } catch (e) { uncertain = true; problems.push(`#${t.id} ${short(id)}: ${e.message.split("\n")[0]}`); continue; }
-      if (BUSY.has(a.status)) {
-        busy++;
-        const age = (Date.now() - Date.parse(a.updatedAt)) / 60000;
-        if (!Number.isFinite(age)) problems.push(`#${t.id} ${short(id)}: activity timestamp unavailable`);
-        else if (age >= 45) problems.push(`#${t.id} ${short(id)}: no activity for ${Math.floor(age)}m`);
-      } else if (["running", "in_review"].includes(t.status) && (id === t.review?.agentId || (!t.review && id === t.agentId))) {
-        problems.push(`#${t.id} ${short(id)}: ${a.status}; read the fresh report and continue the loop`);
-      }
-      if (a.pending) problems.push(`#${t.id} ${short(id)}: ${a.pending} permission request(s)`);
-    }
+// The turns running now, each with the agent it is a turn of.
+function runningTurns(s) {
+  const out = [];
+  for (const a of Object.values(s.agents || {})) {
+    if (!a.turns.length || a.archivedAt) continue;
+    const st = inspectAgent(a.id);
+    if (st.status === "unknown") fail(`cannot ask Rex about agent ${a.id}: ${st.error}`);
+    if (st.status === "running") out.push({ agent: a, block: st.turn.block, title: st.turn.title, updatedAt: st.updatedAt });
   }
-  // The final reviewer is a worker too: its round arms the heartbeat while it runs,
-  // and its receipt, permissions and idle state are reported like a task's.
-  const finalRound = s.finishedAt ? null : s.finalReview;
-  if (finalRound) {
-    if (finalRound.pendingAction) {
-      uncertain = true;
-      problems.push(`final review round ${finalRound.round}: pending MCP action; reconcile its receipt with \`action final\``);
-    } else if (!finalRound.agentId) {
-      uncertain = true;
-      problems.push(`final review round ${finalRound.round}: no reviewer recorded; prepare it with \`final-review --prepare\``);
-    } else {
-      let a;
-      try { a = inspectAgent(finalRound.agentId); } catch (e) { uncertain = true; problems.push(`final review ${short(finalRound.agentId)}: ${e.message.split("\n")[0]}`); }
-      if (a && BUSY.has(a.status)) {
-        busy++;
-        const age = (Date.now() - Date.parse(a.updatedAt)) / 60000;
-        if (!Number.isFinite(age)) problems.push(`final review ${short(finalRound.agentId)}: activity timestamp unavailable`);
-        else if (age >= 45) problems.push(`final review ${short(finalRound.agentId)}: no activity for ${Math.floor(age)}m`);
-      } else if (a) {
-        problems.push(`final review ${short(finalRound.agentId)}: ${a.status}; read ${finalRound.path} and continue the loop`);
-      }
-      if (a?.pending) problems.push(`final review ${short(finalRound.agentId)}: ${a.pending} permission request(s)`);
+  return out;
+}
+const DEFAULT_WAIT = 110; // minutes: inside the two hours a background command may run
+const describeEnd = (p) => (p.exit_code === 0 ? "exit 0"
+  : p.exit_code != null ? `exit ${p.exit_code}${p.error ? `, ${p.error}` : ""}`
+    : p.block_id ? "its tab was closed" : p.error || "ended");
+
+// `wait [--for <minutes>]` returns when one of the running turns ends, or at the
+// limit. Run it as a background command and end the turn: its exit is what wakes the
+// orchestrator. It holds no lock, so every other command works meanwhile.
+async function cmdWait(dir, opts) {
+  const minutes = opts.for == null ? DEFAULT_WAIT : Number(opts.for);
+  if (!Number.isFinite(minutes) || minutes <= 0) fail("wait --for takes a positive number of minutes");
+  const s = loadState(dir);
+  if (s.finishedAt) return say("this run is archived; nothing runs");
+  const running = runningTurns(s);
+  if (!running.length) {
+    say("no turn is running");
+    // A turn that ended while nobody waited, and left nothing to go on, is said here:
+    // the next steps read reports only, so they would pass over it.
+    for (const id of currentAgents(s)) {
+      const a = inspectAgent(id);
+      if (a.turn && /left no fresh report/.test(turnOutcome(dir, s, id))) say(`"${a.turn.title}" ended (${a.status}${a.exitCode != null ? ` ${a.exitCode}` : ""}); ${turnOutcome(dir, s, id)}`);
     }
+    return printNext(dir, s);
   }
-  const due = new Date(Date.now() + 55 * 60000);
-  const command = `node ${shellArg(pathArg(join(HERE, "workloop.mjs")))} --run ${shellArg(pathArg(dir))} watch`;
-  const prompt = `【Workloop 保温心跳】Run this command now: ${command}. It checks current state, not a cached snapshot. If normal, reply only 好. On 异常 or 待处理, inspect only the affected agents' recent activity/report, reconcile and continue the workloop within its scope. Never infer acceptance from an agent finishing. Run watch before ending your turn; if all workers stopped it removes the heartbeat. Do not poll or wait in a long shell loop.`;
-  maintainHeartbeat({ dir, state: s, owner, due, prompt, call: paseo,
-    wanted: !s.finishedAt && Boolean(busy || uncertain || tasksOf(s).some((t) => t.pendingAction) || s.finalReview?.pendingAction),
-    persist: (kind, fields) => record(dir, s, kind, fields), receiptIds: opts["heartbeat-id"] || [],
-    clearPending: opts["clear-heartbeat-create"], reason: opts.reason });
-  record(dir, s, "watch", { busy, problems, heartbeat: s.heartbeat });
-  if (!quiet) say(problems.length ? `【保温心跳·异常／待处理】${problems.join("; ")}` : busy ? "【保温心跳】正常；只回复好" : "no running workers; tracked heartbeats deleted or confirmed absent");
+  say(`waiting on ${running.map((r) => `"${r.title}"`).join(", ")} (up to ${minutes}m)`);
+  const ended = await host.waitAny(s.rex.session, running.map((r) => r.block), Math.round(minutes * 60000));
+  const s2 = loadState(dir);
+  if (!ended) {
+    const still = runningTurns(s2).map((r) => `"${r.title}" last printed ${ago(r.updatedAt)}`);
+    say(`no turn ended in ${minutes}m${still.length ? `; ${still.join(", ")}` : ""}`);
+    return say("next: run `wait` in the background again, then end this turn");
+  }
+  const r = running.find((x) => x.block === ended.block);
+  say(`turn ended: "${r.title}" (${describeEnd(ended.payload)}); ${turnOutcome(dir, s2, r.agent.id)}`);
+  printNext(dir, s2);
 }
 
-function liveMap(s) {
-  const map = new Map();
-  for (const a of listAgents({ workloop: s.runKey }, { all: true })) map.set(a.id, a);
-  return map;
+// The agents whose report the run is waiting for: each open task's executor (or,
+// once frozen, its current reviewer) and the current final reviewer.
+function currentAgents(s) {
+  const ids = [];
+  for (const t of tasksOf(s)) {
+    if (t.hold) continue;
+    if (t.status === "running" && t.agentId) ids.push(t.agentId);
+    if (t.status === "in_review" && t.review?.agentId && !reviewReport(t)) ids.push(t.review.agentId);
+  }
+  const f = s.finalReview;
+  if (f?.agentId && f.tip === s.integration.tip && !finalReport(f)) ids.push(f.agentId);
+  return ids;
+}
+
+// What an ended turn left: the report its brief asks for, or where to look when it
+// left none. A report is fresh only if written after the turn's prompt.
+function turnOutcome(dir, s, id) {
+  const a = s.agents[id];
+  const log = turnFiles(a.turns.at(-1).base).log;
+  const none = (again) => `it left no fresh report: read its output in ${log}, then ${again}`;
+  if (a.task === "final") {
+    const round = s.finalReview?.agentId === id ? s.finalReview : null;
+    if (!round) return "a superseded final reviewer";
+    const rep = finalReport(round);
+    return rep ? `verdict ${rep.verdict ?? "missing"} in ${round.path}` : none("`final-review --again`");
+  }
+  const t = s.tasks[a.task];
+  if (!t) return `agent of a task this run no longer has (${a.task})`;
+  if (a.role === "reviewer") {
+    if (t.review?.agentId !== id) return `a superseded reviewer of #${t.id}`;
+    const rep = reviewReport(t);
+    return rep ? `verdict ${rep.verdict ?? "missing"} in ${t.review.path}` : none(`\`review ${t.id} --again\``);
+  }
+  if (t.agentId !== id) return `a replaced executor of #${t.id}`;
+  const rep = executorReport(dir, t);
+  return rep ? `#${t.id} reports ${rep.status ?? "no status"} in ${reportPath(dir, t)}` : none(`\`send ${t.id} --text <what to do>\` to go on, or \`retry ${t.id} --reason <why>\``);
+}
+
+// The agent's state for display: its status, or why it cannot be had.
+function liveStatus(id) {
+  try {
+    const a = inspectAgent(id);
+    return a.status === "error" || a.status === "closed" ? `${a.status}${a.exitCode != null ? `:${a.exitCode}` : ""}` : a.status;
+  } catch (e) {
+    if (e instanceof UserError && e.agentMissing) return "missing";
+    throw e;
+  }
 }
 
 function printStatus(dir, s, live, asJson = false) {
-  const agents = live ? liveMap(s) : null;
   const rows = tasksOf(s).map((t) => {
     const rep = t.status === "running" ? executorReport(dir, t)?.status : null;
     const rev = t.status === "in_review" ? reviewReport(t)?.verdict ?? (t.review ? "pending" : null) : null;
     return {
       id: t.id, status: t.status + (t.hold ? "*" : ""), attempt: t.attempt, agent: t.agentId ? t.agentId.slice(0, 8) : "-",
-      live: live && t.agentId ? agents.get(t.agentId)?.status ?? "missing" : "-",
+      live: live && t.agentId ? liveStatus(t.review?.agentId ?? t.agentId) : "-",
       candidate: short(t.candidateSha), report: rep || rev || "-", title: t.title, acceptance: t.acceptance ?? [],
       blockers: t.blockedBy.filter((b) => s.tasks[b]?.status !== "done"),
     };
@@ -3021,11 +2855,7 @@ function printStatus(dir, s, live, asJson = false) {
   }
   if (rows.some((r) => r.status.endsWith("*"))) say("* = on hold");
   if (live) {
-    const known = new Set([
-      ...tasksOf(s).flatMap((t) => [t.agentId, ...(t.reviewers || []), ...t.history.map((h) => h.agentId)]),
-      ...finalRounds(s).map((r) => r.agentId),
-    ].filter(Boolean));
-    for (const [id, a] of agents) if (!known.has(id)) say(`warning: agent ${id} "${a.name}" (${a.status}) carries this run's label but is not recorded — reconcile its start with \`action <NN>\` / \`ack <NN>\` (see recovery.md); do not prepare another`);
+    if (s.finalReview?.agentId && !s.finishedAt) say(`final review round ${s.finalReview.round}: ${liveStatus(s.finalReview.agentId)}`);
     for (const t of tasksOf(s)) {
       if (["running", "in_review"].includes(t.status) && t.worktree && !existsSync(t.worktree)) say(`warning: #${t.id} worktree is gone: ${t.worktree}`);
     }
@@ -3041,54 +2871,14 @@ function printStatus(dir, s, live, asJson = false) {
 function printLaunch(config, full = false) {
   for (const l of launchTable(config)) {
     if (l.error && full) say(`${l.role} UNRESOLVED: ${l.error.slice(l.role.length + 2)}`);
-    else if (l.error) say(`${l.role} UNRESOLVED: ${l.error.slice(l.role.length + 2).split("\n")[0].replace(/ Profiles:$/, "")} (\`config\` lists the profiles; tell the user)`);
+    else if (l.error) say(`${l.role} UNRESOLVED: ${l.error.slice(l.role.length + 2).split("\n")[0].replace(/ Profiles:$/, "")} (tell the user)`);
     else say(`${l.role} ${describe(l)}`);
   }
 }
 
-function cmdPatrol(dir, s, opts) {
-  const windowMs = Number(opts.window || 1) * 1000;
-  const intervalMs = Number(opts.interval || 15) * 1000;
-  if (!Number.isFinite(windowMs) || windowMs <= 0 || windowMs > 60000) fail("patrol --window must be > 0 and <= 60 seconds; use finish notifications and watch for ongoing supervision");
-  if (!Number.isFinite(intervalMs) || intervalMs <= 0) fail("patrol --interval must be positive");
-  const watch = [];
-  for (const t of tasksOf(s)) {
-    if (t.hold) continue;
-    if (t.status === "running" && t.agentId) watch.push({ t, role: "executor", id: t.agentId });
-    if (t.status === "in_review" && t.review && !reviewReport(t)) watch.push({ t, role: "reviewer", id: t.review.agentId });
-  }
-  if (!watch.length) { say("no active agents"); return printNext(dir, s); }
-  const started = Date.now();
-  let seen;
-  for (;;) {
-    seen = watch.map((w) => {
-      const remaining = windowMs - (Date.now() - started);
-      if (remaining <= 0) fail("patrol timed out at its deadline; task state is unchanged; resume on notifications or use watch");
-      const a = inspectAgent(w.id, { timeout: Math.min(remaining, Number(process.env.PASEO_TIMEOUT_MS || 30000)) });
-      const rep = w.role === "executor" ? executorReport(dir, w.t) : reviewReport(w.t);
-      return { ...w, a, rep, attention: !BUSY.has(a.status) || a.pending > 0 };
-    });
-    if (seen.some((x) => x.attention) || Date.now() - started + intervalMs > windowMs) break;
-    sleep(intervalMs);
-  }
-  const ago = (ts) => (ts ? `${Math.round((Date.now() - Date.parse(ts)) / 60000)}m ago` : "?");
-  say(`patrol ${Math.round((Date.now() - started) / 1000)}s`);
-  for (const x of seen) {
-    const what = x.role === "executor" ? `report=${x.rep?.status ?? "none"}` : `verdict=${x.rep?.verdict ?? "none"}`;
-    let line = `#${x.t.id} ${x.role} ${x.id.slice(0, 8)} ${x.a.status} (updated ${ago(x.a.updatedAt)}) ${what}`;
-    if (x.a.pending) line += ` · ${x.a.pending} permission request(s) waiting — answer them in Paseo`;
-    const launch = x.role === "executor" ? x.t.launch : x.t.review?.launch;
-    if (x.a.status === "error") line += ` · the agent errored: read \`paseo agent logs ${x.id} --tail 30\`; if its launch settings (${launch ?? "unknown"}) are the cause, tell the user`;
-    else if (!BUSY.has(x.a.status) && !x.rep) line += x.role === "executor" ? " · stopped without a fresh report: check `paseo agent logs`, then nudge it with `send`" : " · stopped without writing its report: check `paseo agent logs`, then `review --again`";
-    say(line);
-  }
-  if (!seen.some((x) => x.attention)) say("no change; run watch and end this turn; resume on a finish notification or heartbeat");
-  printNext(dir, loadState(dir));
-}
-
 // --------------------------------------------------------------------- CLI
 
-const HELP = `workloop — run state and Paseo/git mechanics for the paseo-workloop skill
+const HELP = `workloop — run state and Rex/git mechanics for the paseo-workloop skill (rex-local)
 
 usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
 
@@ -3102,32 +2892,29 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
   scratch --feature <slug> [--repo .]   create <run dir>/issues and print the run's paths
   config  [same options as init]       change budgets, checks, time limit, rework cap, launch settings
           [--clear-launch executor|reviewer]  drop the run's launch overrides for that role, so it
-                                       follows its Paseo profile again
+                                       follows the defaults file again
 
   Launch settings per role, most specific first: the command's flags, the run's
-  config, the Paseo profile the run names (--profile / --review-profile), else
-  the Paseo profile "wl-executor" / "wl-reviewer". Nothing found is an error, and
-  so is a role with no --model or no --mode (--review-model / --review-mode).
+  config, then WORKLOOP_ROOT/launch.json ({"executor": {...}, "reviewer": {...}}).
+  Providers: dsh (--mode <permission preset>, --profile <dsh profile>, default
+  headless) and devin (--mode <permission mode>, --model). No provider, a setting
+  the CLI does not take, or a missing --mode is an error.
   import                               re-read the tickets directory (new/repair tickets)
   decisions                            commit ADR/glossary changes before the first dispatch
-  status [--live] [--json]             table + next steps; --live reconciles with Paseo and git
-  dispatch <NN> --prepare [--note t] [--note-file f] [--dry-run] [--profile ...]
-  patrol [--window 1] [--interval 15]    bounded diagnostic (window <= 60s)
-  watch                                fresh health check; renew/remove 55m heartbeat
-        [--heartbeat-id <id>]...        recover IDs from actual heartbeat receipts
-        [--clear-heartbeat-create --reason <evidence>]  reconcile a confirmed failed creation
-  action <NN>|final                   show pending MCP request; reconcile before calling
-  ack <NN>|final --receipt <file>|-    record the MCP response, bare or as {action, result};
-                                       - reads it from stdin and saves a copy under messages/
+  status [--live] [--json]             table + next steps; --live asks Rex about each agent
+  dispatch <NN> [--note t] [--note-file f] [--dry-run] [--provider ...]
+                                       worktree, brief, and the executor's first turn in a Rex tab
+  wait [--for 110]                     return when a running turn ends (or after the minutes);
+                                       run it as a background command, then end your turn
   freeze <NN>                          record the executor's commit as the candidate
   criteria <NN> --reason r             record the user's agreement to a change in its criteria
-  review <NN> --prepare [--again]      freeze if needed, prepare a reviewer; after a rework the
+  review <NN> [--again]                freeze if needed, start a reviewer; after a rework the
                                         brief adds the previous review and the change since it
-  send <NN> --prepare --text t | --file f | --merge-tip   message an idle executor
+  send <NN> --text t | --file f | --merge-tip   the idle executor's next turn, same conversation
        [--waive ID,ID --reason r]      a rework answers every blocking finding: name it, or waive it
        [--extra-round --reason r]      a rework round past the cap goes on, with the user's decision
   integrate <NN> [--override reason]   merge, then the checks and the regression set outside the run
-                                       lock; retain sessions/worktree; --override records the
+                                       lock; retain turns/worktree; --override records the
                                        blocking findings it lets through
   cleanup <NN>                         resume cleanup after finish, retro and evidence
   retry <NN> --reason r [--file handoff] [--new-worktree]
@@ -3135,28 +2922,27 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
   hold <NN> --reason r | unhold <NN>   park a task (waiting on the user, etc.)
   cancel <NN> --reason r
   note [<NN>] --text t
-  final-review --prepare [--again]     start an independent final reviewer at the integration
-                                       tip: new worktree, brief, and a guarded create_agent; after
+  final-review [--again]               start an independent final reviewer at the integration
+                                       tip: new worktree, brief, and its turn in a Rex tab; after
                                        a reported round the brief adds it and the change since
        [--extra-round --reason r]      a repair cycle past the cap goes on, with the user's decision
   final-review --waive ID,ID --reason r  record the final findings the user lets through
   finish                               run the checks and the regression set outside the run lock;
                                        only on the final reviewer's pass for the current tip
-  evidence                             save CLI transcripts and agent/attempt index
+  evidence                             index every agent's turns (prompts and CLI output)
   retro --file <report> | --skip --reason <why>   record findings or no-retro decision
   archive                              after finish and retro: snapshot, archive, clean up
 
-env: WORKLOOP_ROOT (default ~/.workloop) · WORKLOOP_RUN · PASEO_CLI (default "paseo")
-     PASEO_HOME (default ~/.paseo; its config.json holds the profiles)
-     PASEO_AGENT_ID (required for MCP preparation and watch) · PASEO_TIMEOUT_MS (30000)
-Use --prepare for agent-scoped MCP notifications; execute arguments and ack the receipt.`;
+env: WORKLOOP_ROOT (default ~/.workloop; launch.json holds the default launch settings)
+     WORKLOOP_RUN · REX_CLI (default: rex on PATH, else the CLI inside Rex Beta.app)
+Every turn is a headless process in a tab of the run's Rex session; \`wait\` reports when one ends.`;
 
 const OPTIONS = Object.fromEntries([
   ...["run", "repo", "feature", "base", "spec", "tickets", "max-executors", "max-reviewers", "profile", "provider", "model", "mode", "thinking",
     "review-profile", "review-provider", "review-model", "review-mode", "review-thinking", "note", "note-file", "text", "file", "override", "reason",
-    "window", "interval", "receipt", "check-timeout", "waive", "max-rework-rounds"].map((k) => [k, { type: "string" }]),
-  ...["check", "setup", "heartbeat-id", "clear-launch"].map((k) => [k, { type: "string", multiple: true }]),
-  ...["json", "live", "keep", "again", "merge-tip", "dry-run", "help", "prepare", "clear-heartbeat-create", "direct", "new-worktree", "skip", "extra-round"].map((k) => [k, { type: "boolean" }]),
+    "check-timeout", "waive", "max-rework-rounds", "for"].map((k) => [k, { type: "string" }]),
+  ...["check", "setup", "clear-launch"].map((k) => [k, { type: "string", multiple: true }]),
+  ...["json", "live", "keep", "again", "merge-tip", "dry-run", "help", "direct", "new-worktree", "skip", "extra-round"].map((k) => [k, { type: "boolean" }]),
 ]);
 
 export async function main(argv) {
@@ -3166,14 +2952,11 @@ export async function main(argv) {
   if (cmd === "init") return cmdInit(opts);
   if (cmd === "scratch") return cmdScratch(opts); // before resolveRunDir: a run need not exist, and --run is ignored
   const dir = resolveRunDir(opts.run);
-  const needId = ["dispatch", "freeze", "review", "send", "integrate", "cleanup", "retry", "hold", "unhold", "cancel", "action", "ack", "criteria"];
+  const needId = ["dispatch", "freeze", "review", "send", "integrate", "cleanup", "retry", "hold", "unhold", "cancel", "criteria"];
   if (needId.includes(cmd) && !id) fail(`${cmd} needs a ticket number`);
   if (cmd === "status") return printStatus(dir, loadState(dir), opts.live, opts.json);
-  if (cmd === "patrol") return cmdPatrol(dir, loadState(dir), opts);
-  if (cmd === "action") return cmdAction(loadState(dir), id);
+  if (cmd === "wait") return cmdWait(dir, opts);
   const handlers = {
-    ack: (s) => cmdAck(dir, s, id, opts),
-    watch: (s) => cmdWatch(dir, s, false, opts),
     config: (s) => cmdConfig(dir, s, opts),
     criteria: (s) => cmdCriteria(dir, s, id, opts),
     decisions: (s) => cmdDecisions(dir, s),
@@ -3198,29 +2981,11 @@ export async function main(argv) {
   if (!handlers[cmd]) fail(`unknown command "${cmd}"; see \`help\``);
   const result = withLock(dir, () => {
     const s = loadState(dir);
-    if (s.finishedAt && !["note", "watch", "retro", "archive", "evidence"].includes(cmd)) fail("this run is finished");
-    if (s.archiveStartedAt && !["note", "watch", "retro", "archive", "cleanup", "evidence"].includes(cmd)) fail("archive is in progress; resume archive before starting other work");
-    if (opts.prepare && (!process.env.PASEO_AGENT_ID || (s.orchestratorId && s.orchestratorId !== process.env.PASEO_AGENT_ID))) fail("MCP preparation needs PASEO_AGENT_ID matching the owning orchestrator");
-    if (opts.prepare) s.orchestratorId = process.env.PASEO_AGENT_ID;
+    if (s.finishedAt && !["note", "retro", "archive", "evidence"].includes(cmd)) fail("this run is finished");
+    if (s.archiveStartedAt && !["note", "retro", "archive", "cleanup", "evidence"].includes(cmd)) fail("archive is in progress; resume archive before starting other work");
     const refusal = checkPhaseRefusal(s, cmd, id);
     if (refusal) fail(refusal);
-    // `final` is not a ticket: it names the final review's own pending action.
-    if (id === "final" && !["action", "ack"].includes(cmd)) fail(`"final" is not a ticket number; use it with \`action final\` or \`ack final\``);
-    const t = needId.includes(cmd) && id !== "final" ? task(s, id) : null;
-    const pending = t?.pendingAction;
-    if (pending && !["ack", "note", "hold", "unhold"].includes(cmd)) {
-      if (opts.prepare && pending.kind === cmd) {
-        if (!s.heartbeat) cmdWatch(dir, s, true);
-        return printAction(t);
-      }
-      fail(`#${id}: pending MCP action ${pending.action}; reconcile with action/ack first`);
-    }
-    // The final review's request is guarded the same way: while it waits for its
-    // receipt, only the commands that can reconcile it (or record notes) run.
-    const finalPending = s.finalReview?.pendingAction;
-    if (finalPending && !["ack", "action", "watch", "note", "hold", "unhold"].includes(cmd)) {
-      fail(`the final review has pending MCP action ${finalPending.action}; reconcile with \`action final\` / \`ack final\` first`);
-    }
+    if (needId.includes(cmd)) task(s, id);
     return handlers[cmd](s);
   });
   // `integrate` and `finish` run their checks after the lock is released.
@@ -3237,7 +3002,7 @@ export function isMain(metaUrl) {
 
 if (isMain(import.meta.url)) {
   main(process.argv.slice(2)).catch((e) => {
-    if (!(e instanceof UserError) && !(e instanceof HeartbeatError) && e.code !== "ERR_PARSE_ARGS_UNKNOWN_OPTION") throw e;
+    if (!(e instanceof UserError) && !(e instanceof host.RexError) && e.code !== "ERR_PARSE_ARGS_UNKNOWN_OPTION") throw e;
     console.error(`workloop: ${e.message}`);
     process.exitCode = 1;
   });
