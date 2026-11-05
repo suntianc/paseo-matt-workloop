@@ -225,3 +225,21 @@ test("a turn that exits without a report names its log and the ways on", async (
   const out = (await w).out;
   assert.match(out, /turn ended: "#01 exec a1" \(exit 1, exit status 1\); it left no fresh report: read its output in .*turns\/.*-1\.log, then `send 01 --text <what to do>` to go on, or `retry 01 --reason <why>`/);
 });
+
+test("a dispatch Rex refused leaves the task running with its worktree, and the rerun adopts it", () => {
+  const sb = sandbox();
+  sb.env.FAKE_REX_FAIL = "window new";
+  sb.no(/rex window new failed .*fake failure of window new/, "dispatch", "01");
+  const t = sb.state().tasks["01"];
+  assert.equal(t.status, "running");
+  assert.equal(t.agentId, undefined, "no agent is recorded for a turn that never started");
+  assert.ok(existsSync(t.worktree));
+  delete sb.env.FAKE_REX_FAIL;
+  writeFileSync(join(t.worktree, "kept.txt"), "work in the tree survives\n");
+  assert.match(sb.ok("dispatch", "01"), /dispatched: .* in Rex tab "#01 exec a1"/);
+  const again = sb.state().tasks["01"];
+  assert.equal(again.worktree, t.worktree);
+  assert.equal(sb.g(sb.repo, "worktree", "list", "--porcelain").split("\n").filter((l) => l === `branch refs/heads/${t.branch}`).length, 1, "one worktree for the branch");
+  assert.equal(readFileSync(join(again.worktree, "kept.txt"), "utf8"), "work in the tree survives\n");
+  assert.equal(Object.keys(sb.state().agents).length, 1, "one agent");
+});
