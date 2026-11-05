@@ -1,4 +1,4 @@
-// End-to-end tests for workloop.mjs against real git and a fake paseo CLI.
+// End-to-end tests for workloop.mjs against real git and a fake rex CLI.
 // Run: node --test paseo-workloop/scripts/test/
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -11,7 +11,7 @@ import { acceptanceCommands, acceptanceCriteria, alive, citedBasis, decisionsRes
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "..", "workloop.mjs");
-const FAKE = join(HERE, "fake-paseo.mjs");
+const FAKE = join(HERE, "fake-rex.mjs");
 const CHECK = `node -e "process.exit(require('fs').existsSync('BROKEN') ? 1 : 0)"`;
 
 const TICKETS = {
@@ -20,10 +20,8 @@ const TICKETS = {
   "03-ui.md": "# 03: UI over OAuth2\n\n## What to build\n\nScreens.\n\n## Blocked by\n\n- 01 (schema)\n- [02: API](./02-api.md)\n",
 };
 
-const PROFILES = [
-  { id: "p1", name: "wl-executor", provider: "fake", model: "exec-model", modeId: "full", notes: "workloop executors" },
-  { id: "p2", name: "wl-reviewer", provider: "fake", model: "review-model", modeId: "full", thinkingOptionId: "high", notes: "workloop reviewers" },
-];
+// The defaults every run falls back to: <WORKLOOP_ROOT>/launch.json.
+const LAUNCH = { executor: { provider: "dsh", mode: "danger-full-access" }, reviewer: { provider: "devin", mode: "dangerous", model: "review-model" } };
 const slash = (p) => p.replace(/\\/g, "/");
 // A cleanup-failure message names the check's token and how to list the group's
 // processes to confirm it, and never prints a kill to run as is.
@@ -39,22 +37,21 @@ function findingsTable(findings, axis = "Standards") {
     ...findings.map((f) => `| ${f.id} | ${f.axis ?? axis} | ${f.location ?? "src/x.ts:1"} | ${f.basis ?? f.id + ": quoted"} | ${f.blocking ? "yes" : "no"} | fixed |`), ""].join("\n");
 }
 
-function sandbox({ tickets = TICKETS, init = [], profiles = PROFILES } = {}) {
+function sandbox({ tickets = TICKETS, init = [], launch = LAUNCH } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "workloop-test-")));
   const repo = join(root, "repo");
   writeFileSync(join(root, "gitconfig"), "");
   const env = {
-    ...process.env, WORKLOOP_ROOT: join(root, "wl"), PASEO_CLI: FAKE, FAKE_PASEO_DB: join(root, "paseo.json"), PASEO_AGENT_ID: "orchestrator",
-    FAKE_PASEO_HOME: join(root, "paseo"), PASEO_HOME: join(root, "paseo-home"), GIT_CONFIG_GLOBAL: join(root, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1",
+    ...process.env, WORKLOOP_ROOT: join(root, "wl"), REX_CLI: FAKE, FAKE_REX_DB: join(root, "rex.json"),
+    GIT_CONFIG_GLOBAL: join(root, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1",
     GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com",
   };
   delete env.WORKLOOP_RUN;
-  delete env.PASEO_HOST;
-  const setProfiles = (list) => {
-    mkdirSync(env.PASEO_HOME, { recursive: true });
-    writeFileSync(join(env.PASEO_HOME, "config.json"), JSON.stringify({ version: 1, daemon: { agentProfiles: list } }));
-  };
-  setProfiles(profiles);
+  delete env.FAKE_REX_FAIL;
+  mkdirSync(env.WORKLOOP_ROOT, { recursive: true });
+  const launchFile = join(env.WORKLOOP_ROOT, "launch.json");
+  const setLaunch = (l) => { if (l) writeFileSync(launchFile, JSON.stringify(l)); else rmSync(launchFile, { force: true }); };
+  setLaunch(launch);
   const g = (cwd, ...args) => {
     const r = spawnSync("git", ["-C", cwd, ...args], { env, encoding: "utf8" });
     assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
@@ -77,11 +74,33 @@ function sandbox({ tickets = TICKETS, init = [], profiles = PROFILES } = {}) {
   };
   const ok = (...args) => { const r = wl(...args); assert.equal(r.code, 0, r.out); return r.out; };
   const no = (pattern, ...args) => { const r = wl(...args); assert.notEqual(r.code, 0, r.out); assert.match(r.out, pattern); return r.out; };
-  const db = () => (existsSync(env.FAKE_PASEO_DB) ? JSON.parse(readFileSync(env.FAKE_PASEO_DB, "utf8")) : { n: 0, agents: [], workspaces: [], calls: [] });
-  const editDb = (fn) => { const d = db(); fn(d); writeFileSync(env.FAKE_PASEO_DB, JSON.stringify(d)); };
-  const agent = (id) => db().agents.find((a) => a.id === id);
-  const setAgent = (id, status) => editDb((d) => { d.agents.find((a) => a.id === id).status = status; });
+  const db = () => (existsSync(env.FAKE_REX_DB) ? JSON.parse(readFileSync(env.FAKE_REX_DB, "utf8")) : { n: 0, sessions: [], blocks: [], calls: [] });
+  const editDb = (fn) => { const d = db(); fn(d); writeFileSync(env.FAKE_REX_DB, JSON.stringify(d)); };
+  const block = (id) => db().blocks.find((b) => b.id === id);
   const state = () => JSON.parse(readFileSync(join(runDir, "state.json"), "utf8"));
+  const agent = (id) => state().agents[id];
+  const turn = (id) => state().agents[id].turns.at(-1);
+  // A turn ends: its tab's program exits, and its meta file says how, as agent-run
+  // writes it.
+  const endTurn = (agentId, { code = 0, session = `sess-${agentId}` } = {}) => {
+    const t = turn(agentId);
+    writeFileSync(`${t.base}.json`, JSON.stringify({ provider: "x", session, exitCode: code }));
+    editDb((d) => { d.blocks.find((b) => b.id === t.block).exit = code; });
+    return t;
+  };
+  // What Rex reports for an agent, as a status the run reads back.
+  const setAgent = (id, status) => {
+    const t = turn(id);
+    if (status === "running") {
+      writeFileSync(`${t.base}.json`, JSON.stringify({ provider: "x", session: `sess-${id}` }));
+      editDb((d) => { d.blocks.find((b) => b.id === t.block).exit = null; });
+    } else if (status === "closed") {
+      writeFileSync(`${t.base}.json`, JSON.stringify({ provider: "x", session: `sess-${id}` }));
+      editDb((d) => { const b = d.blocks.find((x) => x.id === t.block); if (b) b.closed = true; });
+    } else {
+      endTurn(id, { code: status === "idle" ? 0 : 1 });
+    }
+  };
   // Rewrite state as a run created before numbered criteria: no marker, no sets.
   function legacy() {
     const file = join(runDir, "state.json");
@@ -109,9 +128,9 @@ function sandbox({ tickets = TICKETS, init = [], profiles = PROFILES } = {}) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   };
-  const sb = { root, repo, env, nodeArgs, runDir, g, wl, ok, no, db, editDb, agent, setAgent, state, setProfiles, sleepCmd, start, waitFor, legacy };
+  const sb = { root, repo, env, nodeArgs, runDir, g, wl, ok, no, db, editDb, block, agent, turn, endTurn, setAgent, state, setLaunch, sleepCmd, start, waitFor, legacy };
 
-  // Executor finishes a round: edits files, commits, writes its report, goes idle.
+  // Executor finishes a round: edits files, commits, writes its report, ends its turn.
   sb.work = (id, { files = { [`f${id}.txt`]: `ticket ${id}\n` }, status = "done", commit = true } = {}) => {
     const t = state().tasks[id];
     for (const [f, c] of Object.entries(files)) {
@@ -120,18 +139,17 @@ function sandbox({ tickets = TICKETS, init = [], profiles = PROFILES } = {}) {
     }
     if (commit) { g(t.worktree, "add", "-A"); g(t.worktree, "commit", "-q", "-m", `work ${id}`); }
     writeFileSync(join(runDir, "reports", `${id}-${t.attempt}.md`), `Status: ${status}\nCommit: ${g(t.worktree, "rev-parse", "HEAD")}\n\n## Summary\nDid it.\n`);
-    // The turn is over: the worker is idle, and the last thing it did is write the
-    // report, so a send prepared before that finds no turn to start.
-    editDb((d) => Object.assign(d.agents.find((a) => a.id === t.agentId), { status: "idle", updatedAt: new Date().toISOString() }));
+    // The turn is over: its tab's program exits, and the report is the last thing it wrote.
+    return endTurn(t.agentId);
   };
   // A verdict, and a findings table when the review has findings.
   sb.reviewed = (id, verdict = "pass", findings = []) => {
     const t = state().tasks[id];
     assert.ok(t.review?.agentId, `#${id} has a recorded review to answer`);
     writeFileSync(t.review.path, `**Verdict:** ${verdict}\nCandidate: ${t.candidateSha}\n${findings.length ? findingsTable(findings) : ""}`);
-    setAgent(t.review.agentId, "idle");
+    return endTurn(t.review.agentId);
   };
-  sb.complete = (id, workOpts) => { deliver(sb, JSON.parse(ok("dispatch", id, "--prepare"))); sb.work(id, workOpts); deliver(sb, JSON.parse(ok("review", id, "--prepare"))); sb.reviewed(id); return ok("integrate", id); };
+  sb.complete = (id, workOpts) => { ok("dispatch", id); sb.work(id, workOpts); ok("review", id); sb.reviewed(id); return ok("integrate", id); };
   // A check that waits until `release()` creates its sentinel, outside every
   // worktree so the integration worktree stays clean.
   sb.heldCheck = () => {
@@ -184,9 +202,9 @@ function sandbox({ tickets = TICKETS, init = [], profiles = PROFILES } = {}) {
   };
   // #01 reviewed with a pass, #02 ready, and integrate's check held until release().
   sb.heldIntegrate = (held = sb.heldCheck()) => {
-    deliver(sb, JSON.parse(ok("dispatch", "01", "--prepare")));
+    ok("dispatch", "01");
     sb.work("01");
-    deliver(sb, JSON.parse(ok("review", "01", "--prepare")));
+    ok("review", "01");
     sb.reviewed("01");
     ok("config", "--check", held.cmd);
     return held.release;
@@ -204,28 +222,14 @@ function sandbox({ tickets = TICKETS, init = [], profiles = PROFILES } = {}) {
     writeFileSync(join(runDir, "final-review.md"),
       `Integration tip: ${tip}\n\n## Acceptance\n\n| Row | Spec item | Evidence on the integrated tree |\n|-----|-----------|---------------------------------|\n${body}\n`);
   };
-  // The external create_agent call and its receipt: an agent in the round's worktree.
-  sb.ackFinal = (action, { idle = true } = {}) => {
-    const id = `mcp-final-${db().n + 1}`;
-    editDb((d) => {
-      d.n++;
-      d.agents.push({ id, title: action.arguments.title, cwd: state().finalReview.worktree, labels: action.arguments.labels,
-        parentAgentId: env.PASEO_AGENT_ID, status: "running", archived: false, updatedAt: new Date().toISOString(),
-        prompts: [action.arguments.initialPrompt] });
-    });
-    const receipt = join(root, "receipt-final.json");
-    writeFileSync(receipt, JSON.stringify({ action: action.action, result: { agentId: id, status: "running" } }));
-    ok("ack", "final", "--receipt", receipt);
-    if (idle) setAgent(id, "idle");
-    return state().finalReview;
-  };
   // A whole final review round, the way the orchestrator runs it: the mapping, the
-  // prepared action, the external create_agent, its receipt, then the report.
+  // round started in its own Rex tab, and its report before the turn ends.
   sb.finalReview = ({ verdict = "pass", findings = [], tip = state().integration.tip, rows = ["M1"], again = false, report = true, idle = true } = {}) => {
     sb.finalMapping(tip, rows);
-    const action = JSON.parse(ok("final-review", "--prepare", ...(again ? ["--again"] : [])));
-    const round = sb.ackFinal(action, { idle });
+    ok("final-review", ...(again ? ["--again"] : []));
+    const round = state().finalReview;
     if (report) writeFileSync(round.path, `Verdict: ${verdict}\nIntegration tip: ${tip}\n${findings.length ? findingsTable(findings, "Cross-ticket") : ""}`);
+    if (idle) endTurn(round.agentId);
     return round;
   };
   // The mapping, a passing final reviewer and its report: what finish waits for.
@@ -238,7 +242,7 @@ function sandbox({ tickets = TICKETS, init = [], profiles = PROFILES } = {}) {
 }
 
 // Inject failures at the actual CLI spawn boundary, without changing real Git
-// or allowing the fault to leak into the fake Paseo subprocess.
+// or allowing the fault to leak into the fake rex subprocess.
 function failGitSpawns(sb, { failures = 2, code = "EBUSY", status = null, pid = 0 } = {}) {
   const preload = join(sb.root, "git-spawn-fault.cjs");
   const log = join(sb.root, "git-spawns.jsonl");
@@ -428,25 +432,25 @@ test("criteria: dispatch, freeze and integrate refuse a changed set, naming the 
   };
   // A reworded criterion, an added ID, a removed ID and a changed command all count.
   writeFileSync(two, twoTicket("- [ ] AC1: three, reworded — check: `node --version`\n- [ ] AC2: four — manual: a reviewer reads it\n"));
-  refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02", "--prepare"), "02", "AC1");
+  refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02"), "02", "AC1");
   writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node --version`\n"));
-  refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02", "--prepare"), "02", "AC2");
+  refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02"), "02", "AC2");
   writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node --version`\n- [ ] AC2: four — manual: a reviewer reads it\n- [ ] AC3: new — manual: a reviewer reads it\n"));
-  refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02", "--prepare"), "02", "AC3");
+  refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02"), "02", "AC3");
   writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node -e \"0\"`\n- [ ] AC2: four — manual: a reviewer reads it\n"));
-  refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02", "--prepare"), "02", "AC1");
+  refused(sb.no(/#02: its acceptance criteria changed/, "dispatch", "02"), "02", "AC1");
   writeFileSync(two, twoTicket("- [ ] AC1: three — check: `node --version`\n- [ ] AC2: four — manual: a reviewer reads it\n"));
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "02");
 
   // freeze, reached through `review`.
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
   const one = join(sb.runDir, "issues", "01-a.md");
   writeFileSync(one, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node -e \"0\"`\n- [ ] AC2: two — manual: a reviewer reads it\n");
-  refused(sb.no(/#01: its acceptance criteria changed/, "review", "01", "--prepare"), "01", "AC1");
+  refused(sb.no(/#01: its acceptance criteria changed/, "review", "01"), "01", "AC1");
   assert.equal(sb.state().tasks["01"].status, "running", "a refused freeze leaves the task running");
   sb.ok("criteria", "01", "--reason", "the user chose the cheaper command");
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
 
   // integrate.
@@ -459,7 +463,7 @@ test("criteria: dispatch, freeze and integrate refuse a changed set, naming the 
 
 test("criteria: criteria records the new set only after the user's agreement, and finish lists every change", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node --version`\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   const file = join(sb.runDir, "issues", "01-a.md");
   writeFileSync(file, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one, reworded — check: `node --version`\n");
   sb.no(/^workloop: criteria needs --reason/, "criteria", "01");
@@ -474,7 +478,7 @@ test("criteria: criteria records the new set only after the user's agreement, an
   assert.equal(sb.state().criteriaChanges.length, 1);
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   sb.finalPass();
@@ -489,12 +493,12 @@ test("criteria: a run whose state predates numbered criteria reads tickets as be
   writeFileSync(join(sb.runDir, "issues", "04-d.md"), "# 04: D\n\nBlocked by: None\n\n- [ ] works — check: `node --version`\n");
   assert.match(sb.ok("import"), /added #04 D/);
   assert.equal(sb.state().tasks["04"].criteria, undefined);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   assert.equal(sb.state().tasks["01"].criteria, undefined);
   assert.match(sb.no(/^workloop: this run predates numbered acceptance criteria/, "criteria", "01"), /reads its tickets as before/);
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   for (const id of ["02", "03", "04"]) sb.ok("cancel", id, "--reason", "not needed");
@@ -509,9 +513,9 @@ test("criteria: an older run keeps the whole criterion text, AC prefix and all",
     "# 01: Schema\n\n**Blocked by:** None\n\n- [ ] AC1: first — check: `node --version`\n- [ ] second, un-numbered — check: `node --version`\n");
   sb.ok("import");
   assert.equal(sb.state().tasks["01"].criteria, undefined, "an older run records no confirmed set");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   const acceptance = [
@@ -526,10 +530,10 @@ test("criteria: integrate re-checks the confirmed criteria after its checks and 
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node --version`\n" } });
   const held = sb.heldCheck();
   sb.ok("config", "--check", held.cmd);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   const tip = sb.state().integration.tip;
   const run = sb.start("integrate", "01");
@@ -589,331 +593,6 @@ test("waiver: the findings table is read by header name, and a row is blocking w
   assert.deepEqual(parseFindings("| ID | Axis | Basis | Blocking |\n|---|---|---|---|\n"), []);
 });
 
-// The turn these tests model starts a moment after the action was prepared, so the
-// fake daemon files the agent's start under the ticket's receipt file.
-const ACTION_START_LAG_MS = 2000;
-
-// The ticket a prepared action belongs to: the task holding it as its pending action,
-// or, once acknowledged, the task that recorded it last (a repeated ack is harmless).
-const ticketOf = (sb, action) => Object.values(sb.state().tasks)
-  .find((t) => t.pendingAction?.action === action.action || t.lastAction === action.action)?.id;
-
-// Simulate the external MCP call and acknowledge its receipt; the workloop itself
-// must not start or message a worker.
-function deliver(sb, action, result, id = ticketOf(sb, action)) {
-  if (action.tool === "create_agent" && !result) {
-    const agentId = `mcp-${sb.db().n + 1}`;
-    sb.editDb((d) => {
-      d.n++;
-      d.agents.push({ id: agentId, title: action.arguments.title, cwd: sb.state().tasks[id].worktree,
-        labels: action.arguments.labels, parentAgentId: sb.env.PASEO_AGENT_ID, status: "running", archived: false, updatedAt: new Date().toISOString(),
-        prompts: [action.arguments.initialPrompt] });
-    });
-    result = { agentId, status: "running" };
-  }
-  if (action.tool === "send_agent_prompt") {
-    // A turn starts only on an idle worker, and only if it began after the worker's
-    // last activity; then the worker is running again, as Paseo reports it. Otherwise
-    // the daemon answers without a turn, which the workloop refuses to record.
-    const a = sb.agent(action.arguments.agentId);
-    if (a.status === "idle" && Date.parse(action.preparedAt) >= Date.parse(a.updatedAt)) {
-      const started = new Date(Date.parse(action.preparedAt) + ACTION_START_LAG_MS).toISOString();
-      sb.editDb((d) => {
-        const g = d.agents.find((x) => x.id === a.id);
-        Object.assign(g, { status: "running", updatedAt: started, prompts: [...(g.prompts || []), action.arguments.prompt] });
-      });
-      result = { success: true, disposition: "turn_started", status: "running" };
-    }
-  }
-  return sb.ok("ack", id, "--receipt", receiptFile(sb, action, result, id));
-}
-
-// A receipt for a prepared action, without acknowledging it.
-function receiptFile(sb, action, result, id = ticketOf(sb, action)) {
-  const receipt = join(sb.root, `receipt-${id}.json`);
-  writeFileSync(receipt, JSON.stringify({ action: action.action, result }));
-  return receipt;
-}
-
-test("MCP dispatch/review/rework keeps guards and registers asynchronous receipts", () => {
-  const sb = sandbox();
-  let action = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
-  assert.equal(action.tool, "create_agent");
-  assert.equal(action.arguments.notifyOnFinish, true);
-  assert.equal(action.arguments.provider, "fake/exec-model");
-  assert.equal(action.arguments.settings.modeId, "full");
-  assert.ok(action.arguments.workspaceId);
-  assert.ok(sb.db().calls.some((c) => c[0] === "workspace" && c[1] === "create"));
-  assert.equal(sb.db().agents.length, 0);
-  assert.equal(sb.db().heartbeats.length, 1);
-  assert.deepEqual(JSON.parse(sb.ok("action", "01")), action);
-  deliver(sb, action);
-  assert.ok(sb.state().tasks["01"].agentId);
-  sb.no(/running with agent/, "dispatch", "01", "--prepare");
-  sb.work("01");
-
-  action = JSON.parse(sb.ok("review", "01", "--prepare"));
-  assert.equal(action.arguments.settings.thinkingOptionId, "high");
-  deliver(sb, action);
-  sb.reviewed("01", "changes_requested");
-  action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix finding S1"));
-  assert.equal(action.tool, "send_agent_prompt");
-  assert.equal(action.arguments.notifyOnFinish, true);
-  assert.equal(sb.state().tasks["01"].status, "in_review");
-  deliver(sb, action);
-  assert.equal(sb.state().tasks["01"].status, "running");
-  assert.equal(sb.state().tasks["01"].rounds, 1);
-  sb.ok("ack", "01", "--receipt", join(sb.root, "receipt-01.json"));
-  assert.equal(sb.state().tasks["01"].rounds, 1);
-  assert.equal(sb.db().calls.filter((c) => c[0] === "agent" && ["run", "send"].includes(c[1])).length, 0);
-  sb.work("01", { files: { "f01.txt": "reworked after S1\n" } });
-  action = JSON.parse(sb.ok("review", "01", "--prepare"));
-  deliver(sb, action);
-  sb.reviewed("01");
-  sb.ok("integrate", "01");
-  assert.equal(sb.state().tasks["01"].status, "done");
-});
-
-test("dispatch, review and send refuse without --prepare, change nothing, and a dispatch dry run still only prints", () => {
-  const sb = sandbox();
-  const before = sb.state();
-  for (const cmd of ["dispatch", "review", "send"]) {
-    const out = sb.no(new RegExp(`^workloop: ${cmd}( 01)? needs --prepare`), cmd, "01", ...(cmd === "send" ? ["--text", "hello"] : []));
-    assert.match(out, /--prepare/);
-  }
-  // A ticket that cannot be sent to yet is refused for the same reason, not another.
-  sb.no(/^workloop: send needs --prepare/, "send", "01", "--merge-tip");
-  assert.deepEqual(sb.state(), before, "a refusal writes nothing");
-  assert.equal(sb.db().calls.filter((c) => c[0] === "workspace" || c[0] === "worktree").length, 0, "no worktree is made");
-
-  // The dry run stays a dry run: the brief, the plan, and nothing written.
-  const out = sb.ok("dispatch", "01", "--dry-run");
-  assert.match(out, /dry run: would create branch wl-feat-01-a1/);
-  assert.doesNotMatch(out, /--prepare/);
-  assert.deepEqual(sb.state(), before);
-  assert.equal(sb.db().calls.filter((c) => c[0] === "workspace").length, 0);
-  assert.equal(existsSync(join(sb.runDir, "briefs", "01-a1.md")), false);
-});
-
-test("pending MCP action survives interruption and rejects unrelated receipts", () => {
-  const sb = sandbox();
-  const action = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
-  assert.deepEqual(JSON.parse(sb.ok("dispatch", "01", "--prepare")), action);
-  sb.no(/pending MCP action/, "retry", "01", "--reason", "do not duplicate");
-  const receipt = join(sb.root, "bad.json");
-  writeFileSync(receipt, JSON.stringify({ action: "wrong", result: { agentId: "other" } }));
-  sb.no(/action.*match/, "ack", "01", "--receipt", receipt);
-  assert.equal(sb.state().tasks["01"].pendingAction.action, action.action);
-  deliver(sb, action, { isError: true, content: [{ type: "text", text: "provider rejected request" }] });
-  assert.equal(sb.state().tasks["01"].pendingAction, null);
-  assert.equal(sb.db().agents.length, 0);
-  assert.match(sb.ok("watch"), /no executor recorded/);
-  assert.equal(sb.db().heartbeats.length, 1);
-});
-
-test("watch checks fresh activity, maintains one heartbeat, and stops when workers stop", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  assert.match(sb.ok("watch"), /保温心跳/);
-  assert.equal(sb.db().heartbeats.length, 1);
-  sb.ok("watch");
-  assert.equal(sb.db().heartbeats.length, 1);
-  sb.editDb((d) => { d.agents[0].updatedAt = new Date(Date.now() - 46 * 60000).toISOString(); });
-  assert.match(sb.ok("watch"), /异常.*46m/);
-  sb.editDb((d) => { d.agents[0].updatedAt = new Date().toISOString(); d.agents[0].pending = [{ id: "permission" }]; });
-  assert.match(sb.ok("watch"), /permission/);
-  sb.editDb((d) => { d.agents[0].pending = []; });
-  sb.work("01");
-
-  assert.match(sb.ok("watch"), /待处理/);
-  assert.equal(sb.db().heartbeats.length, 0);
-});
-
-test("watch removes hidden heartbeat IDs on renewal and shutdown", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.ok("watch");
-  const first = sb.state().heartbeat.id;
-  sb.ok("watch");
-  assert.equal(sb.db().heartbeats.length, 1, "schedule ls hides heartbeats: renewal must still delete the previous ID");
-  assert.notEqual(sb.state().heartbeat.id, first);
-  assert.ok(sb.db().calls.some((c) => c[0] === "heartbeat" && c[1] === "delete" && c[2] === first));
-  sb.work("01");
-  sb.ok("watch");
-  assert.deepEqual(sb.db().heartbeats, [], "all known heartbeat IDs must be deleted before claiming removal");
-});
-
-test("watch retains both IDs on delete failure and does not accumulate more heartbeats", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.ok("watch");
-  const old = sb.state().heartbeat.id;
-  sb.editDb((d) => { d.failOnce = "heartbeat delete"; });
-  sb.no(/injected failure/, "watch");
-  assert.equal(sb.db().heartbeats.length, 2);
-  assert.ok(sb.state().heartbeatLedger.ids.some((h) => h.id === old));
-  sb.editDb((d) => { d.failOnce = "heartbeat delete"; });
-  sb.no(/injected failure/, "watch");
-  assert.equal(sb.db().heartbeats.length, 2, "a failed cleanup must block another creation");
-  sb.work("01");
-  sb.ok("watch");
-  assert.deepEqual(sb.db().heartbeats, []);
-  assert.deepEqual(sb.state().heartbeatLedger.ids, []);
-});
-
-test("watch recovers a created heartbeat after a lost receipt without creating another", () => {
-  // The ticket's dispatch armed the run's first heartbeat; the one under test is
-  // the second watch creates for a live worker, whose receipt is lost.
-  const sb = sandbox();
-  sb.ok("dispatch", "01", "--prepare");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.ok("watch");
-  assert.equal(sb.db().heartbeats.length, 1);
-  const id = sb.db().heartbeats[0].id;
-  // The next renewal carries a new name, so it creates another and loses that receipt.
-  sb.editDb((d) => { d.loseCreateReplyOnce = true; });
-  sb.no(/lost the receipt/, "watch");
-  assert.ok(sb.state().heartbeatLedger.pendingCreate);
-  assert.equal(sb.db().heartbeats.length, 2);
-  const renewed = sb.db().heartbeats[1];
-  sb.ok("watch");
-  // The store names the creation whose receipt was lost: its ID is taken from there.
-  assert.equal(sb.state().heartbeat.id, renewed.id);
-  assert.equal(sb.state().heartbeatLedger.pendingCreate, null);
-  sb.work("01");
-  sb.ok("watch");
-  assert.deepEqual(sb.db().heartbeats, []);
-});
-
-test("watch keeps ambiguous remote creation pending until an explicit receipt ID is supplied", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.ok("watch");
-  // On a remote host the daemon's store is not read, so the lost receipt stays
-  // ambiguous until its ID is supplied.
-  sb.env.PASEO_HOST = "remote-host:6767";
-  sb.editDb((d) => { d.loseCreateReplyOnce = true; });
-  sb.no(/lost the receipt/, "watch");
-  sb.no(/pending heartbeat creation/, "watch");
-  assert.equal(sb.db().heartbeats.length, 2);
-  sb.work("01");
-  // The ID the user recovered from the daemon: named here by the store file the fake wrote.
-  const id = sb.db().heartbeats[1].id;
-  sb.ok("watch", "--heartbeat-id", id);
-  assert.deepEqual(sb.db().heartbeats, []);
-});
-
-test("watch confirms already deleted IDs after a lost delete receipt", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.ok("watch");
-  sb.work("01");
-  sb.editDb((d) => { d.loseDeleteReplyOnce = true; });
-  sb.no(/lost the receipt/, "watch");
-  assert.equal(sb.state().heartbeatLedger.ids.length, 1);
-  assert.equal(sb.db().heartbeats.length, 0);
-  sb.ok("watch");
-  assert.deepEqual(sb.state().heartbeatLedger.ids, []);
-  assert.ok(readFileSync(join(sb.runDir, "events.jsonl"), "utf8").split("\n").filter(Boolean)
-    .map((line) => JSON.parse(line)).some((e) => e.kind === "heartbeat-deleted" && e.confirmedAbsent === true));
-});
-
-test("watch migrates earlier heartbeat IDs from its audit log even on a remote host", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  const state = sb.state();
-  state.orchestratorId = sb.env.PASEO_AGENT_ID;
-  state.heartbeat = { id: "legacy_2", owner: sb.env.PASEO_AGENT_ID };
-  delete state.heartbeatLedger; // an older (script's) record, before the ledger existed
-  writeFileSync(join(sb.runDir, "state.json"), JSON.stringify(state));
-  const events = join(sb.runDir, "events.jsonl");
-  writeFileSync(events, readFileSync(events, "utf8") + ["legacy_1", "legacy_2"].map((id) => JSON.stringify({ kind: "watch", heartbeat: { id, owner: sb.env.PASEO_AGENT_ID } }) + "\n").join(""));
-  sb.editDb((d) => { d.heartbeats = ["legacy_1", "legacy_2"].map((id) => ({ id, target: { type: "agent", agentId: sb.env.PASEO_AGENT_ID } })); });
-  sb.env.PASEO_HOST = "remote-host:6767";
-  sb.work("01");
-  sb.ok("watch");
-  assert.deepEqual(sb.db().heartbeats, []);
-  assert.deepEqual(sb.state().heartbeatLedger.ids, []);
-});
-
-test("watch discovers legacy local heartbeats without a saved receipt and preserves unrelated records", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  const before = sb.state();
-  delete before.heartbeatLedger; // an older (script's) record, before the ledger existed
-  writeFileSync(join(sb.runDir, "state.json"), JSON.stringify(before));
-  const records = [
-    { id: "old_orphan", name: `workloop:repo-feat:${sb.env.PASEO_AGENT_ID}`, target: { type: "agent", agentId: sb.env.PASEO_AGENT_ID } },
-    { id: "unrelated", name: "keepwarm", target: { type: "agent", agentId: sb.env.PASEO_AGENT_ID } },
-  ];
-  const store = join(sb.env.PASEO_HOME, "schedules");
-  mkdirSync(store, { recursive: true });
-  for (const h of records) writeFileSync(join(store, `${h.id}.json`), JSON.stringify(h));
-  sb.editDb((d) => { d.heartbeats = records; });
-  sb.work("01");
-  sb.ok("watch");
-  assert.deepEqual(sb.db().heartbeats.map((h) => h.id), ["unrelated"]);
-});
-
-test("Stop hook cleans ledger-only heartbeat records after the run finished", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.ok("watch");
-  sb.work("01");
-
-  const state = sb.state();
-  state.heartbeat = null;
-  state.finishedAt = new Date().toISOString();
-  writeFileSync(join(sb.runDir, "state.json"), JSON.stringify(state));
-  const r = spawnSync(process.execPath, [join(HERE, "..", "stop-hook.mjs")], { env: sb.env, encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(sb.db().heartbeats, []);
-  assert.deepEqual(sb.state().heartbeatLedger.ids, []);
-});
-
-test("patrol deadline bounds a blocked inspect without changing task state", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  const before = sb.state();
-  sb.env.FAKE_PASEO_DELAY_COMMAND = "agent inspect";
-  sb.env.FAKE_PASEO_DELAY_MS = "3000";
-  const started = Date.now();
-  sb.no(/timed out/, "patrol", "--window", "0.2", "--interval", "0.05");
-  assert.ok(Date.now() - started < 2000);
-  assert.deepEqual(sb.state(), before);
-});
-
-test("MCP acknowledgements reject wrong workers and preserve selected profile features", () => {
-  const sb = sandbox({ profiles: PROFILES.map((p) => ({ ...p, featureValues: { fast_mode: true } })) });
-  const action = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
-  assert.deepEqual(action.arguments.settings.features, { fast_mode: true });
-  const receipt = join(sb.root, "receipt.json");
-  writeFileSync(receipt, JSON.stringify({ action: action.action, result: { agentId: "unrelated" } }));
-  sb.no(/does not match/, "ack", "01", "--receipt", receipt);
-  assert.equal(sb.state().tasks["01"].agentId, undefined);
-  assert.equal(sb.state().tasks["01"].pendingAction.action, action.action);
-});
-
-test("watch and Stop hook preserve unrelated heartbeats and other orchestrators", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.editDb((d) => { d.heartbeats = [{ id: "unrelated", name: "keepwarm", status: "active", target: { agentId: "orchestrator" } }]; });
-  sb.ok("watch");
-  const hook = join(HERE, "..", "stop-hook.mjs");
-  let r = spawnSync(process.execPath, [hook], { env: sb.env, encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  assert.ok(sb.db().heartbeats.some((h) => h.id === "unrelated"));
-  assert.equal(sb.db().heartbeats.length, 2);
-  const before = sb.db();
-  r = spawnSync(process.execPath, [hook], { env: { ...sb.env, PASEO_AGENT_ID: "other" }, encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(sb.db(), before);
-  sb.setAgent(sb.state().tasks["01"].agentId, "idle");
-  r = spawnSync(process.execPath, [hook], { env: sb.env, encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(sb.db().heartbeats.map((h) => h.id), ["unrelated"]);
-});
-
 test("the repair-ticket template is refused until its blockers are filled in, then parses", () => {
   const text = readFileSync(join(HERE, "..", "..", "templates", "repair-ticket.md"), "utf8");
   assert.throws(() => parseTicket("/x/04-fix-a.md", text), /names no ticket numbers/);
@@ -946,7 +625,7 @@ test("header tolerates markdown emphasis; winQuote is safe for cmd.exe", () => {
   assert.equal(header("x\nStatus: done\n", "Status"), "done");
   assert.equal(winQuote("--json"), "--json");
   assert.equal(winQuote("task=01"), '"task=01"');
-  assert.equal(winQuote("C:/Program Files/paseo.cmd"), '"C:/Program Files/paseo.cmd"');
+  assert.equal(winQuote("C:/Program Files/rex.cmd"), '"C:/Program Files/rex.cmd"');
   assert.throws(() => winQuote('say "hi"'));
   assert.throws(() => winQuote("100%"));
 });
@@ -1028,314 +707,190 @@ test("init refuses a blocking cycle or failing base checks and keeps nothing", (
   }
 });
 
-test("dispatch branches off the integration branch, verifies HEAD, writes the brief, prepares a labelled launch", () => {
+test("dispatch branches off the integration branch, verifies HEAD, writes the brief, and starts the executor's turn in a Rex tab", () => {
   const sb = sandbox();
-  sb.no(/blocked by #01 \(ready\)/, "dispatch", "02", "--prepare");
-  const action = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
+  sb.no(/blocked by #01 \(ready\)/, "dispatch", "02");
+  const out = sb.ok("dispatch", "01");
   const t = sb.state().tasks["01"];
-  const create = sb.db().calls.find((c) => c[0] === "workspace" && c[1] === "create");
-  assert.deepEqual(create.slice(create.indexOf("--base"), create.indexOf("--base") + 2), ["--base", "workloop/feat"]);
   assert.equal(t.status, "running");
   assert.equal(t.branch, "wl-feat-01-a1");
   assert.equal(sb.g(t.worktree, "rev-parse", "HEAD"), sb.state().integration.tip);
-  // The launch is a prepared request, not a started agent: its labels, worktree and
-  // one-line prompt are what `ack` checks the created agent against.
-  const { labels, workspaceId, initialPrompt } = action.arguments;
-  assert.equal(action.tool, "create_agent");
-  assert.deepEqual(labels, { workloop: "repo-feat", task: "01", attempt: "a1", role: "executor", action: action.action });
-  // paseo answers with backslashes on Windows; the run records the forward-slash spelling.
-  assert.equal(slash(sb.db().workspaces.find((w) => w.workspaceId === workspaceId).cwd), t.worktree);
-  assert.equal(sb.db().agents.length, 0);
-  assert.doesNotMatch(initialPrompt, /\n/);
+  assert.match(out, /#01 dispatched: dsh mode=danger-full-access ← .*launch\.json in Rex tab "#01 exec a1"/);
+  // The board is the run's Rex session, and the turn is a tab running agent-run.mjs
+  // with the launch settings, in the ticket's worktree.
+  const a = sb.state().agents[t.agentId];
+  assert.equal(a.role, "executor");
+  const tab = sb.block(a.turns[0].block);
+  assert.equal(tab.session, sb.state().rex.session);
+  assert.equal(tab.cwd, t.worktree);
+  assert.ok(tab.keepOpen, "the tab stays open after the turn, so its output can be read");
+  assert.match(tab.argv.join(" "), /agent-run\.mjs .*turns\/.*-1\.spec\.json$/);
+  const spec = JSON.parse(readFileSync(tab.argv.at(-1), "utf8"));
+  assert.deepEqual([spec.provider, spec.settings, spec.session], ["dsh", { mode: "danger-full-access" }, null]);
+  assert.equal(spec.cwd, t.worktree);
+  assert.match(readFileSync(spec.prompt, "utf8"), /Read the task brief at .*briefs\/01-a1\.md/);
   const brief = readFileSync(join(sb.runDir, "briefs", "01-a1.md"), "utf8");
-  assert.ok(initialPrompt.includes(slash(join(sb.runDir, "briefs", "01-a1.md"))));
   assert.doesNotMatch(brief, /\{\{/);
   // The ticket path comes from git's --show-toplevel plus the run directory, which on Windows expands a short %TEMP% name (ADMINI~1) that sb.repo keeps.
   assert.match(slash(t.file), /\/wl\/repo\/feat\/issues\/01-schema\.md$/);
   assert.ok(brief.includes(t.worktree) && brief.includes(slash(join(sb.runDir, "reports", "01-a1.md"))) && brief.includes(slash(t.file)));
-  deliver(sb, action);
-  sb.no(/running with agent/, "dispatch", "01", "--prepare");
+  sb.no(/running with agent/, "dispatch", "01");
 });
 
-test("launch settings come from the wl-<role> profiles; the run and flags override single fields", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n", "02-b.md": "# 02: B\n\nBlocked by: None\n" } });
-  let out = sb.ok("status");
-  assert.match(out, /executor fake model=exec-model mode=full ← profile "wl-executor"/);
-  assert.match(out, /reviewer fake model=review-model mode=full thinking=high ← profile "wl-reviewer"/);
-
-  let action = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
-  assert.equal(action.arguments.provider, "fake/exec-model");
-  assert.equal(action.arguments.settings.modeId, "full");
-  assert.equal(action.arguments.settings.thinkingOptionId, undefined);
-  assert.equal(action.launch, 'fake model=exec-model mode=full ← profile "wl-executor"');
-  assert.match(readFileSync(join(sb.runDir, "events.jsonl"), "utf8"), /"kind":"prepare".*"tool":"create_agent"/);
-
-  // A flag on one command overrides that field and keeps the rest of the profile.
-  action = JSON.parse(sb.ok("dispatch", "02", "--prepare", "--model", "other"));
-  assert.equal(action.arguments.provider, "fake/other");
-  assert.equal(action.arguments.settings.modeId, "full");
-  assert.equal(action.launch, 'fake model=other mode=full ← profile "wl-executor" + model from the run');
-
-  // The run can name any existing profile (case-insensitive), and a prepared request
-  // keeps the profile's features: nothing warns that they are lost.
-  sb.setProfiles([...PROFILES, { id: "p3", name: "Deep Review", provider: "fake", model: "deep", modeId: "full", featureValues: { fast_mode: true } }]);
-  sb.ok("config", "--review-profile", "deep review");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.work("01");
-  out = sb.ok("review", "01", "--prepare");
-  assert.doesNotMatch(out, /warning/);
-  const review = JSON.parse(out);
-  assert.equal(review.arguments.provider, "fake/deep");
-  assert.deepEqual(review.arguments.settings.features, { fast_mode: true });
-  assert.match(review.launch, /profile "Deep Review"/);
-});
-
-test("without usable launch settings nothing is created, and the message says to tell the user", () => {
-  const sb = sandbox({ init: null, profiles: [] });
-  let out = sb.no(/executor: no launch settings: no Paseo profile "wl-executor".*\n {2}\(no profiles in .*config\.json\)\n.*Tell the user/, "init", "--feature", "feat", "--repo", sb.repo);
-  assert.doesNotMatch(out, /reviewer/); // stops at the first role
-  assert.equal(spawnSync("git", ["-C", sb.repo, "show-ref", "--verify", "--quiet", "refs/heads/workloop/feat"]).status, 1);
-  assert.equal(existsSync(join(sb.runDir, "state.json")), false);
-  sb.setProfiles(PROFILES);
-  out = sb.no(/reviewer: the run names Paseo profile "nope", which does not exist\. Profiles:\n {2}- "wl-executor" \(fake\/exec-model\): workloop executors/, "init", "--feature", "feat", "--repo", sb.repo, "--review-profile", "nope");
-  sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
-
-  // A provider Paseo can't run stops the dispatch before the worktree is made.
-  sb.setProfiles([{ ...PROFILES[0], provider: "down" }, PROFILES[1]]);
-  sb.no(/executor: provider "down" \(profile "wl-executor"\) is unavailable in Paseo\. Tell the user/, "dispatch", "01", "--prepare");
-  assert.equal(sb.state().tasks["01"].status, "ready");
-  assert.equal(sb.db().calls.filter((c) => c[0] === "worktree").length, 0);
-
-  // A profile deleted mid-run shows in status and stops the launch before the candidate is frozen.
-  sb.setProfiles([PROFILES[0]]);
-  assert.match(sb.ok("status"), /reviewer UNRESOLVED: no launch settings: .*--review-provider\. \(`config` lists the profiles; tell the user\)/);
-  assert.match(sb.ok("config"), /reviewer UNRESOLVED: no launch settings: .*\n {2}- "wl-executor" .*\nCreate "wl-reviewer" in Paseo/);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.work("01");
-
-  sb.no(/reviewer: no launch settings/, "review", "01", "--prepare");
-  assert.equal(sb.state().tasks["01"].status, "running");
-});
-
-test("init refuses a role with no model before the branch exists, naming the role and its flag", () => {
-  const noModel = sandbox({ init: null, profiles: [{ ...PROFILES[0], model: undefined }, PROFILES[1]] });
-  let out = noModel.no(/executor: .*no model.*--model/s, "init", "--feature", "feat", "--repo", noModel.repo);
-  assert.match(out, /profile "wl-executor"/); // says where the settings came from
-  assert.match(out, /Tell the user; don't choose for them/);
-  assert.equal(spawnSync("git", ["-C", noModel.repo, "show-ref", "--verify", "--quiet", "refs/heads/workloop/feat"]).status, 1);
-  assert.equal(existsSync(join(noModel.runDir, "state.json")), false);
-
-  // The reviewer's flag is --review-model: the message must name the one that fixes it.
-  const noReviewModel = sandbox({ init: null, profiles: [PROFILES[0], { ...PROFILES[1], model: undefined }] });
-  out = noReviewModel.no(/reviewer: .*no model.*--review-model/s, "init", "--feature", "feat", "--repo", noReviewModel.repo);
-  assert.doesNotMatch(out, /executor: .*no model/); // the executor resolved, so it is not complained about
-  assert.equal(existsSync(join(noReviewModel.runDir, "state.json")), false);
+test("a dispatch dry run prints the plan and writes nothing", () => {
+  const sb = sandbox();
+  const before = sb.state();
+  const out = sb.ok("dispatch", "01", "--dry-run");
+  assert.match(out, /dry run: would create branch wl-feat-01-a1/);
+  assert.match(out, /would create branch wl-feat-01-a1 from workloop\/feat at [0-9a-f]{8} and start an executor: dsh mode=danger-full-access/);
+  assert.doesNotMatch(out, /Rex tab/);
+  assert.deepEqual(sb.state(), before, "a dry run records nothing");
+  assert.equal(sb.db().calls.some((c) => c[0] === "window" && c[1] === "new"), false, "no tab is opened");
+  assert.equal(existsSync(join(sb.runDir, "briefs", "01-a1.md")), false);
+  assert.equal(existsSync(join(sb.runDir, "worktrees")), false, "no worktree is made");
 });
 
 test("init refuses a role with no mode before the branch exists, naming the role and its flag", () => {
-  const noMode = sandbox({ init: null, profiles: [{ ...PROFILES[0], modeId: undefined }, PROFILES[1]] });
-  let out = noMode.no(/executor: .*no mode.*--mode/s, "init", "--feature", "feat", "--repo", noMode.repo);
+  const noMode = sandbox({ init: null, launch: { ...LAUNCH, executor: { provider: "dsh" } } });
+  let out = noMode.no(/executor: dsh needs --mode/, "init", "--feature", "feat", "--repo", noMode.repo);
   assert.match(out, /Tell the user; don't choose for them/);
   assert.equal(spawnSync("git", ["-C", noMode.repo, "show-ref", "--verify", "--quiet", "refs/heads/workloop/feat"]).status, 1);
   assert.equal(existsSync(join(noMode.runDir, "state.json")), false);
 
-  const noReviewMode = sandbox({ init: null, profiles: [PROFILES[0], { ...PROFILES[1], modeId: undefined }] });
-  out = noReviewMode.no(/reviewer: .*no mode.*--review-mode/s, "init", "--feature", "feat", "--repo", noReviewMode.repo);
+  const noReviewMode = sandbox({ init: null, launch: { ...LAUNCH, reviewer: { provider: "devin" } } });
+  out = noReviewMode.no(/reviewer: devin needs --review-mode/, "init", "--feature", "feat", "--repo", noReviewMode.repo);
   assert.doesNotMatch(out, /executor: .*no mode/);
   assert.equal(existsSync(join(noReviewMode.runDir, "state.json")), false);
 });
 
-test("config shows a role that lost its model or mode as UNRESOLVED, and the next launch creates nothing", () => {
+test("config shows a role that lost its mode as UNRESOLVED, and the next launch creates nothing", () => {
   const sb = sandbox();
-  sb.setProfiles([{ ...PROFILES[0], modeId: undefined }, PROFILES[1]]);
+  sb.setLaunch({ ...LAUNCH, executor: { provider: "dsh" } });
   const out = sb.ok("config");
-  assert.match(out, /executor UNRESOLVED: .*no mode.*--mode/s);
-  assert.match(out, /reviewer fake model=review-model mode=full thinking=high ← profile "wl-reviewer"/);
-  sb.no(/executor: .*no mode.*--mode/s, "dispatch", "01", "--prepare");
+  assert.match(out, /executor UNRESOLVED: .*needs --mode/s);
+  assert.match(out, /reviewer devin model=review-model mode=dangerous ← .*launch\.json/);
+  sb.no(/executor: dsh needs --mode/, "dispatch", "01");
   assert.equal(sb.state().tasks["01"].status, "ready");
-  assert.equal(sb.db().calls.filter((c) => c[0] === "worktree").length, 0);
+  assert.equal(existsSync(join(sb.runDir, "worktrees")), false);
 
   // The same for a reviewer: it fails before freezing the candidate or starting a review agent.
-  sb.setProfiles(PROFILES);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.setLaunch(LAUNCH);
+  sb.ok("dispatch", "01");
   sb.work("01");
-  sb.setProfiles([PROFILES[0], { ...PROFILES[1], model: undefined }]);
-  assert.match(sb.ok("status"), /reviewer UNRESOLVED: .*no model.*--review-model/s);
-  sb.no(/reviewer: .*no model.*--review-model/s, "review", "01", "--prepare");
+  sb.setLaunch({ ...LAUNCH, reviewer: { provider: "devin" } });
+  assert.match(sb.ok("status"), /reviewer UNRESOLVED: .*needs --review-mode/s);
+  sb.no(/reviewer: devin needs --review-mode/s, "review", "01");
   assert.equal(sb.state().tasks["01"].status, "running");
   assert.equal(sb.state().tasks["01"].candidateSha, undefined);
-  assert.equal(sb.db().agents.filter((a) => a.labels.role === "reviewer").length, 0);
+  assert.equal(Object.values(sb.state().agents).filter((a) => a.role === "reviewer").length, 0);
 });
 
 test("status says a review is waiting for the budget instead of suggesting it", () => {
   const sb = sandbox({ init: ["--max-reviewers", "1"], tickets: {
     "01-a.md": "# 01: A\n\nBlocked by: None\n", "02-b.md": "# 02: B\n\nBlocked by: None\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "01");
+  sb.ok("dispatch", "02");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare"))); // 01's review is in progress: the budget is 1/1
+  sb.ok("review", "01"); // 01's review is in progress: the budget is 1/1
   sb.work("02"); // 02 is running with a done report, so it wants a review
   let out = sb.ok("status");
   assert.match(out, /#02 waits for a reviewer \(budget 1\/1\)/);
-  assert.doesNotMatch(out, /review 02 --prepare/);
+  assert.doesNotMatch(out, /review 02/);
 
   // Freeing the budget brings the suggestion back.
   sb.reviewed("01");
   out = sb.ok("status");
-  assert.match(out, /review 02 --prepare/);
+  assert.match(out, /review 02/);
   assert.doesNotMatch(out, /waits for a reviewer/);
 });
 
 test("a frozen task with no reviewer yet occupies no budget, so status still suggests starting one", () => {
   const sb = sandbox({ init: ["--max-reviewers", "1"], tickets: {
     "01-a.md": "# 01: A\n\nBlocked by: None\n", "02-b.md": "# 02: B\n\nBlocked by: None\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "01");
+  sb.ok("dispatch", "02");
   sb.work("01");
   assert.match(sb.ok("freeze", "01"), /#01 frozen at [0-9a-f]+ \(1 commits over/); // in_review, no reviewer started yet: nothing is reviewing, so nothing is spent
   sb.work("02");
   // Counting the frozen task itself would refuse to suggest the very command that would work.
   const out = sb.ok("status");
-  assert.match(out, /review 01 --prepare/);
-  assert.match(out, /review 02 --prepare/);
+  assert.match(out, /review 01/);
+  assert.match(out, /review 02/);
   assert.doesNotMatch(out, /waits for a reviewer/);
 
-  // A prepared review holds the slot at once; until its receipt is acknowledged
-  // the task has a pending action.
-  const action = JSON.parse(sb.ok("review", "01", "--prepare"));
-  const prepared = sb.ok("status");
-  assert.match(prepared, /action 01 — reconcile pending MCP action/);
-  assert.match(prepared, /#02 waits for a reviewer \(budget 1\/1\)/);
-  // Once acknowledged, the review is recorded and still holds the only slot.
-  deliver(sb, action);
+  // Starting the review holds the slot at once: its reviewer's turn is running.
+  sb.ok("review", "01");
   assert.match(sb.ok("status"), /#02 waits for a reviewer \(budget 1\/1\)/);
-});
-
-test("an agent that errors at start is flagged by patrol, naming the launch settings it started with", () => {
-  // A provider override makes the launch run-config-only, so it must carry its own model and mode.
-  const sb = sandbox({ init: ["--provider", "other", "--model", "crash-model", "--mode", "full"] });
-  const action = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
-  deliver(sb, action);
-  // Overriding the provider drops the profile's provider-specific fields; the run's own replace them.
-  assert.equal(action.arguments.provider, "other/crash-model");
-  assert.equal(action.arguments.settings.modeId, "full");
-  assert.equal(action.launch, "other model=crash-model mode=full ← run config");
-  deliver(sb, action);
-  const t = sb.state().tasks["01"];
-  sb.setAgent(t.agentId, "error");
-  assert.match(sb.ok("patrol", "--window", "5", "--interval", "1"), /#01 executor .* error .*the agent errored.*other model=crash-model mode=full ← run config.*tell the user/);
 });
 
 test("dispatch respects the executor budget and holds", () => {
   const sb = sandbox({ init: ["--max-executors", "1"] });
   writeFileSync(join(sb.runDir, "issues", "04-docs.md"), "# 04: Docs\n\nBlocked by: none\n");
   assert.match(sb.ok("import"), /added #04 Docs/);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.no(/executor budget full/, "dispatch", "04", "--prepare");
+  sb.ok("dispatch", "01");
+  sb.no(/executor budget full/, "dispatch", "04");
   sb.ok("config", "--max-executors", "2");
   sb.ok("hold", "04", "--reason", "waiting on the user");
-  sb.no(/on hold/, "dispatch", "04", "--prepare");
+  sb.no(/on hold/, "dispatch", "04");
   assert.doesNotMatch(sb.ok("status"), /dispatch 04/);
   sb.ok("unhold", "04");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "04", "--prepare")));
-});
-
-test("an interrupted dispatch resumes at the worktree it left, and a labelled agent it cannot account for refuses a second one", async () => {
-  // The state save died after the workspace was created: the worktree is there, the
-  // task is running with no agent, and the rerun uses that worktree.
-  const sb = sandbox();
-  const first = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
-  sb.ok("ack", "01", "--receipt", receiptFile(sb, first, { isError: true, content: [{ type: "text", text: "provider rejected request" }] }));
-  const t = sb.state().tasks["01"];
-  assert.equal(t.status, "running");
-  assert.equal(t.agentId, undefined);
-  sb.ok("dispatch", "01", "--prepare");
-  assert.equal(sb.db().calls.filter((c) => c[0] === "workspace" && c[1] === "create").length, 1);
-  assert.equal(sb.state().tasks["01"].agentId, undefined, "a prepared dispatch records no agent until its receipt does");
-
-  // An agent carries the ticket's labels but nothing in the state accounts for it:
-  // dispatch refuses instead of starting a second worker, and leaves no pending action.
-  const sb2 = sandbox();
-  sb2.ok("dispatch", "01", "--prepare");
-  // Another process typed into the same daemon: a worker with these labels exists,
-  // and the state was saved again after the action was prepared.
-  sb2.editDb((d) => d.agents.push({ id: "orphan-agent", title: "wl feat #01 a1", cwd: sb2.state().tasks["01"].worktree, labels: { workloop: "repo-feat", task: "01", attempt: "a1", role: "executor" }, parentAgentId: sb2.env.PASEO_AGENT_ID, status: "running", archived: false, updatedAt: new Date().toISOString() }));
-  assert.match(sb2.ok("status", "--live"), /orphan-agent .*not recorded/);
-  // Its own prepared action is still waiting, and a dispatch that reprints it runs
-  // no guard: reset the ticket the way reconciling that receipt leaves it — running,
-  // no agent, no pending action.
-  const reset = sb2.state();
-  reset.tasks["01"].pendingAction = null;
-  writeFileSync(join(sb2.runDir, "state.json"), JSON.stringify(reset));
-  const events = sb2.events().length;
-  sb2.no(/an agent carries #01's executor labels but no acknowledged MCP action: reconcile it through its receipt/, "dispatch", "01", "--prepare");
-  const after = sb2.state();
-  assert.equal(after.tasks["01"].pendingAction ?? null, null, "the refusal prepares nothing");
-  // The worktree is found before the guard, so its re-record is all that is added.
-  assert.deepEqual(sb2.events().slice(events).map((e) => e.kind), ["worktree"]);
-  assert.equal(after.tasks["01"].agentId, undefined);
-  assert.equal(sb2.db().agents.length, 1, "no second agent");
-  assert.equal(sb2.db().calls.filter((c) => c[0] === "workspace" && c[1] === "create").length, 1, "no second worktree");
-  // `status --live` points at reconciliation, not at a dispatch that would adopt it.
-  assert.match(sb2.ok("status", "--live"), /reconcile its start with `action <NN>` \/ `ack <NN>`/);
+  sb.ok("dispatch", "04");
 });
 
 test("review only accepts an idle executor, a fresh done report and a clean committed tree", () => {
   const sb = sandbox();
-  const dispatch = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
-  deliver(sb, dispatch);
-  deliver(sb, dispatch);
+  sb.ok("dispatch", "01");
   const t = sb.state().tasks["01"];
-  sb.no(/executor .* is running/, "review", "01", "--prepare");
-  sb.setAgent(t.agentId, "idle");
-  sb.no(/no report written since the last prompt/, "review", "01", "--prepare");
+  sb.no(/executor .* is running/, "review", "01");
+  sb.endTurn(t.agentId);
+  sb.no(/no report written since the last prompt/, "review", "01");
   sb.work("01", { status: "question" });
 
-  sb.no(/reported "question"/, "review", "01", "--prepare");
+  sb.no(/reported "question"/, "review", "01");
   sb.work("01", { commit: false, files: { "loose.txt": "x" } });
-  sb.no(/uncommitted or untracked/, "review", "01", "--prepare");
+  sb.no(/uncommitted or untracked/, "review", "01");
   sb.g(t.worktree, "add", "-A");
   sb.g(t.worktree, "commit", "-q", "-m", "commit it");
   sb.work("01", { files: {} , commit: false });
-  const action = JSON.parse(sb.ok("review", "01", "--prepare"));
-  deliver(sb, action);
-  deliver(sb, action);
+  const out = sb.ok("review", "01");
   const s = sb.state().tasks["01"];
   assert.equal(s.status, "in_review");
   assert.equal(s.candidateSha, sb.g(t.worktree, "rev-parse", "HEAD"));
-  assert.equal(s.review.launch, 'fake model=review-model mode=full thinking=high ← profile "wl-reviewer"');
-  assert.equal(action.arguments.workspaceId, dispatch.arguments.workspaceId, "the reviewer runs in the ticket's workspace");
-  assert.equal(sb.db().agents.find((a) => a.id === s.review.agentId).cwd, t.worktree);
+  assert.equal(s.review.launch, `devin model=review-model mode=dangerous ← ${join(sb.env.WORKLOOP_ROOT, "launch.json")}`);
+  // The reviewer runs in the ticket's worktree, in a tab of the same Rex session.
+  const rtab = sb.block(sb.state().agents[s.review.agentId].turns[0].block);
+  assert.equal(rtab.session, sb.state().rex.session);
+  assert.equal(JSON.parse(readFileSync(rtab.argv.at(-1), "utf8")).cwd, t.worktree);
+  assert.match(out, /reviewer devin model=review-model mode=dangerous .* started on [0-9a-f]{8} in Rex tab "#01 review/);
   assert.doesNotMatch(readFileSync(join(sb.runDir, "briefs", `01-review-${s.candidateSha.slice(0, 8)}.md`), "utf8"), /\{\{/);
-  sb.no(/already has review agent/, "review", "01", "--prepare");
+  sb.no(/already has review agent/, "review", "01");
 });
 
 test("changes requested: integrate refuses, send waits for idle agents and opens a rework round", () => {
   const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const t = sb.state().tasks["01"];
   sb.no(/not written yet/, "integrate", "01");
-  sb.no(/reviewer .* is running/, "send", "01", "--prepare", "--text", "fix S1");
+  sb.no(/reviewer .* is running/, "send", "01", "--text", "fix S1");
   sb.reviewed("01", "changes_requested");
   assert.match(sb.ok("status"), /changes requested/);
   sb.no(/verdict is changes_requested/, "integrate", "01");
-  const action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1: rename x."));
-  assert.equal(sb.state().tasks["01"].status, "in_review", "the rework starts at acknowledgement");
-  deliver(sb, action);
+  const out = sb.ok("send", "01", "--text", "Fix S1: rename x.");
   const s = sb.state().tasks["01"];
   assert.equal(s.status, "running");
   assert.equal(s.rounds, 1);
   assert.equal(s.candidateSha, null);
-  const msg = action.arguments.prompt;
+  assert.match(out, /#01: message 1 sent; the executor goes on in Rex tab "#01 exec a1 · 1"/);
+  const msg = readFileSync(`${sb.turn(t.agentId).base}.prompt.md`, "utf8");
   assert.match(msg, /^Fix S1: rename x\./);
   assert.ok(msg.includes(slash(join(sb.runDir, "reports", "01-a1.md"))));
-  sb.no(/executor .* is running/, "send", "01", "--prepare", "--text", "again");
+  sb.no(/executor .* is running/, "send", "01", "--text", "again");
   // The old report predates the rework prompt, so it doesn't count.
-  sb.setAgent(t.agentId, "idle");
-  sb.no(/no report written since the last prompt/, "review", "01", "--prepare");
+  sb.endTurn(t.agentId);
+  sb.no(/no report written since the last prompt/, "review", "01");
 });
 
 // #01 dispatched, reviewed with a changes_requested whose table holds blocking
@@ -1343,9 +898,9 @@ test("changes requested: integrate refuses, send waits for idle agents and opens
 // every blocking finding here is inside the review's boundary.
 function reworkable() {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n\n- [ ] AC1: the first criterion — manual: a reviewer reads it\n- [ ] AC2: the parser reads `x` — manual: a reviewer reads it\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested", [
     { id: "S1", blocking: true, basis: "Regression: `npm test` fails" },
     { id: "P2", blocking: false, basis: "AC1: the criterion" },
@@ -1354,11 +909,11 @@ function reworkable() {
   return sb;
 }
 
-// A send prepared and acknowledged: its action is what the executor receives.
+// A send: the executor's next turn starts in the same conversation.
 function sent(sb, ...args) {
-  const action = JSON.parse(sb.ok("send", "01", "--prepare", ...args));
-  deliver(sb, action);
-  return action;
+  sb.ok("send", "01", ...args);
+  const t = sb.state().tasks["01"];
+  return readFileSync(`${sb.turn(t.agentId).base}.prompt.md`, "utf8");
 }
 
 // The message file the send under test wrote, for the only attempt these tests make.
@@ -1387,64 +942,64 @@ test("rework: the send message carries the method after the divider, with the re
   assertReworkMethod(sentMessage(sb), sha, slash(review.path));
 });
 
-test("rework: a prepared send's prompt carries the same method", () => {
+test("rework: the executor's turn prompt carries the same method", () => {
   const sb = reworkable();
   const { candidateSha: sha, review } = sb.state().tasks["01"];
-  const action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1 and S3, per the review."));
-  assert.equal(action.tool, "send_agent_prompt");
-  assertReworkMethod(action.arguments.prompt, sha, slash(review.path));
+  sb.ok("send", "01", "--text", "Fix S1 and S3, per the review.");
+  const t = sb.state().tasks["01"];
+  assert.equal(t.status, "running");
+  assertReworkMethod(readFileSync(`${sb.turn(t.agentId).base}.prompt.md`, "utf8"), sha, slash(review.path));
 });
 
 test("rework: a merge-tip send, a send after a pass and a send while running carry no method", async () => {
   // A merge-tip send answers a moved integration branch, not the review.
 
   const mergeTip = reworkable();
-  const mergeAction = JSON.parse(mergeTip.ok("send", "01", "--prepare", "--merge-tip"));
+  mergeTip.ok("send", "01", "--merge-tip");
   assert.doesNotMatch(sentMessage(mergeTip), /## Rework/);
-  deliver(mergeTip, mergeAction);
 
   // A nudge after a pass is not a rework.
   const passed = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
-  deliver(passed, JSON.parse(passed.ok("dispatch", "01", "--prepare")));
+  passed.ok("dispatch", "01");
   passed.work("01");
-  deliver(passed, JSON.parse(passed.ok("review", "01", "--prepare")));
+  passed.ok("review", "01");
   passed.reviewed("01");
-  deliver(passed, JSON.parse(passed.ok("send", "01", "--prepare", "--text", "Also mention the flag in the README.")));
+  passed.ok("send", "01", "--text", "Also mention the flag in the README.");
   assert.doesNotMatch(sentMessage(passed), /## Rework/);
 
   // Nor is a send while the task runs, whatever the last review said.
   const running = reworkable();
-  deliver(running, JSON.parse(running.ok("send", "01", "--prepare", "--text", "Fix S1 and S3, per the review.")));
+  running.ok("send", "01", "--text", "Fix S1 and S3, per the review.");
   // The worker takes the turn straight away; the next send comes once it is idle.
-  running.setAgent(running.state().tasks["01"].agentId, "idle");
-  // The daemon answers a send with {success: true}; deliver() models a turn that starts.
-  deliver(running, JSON.parse(running.ok("send", "01", "--prepare", "--text", "Also update the README.")), { success: true }, "01");
+  running.endTurn(running.state().tasks["01"].agentId);
+  running.ok("send", "01", "--text", "Also update the README.");
   assert.doesNotMatch(sentMessage(running, 2), /## Rework/);
 });
 
 test("waiver: a rework send must name or waive every blocking finding of the review", () => {
   const sb = reworkable();
   // Nothing named: refused, listing both blocking IDs and how to account for them.
-  const out = sb.no(/the rework message does not account for blocking findings S1, S3/, "send", "01", "--prepare", "--text", "Please rework.");
+  const out = sb.no(/the rework message does not account for blocking findings S1, S3/, "send", "01", "--text", "Please rework.");
   assert.match(out, /--waive <IDs> --reason/);
   // One named is not enough, and a longer word is not the finding.
-  sb.no(/does not account for blocking finding S1/, "send", "01", "--prepare", "--text", "S12 is a different identifier; S3 is real.");
-  sb.no(/does not account for blocking finding S3/, "send", "01", "--prepare", "--text", "S1 is fixed?");
+  sb.no(/does not account for blocking finding S1/, "send", "01", "--text", "S12 is a different identifier; S3 is real.");
+  sb.no(/does not account for blocking finding S3/, "send", "01", "--text", "S1 is fixed?");
   assert.equal(sb.state().tasks["01"].status, "in_review");
-  // Both named: the rework proceeds and opens its round at acknowledgement.
-  assert.equal(deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1 and S3, per the review."))).includes("send acknowledged"), true);
+  // Both named: the rework proceeds, opens its round, and starts the next turn.
+  const sentOut = sb.ok("send", "01", "--text", "Fix S1 and S3, per the review.");
+  assert.match(sentOut, /#01: message 1 sent; the executor goes on in Rex tab "#01 exec a1 · 1"/);
   assert.equal(sb.state().tasks["01"].status, "running");
   assert.equal(sb.state().tasks["01"].rounds, 1);
 });
 
 test("waiver: --waive needs a reason, and an ID that is a blocking finding of that review", () => {
   const sb = reworkable();
-  sb.no(/--waive needs --reason/, "send", "01", "--prepare", "--text", "Please rework.", "--waive", "S1");
-  sb.no(/P2 is not a blocking finding of #01's review; blocking: S1, S3/, "send", "01", "--prepare", "--text", "Please rework.", "--waive", "P2", "--reason", "it is fine");
-  sb.no(/P9 is not a blocking finding/, "send", "01", "--prepare", "--text", "Please rework.", "--waive", "S1,P9", "--reason", "typo in the ID");
+  sb.no(/--waive needs --reason/, "send", "01", "--text", "Please rework.", "--waive", "S1");
+  sb.no(/P2 is not a blocking finding of #01's review; blocking: S1, S3/, "send", "01", "--text", "Please rework.", "--waive", "P2", "--reason", "it is fine");
+  sb.no(/P9 is not a blocking finding/, "send", "01", "--text", "Please rework.", "--waive", "S1,P9", "--reason", "typo in the ID");
   // A waived finding need not be named in the message; the rest still must be.
-  sb.no(/does not account for blocking finding S3/, "send", "01", "--prepare", "--text", "Please rework.", "--waive", "S1", "--reason", "pre-existing defect, tracked separately");
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S3 only.", "--waive", "S1", "--reason", "pre-existing defect, tracked separately")));
+  sb.no(/does not account for blocking finding S3/, "send", "01", "--text", "Please rework.", "--waive", "S1", "--reason", "pre-existing defect, tracked separately");
+  sb.ok("send", "01", "--text", "Fix S3 only.", "--waive", "S1", "--reason", "pre-existing defect, tracked separately");
   const w = sb.state().waivers;
   assert.equal(w.length, 1);
   assert.deepEqual(Object.keys(w[0]).sort(), ["at", "findings", "kind", "reason", "review", "sha", "task"]);
@@ -1461,79 +1016,24 @@ test("waiver: --waive needs a reason, and an ID that is a blocking finding of th
 
 test("waiver: a review whose findings cannot be read only warns, and the send proceeds", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested"); // no findings table
-  const action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Please rework, per the attached review."));
-  // The warning rides on the prepared action, where the orchestrator reads it.
-  assert.match(action.warning, /^cannot read the blocking findings/);
-  deliver(sb, action);
+  // The warning is printed where the orchestrator reads it; the send still starts.
+  const out = sb.ok("send", "01", "--text", "Please rework, per the attached review.");
+  assert.match(out, /warning: cannot read the blocking findings/);
   assert.equal(sb.state().tasks["01"].status, "running");
   assert.equal(sb.state().waivers, undefined);
 });
 
-test("waiver: a prepared rework send records its waivers only once its receipt acknowledges the send", () => {
-  const sb = reworkable();
-  const action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S3.", "--waive", "S1", "--reason", "pre-existing"));
-  assert.equal(action.waiver.kind, "rework");
-  assert.deepEqual(action.waiver.findings.map((f) => f.id), ["S1"]);
-  // Prepared: the message is not sent yet, so nothing is let through yet.
-  assert.equal(sb.state().waivers, undefined);
-  deliver(sb, action);
-  const s = sb.state();
-  assert.equal(s.waivers.length, 1);
-  assert.equal(s.waivers[0].reason, "pre-existing");
-  assert.equal(s.tasks["01"].status, "running");
-
-  // A second round the same way: prepared, then acknowledged.
-  sb.setAgent(s.tasks["01"].agentId, "idle");
-  sb.work("01", { files: { "f01.txt": "reworked\n" } });
-
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare", "--again")));
-  sb.reviewed("01", "changes_requested", [{ id: "S5", blocking: true, basis: "AC1: the first criterion" }]);
-  const second = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix the rest.", "--waive", "S5", "--reason", "cosmetic, accepted"));
-  assert.equal(sb.state().waivers.length, 1, "nothing is let through before the second send is acknowledged");
-  deliver(sb, second);
-  assert.equal(sb.state().waivers.length, 2);
-  assert.equal(sb.state().waivers[1].findings[0].id, "S5");
-});
-
-test("waiver: a prepared send keeps its waiver when the event append fails after the save", () => {
-  const sb = reworkable();
-  const action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S3.", "--waive", "S1", "--reason", "pre-existing"));
-  const receipt = join(sb.root, "receipt.json");
-  writeFileSync(receipt, JSON.stringify({ action: action.action, result: { success: true } }));
-  const undo = sb.failEventAppend();
-  const crashed = sb.wl("ack", "01", "--receipt", receipt);
-  assert.notEqual(crashed.code, 0, crashed.out);
-  assert.match(crashed.out, /injected event append failure/);
-
-  // The state write that acknowledged the send carried the waiver with it, so the
-  // crash cost the log lines and nothing else.
-  const s = sb.state();
-  assert.equal(s.tasks["01"].status, "running");
-  assert.equal(s.tasks["01"].pendingAction, null);
-  assert.equal(s.tasks["01"].lastAction, action.action);
-  assert.equal(s.waivers.length, 1);
-  assert.equal(s.waivers[0].findings[0].id, "S1");
-  assert.equal(sb.events("send").length, 0);
-  assert.equal(sb.events("waiver").length, 0);
-  undo();
-
-  // Retrying the receipt finds the action acknowledged and records nothing twice.
-  assert.match(sb.ok("ack", "01", "--receipt", receipt), /already acknowledged/);
-  assert.equal(sb.state().waivers.length, 1);
-  assert.match(sb.ok("status"), /waived findings: 1/);
-});
-
 test("waiver: integrate --override records every blocking finding it lets through", () => {
   const sb = reworkable();
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1 and S3.", "--waive", "S1", "--reason", "accepted once")));
+  sb.ok("send", "01", "--text", "Fix S1 and S3.", "--waive", "S1", "--reason", "accepted once");
   sb.work("01", { files: { "f01.txt": "reworked\n" } });
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare", "--again")));
+  sb.ok("review", "01", "--again");
   sb.reviewed("01", "changes_requested", [{ id: "S6", blocking: true, basis: "AC2: still wrong" }, { id: "P7", blocking: false }]);
   const t = sb.state().tasks["01"];
   sb.no(/verdict is changes_requested/, "integrate", "01");
@@ -1552,7 +1052,7 @@ test("waiver: integrate --override records every blocking finding it lets throug
 test("waiver: an override of a missing or unreadable review is noted in the ledger", () => {
   const never = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n" } });
 
-  deliver(never, JSON.parse(never.ok("dispatch", "01", "--prepare")));
+  never.ok("dispatch", "01");
   never.work("01");
   never.ok("freeze", "01"); // a candidate with no review at all
   never.no(/review verdict is missing/, "integrate", "01");
@@ -1564,9 +1064,9 @@ test("waiver: an override of a missing or unreadable review is noted in the ledg
   assert.match(missing.note, /review was missing/);
 
   const unreadable = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n" } });
-  deliver(unreadable, JSON.parse(unreadable.ok("dispatch", "01", "--prepare")));
+  unreadable.ok("dispatch", "01");
   unreadable.work("01");
-  deliver(unreadable, JSON.parse(unreadable.ok("review", "01", "--prepare")));
+  unreadable.ok("review", "01");
   unreadable.reviewed("01", "changes_requested"); // prose, no findings table
   unreadable.ok("integrate", "01", "--override", "the reviewer's prose covers it");
   const poor = unreadable.state().waivers.at(-1);
@@ -1577,13 +1077,13 @@ test("waiver: an override of a missing or unreadable review is noted in the ledg
 test("waiver: status counts the ledger, --json carries it, and finish lists every entry", () => {
   const sb = reworkable();
   assert.doesNotMatch(sb.ok("status"), /waived findings/);
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S3.", "--waive", "S1", "--reason", "pre-existing defect")));
+  sb.ok("send", "01", "--text", "Fix S3.", "--waive", "S1", "--reason", "pre-existing defect");
   assert.match(sb.ok("status"), /waived findings: 1/);
   const json = JSON.parse(sb.ok("status", "--json"));
   assert.equal(json.waivers.length, 1);
   assert.equal(json.waivers[0].findings[0].id, "S1");
   sb.work("01", { files: { "f01.txt": "reworked\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare", "--again")));
+  sb.ok("review", "01", "--again");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   assert.match(sb.ok("status"), /waived findings: 1/);
@@ -1595,10 +1095,10 @@ test("waiver: status counts the ledger, --json carries it, and finish lists ever
 
 test("waiver: a run whose state has no ledger finishes as before and says there are none", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   const st = sb.state();
@@ -1648,10 +1148,10 @@ test("boundary: a Basis cites a confirmed criterion or a floor class; anything e
 test("boundary: status reports an out-of-boundary blocking finding as a suggestion, and integrate needs no override", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   assert.equal(sb.state().config.maxReworkRounds, 2, "the cap defaults to 2 rounds");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "the function is long and could be split" }]);
   const out = sb.ok("status");
   assert.match(out, /out-of-boundary findings: 1 blocking finding outside the reviews' boundary — the user decides these, and nothing gates on them:/);
@@ -1669,22 +1169,22 @@ test("boundary: status reports an out-of-boundary blocking finding as a suggesti
 
 test("boundary: a rework accounts for, and an override records, only the in-boundary blocking findings", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n- [ ] AC2: two — manual: a reviewer reads it\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested", [
     { id: "S1", blocking: true, basis: "AC2: two" },
     { id: "S2", blocking: true, basis: "the naming could be clearer" },
   ]);
   // S2 is a suggestion, so only S1 needs accounting.
-  sb.no(/does not account for blocking finding S1;/, "send", "01", "--prepare", "--text", "Rework please.");
-  sb.no(/S2 is out of #01's review boundary .* it is a suggestion and needs no waiver/, "send", "01", "--prepare", "--text", "Fix S1.", "--waive", "S2", "--reason", "cosmetic");
+  sb.no(/does not account for blocking finding S1;/, "send", "01", "--text", "Rework please.");
+  sb.no(/S2 is out of #01's review boundary .* it is a suggestion and needs no waiver/, "send", "01", "--text", "Fix S1.", "--waive", "S2", "--reason", "cosmetic");
   assert.equal(sb.state().tasks["01"].status, "in_review");
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1: quote the criterion.")));
+  sb.ok("send", "01", "--text", "Fix S1: quote the criterion.");
   assert.equal(sb.state().tasks["01"].rounds, 1);
   sb.work("01", { files: { "f01.txt": "reworked\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested", [
     { id: "S5", blocking: true, axis: "Spec", basis: "**Regression:** `npm test` fails" },
     { id: "S6", blocking: true, basis: "a smell in no floor class" },
@@ -1696,10 +1196,10 @@ test("boundary: a rework accounts for, and an override records, only the in-boun
 
 test("boundary: the reviewer brief states the boundary, the floor classes and the verdict rule", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const brief = readFileSync(join(sb.runDir, "briefs", `01-review-${sb.state().tasks["01"].candidateSha.slice(0, 8)}.md`), "utf8");
   assert.doesNotMatch(brief, /\{\{/);
   assert.ok(brief.includes(`branch \`${sb.state().tasks["01"].branch}\``));
@@ -1726,10 +1226,10 @@ test("boundary: a direct run's reviewer brief carries the same boundary, and a s
   const sb = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\nScope: f01.txt\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   rmSync(join(sb.runDir, "spec.md"));
   sb.ok("init", "--direct", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const brief = readFileSync(join(sb.runDir, "briefs", `01-review-${sb.state().tasks["01"].candidateSha.slice(0, 8)}.md`), "utf8");
   assert.doesNotMatch(brief, /\{\{/);
   assert.match(brief, /## Boundary\n/);
@@ -1744,17 +1244,17 @@ test("boundary: a direct run's reviewer brief carries the same boundary, and a s
 
 test("boundary: a re-review brief adds the previous review, its candidate and the change since, and raises nothing else", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node --version`\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const first = sb.state().tasks["01"];
   const firstBrief = readFileSync(join(sb.runDir, "briefs", `01-review-${first.candidateSha.slice(0, 8)}.md`), "utf8");
   assert.doesNotMatch(firstBrief, /## Re-review/);
   sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "AC1: one" }]);
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1.")));
+  sb.ok("send", "01", "--text", "Fix S1.");
   sb.work("01", { files: { "f01.txt": "reworked\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const second = sb.state().tasks["01"];
   assert.notEqual(second.candidateSha, first.candidateSha);
   const brief = readFileSync(join(sb.runDir, "briefs", `01-review-${second.candidateSha.slice(0, 8)}.md`), "utf8");
@@ -1772,17 +1272,17 @@ test("boundary: a re-review cites the most recent completed review, and every di
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   const briefOf = (sha) => readFileSync(join(sb.runDir, "briefs", `01-review-${sha.slice(0, 8)}.md`), "utf8");
   const suggest = (review, text) => writeFileSync(review.path, `${readFileSync(review.path, "utf8")}\n## Out of scope\n- ${text}\n`);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const one = sb.state().tasks["01"];
   sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "a smell in no floor class" }]);
   suggest(one.review, "suggestion from review one");
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Rework, per the review.")));
+  sb.ok("send", "01", "--text", "Rework, per the review.");
   assert.equal(sb.state().tasks["01"].rounds, 1);
   sb.work("01", { files: { "f01.txt": "reworked\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const two = sb.state().tasks["01"];
   sb.reviewed("01", "changes_requested", [{ id: "P9", blocking: true, basis: "another smell in no floor class" }]);
   suggest(two.review, "suggestion from review two");
@@ -1790,7 +1290,7 @@ test("boundary: a re-review cites the most recent completed review, and every di
   assert.ok(briefOf(two.candidateSha).includes(`The previous review is \`${slash(one.review.path)}\``));
 
   // `--again`: the newest review is the one it follows, not the oldest.
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare", "--again")));
+  sb.ok("review", "01", "--again");
   const again = sb.state().tasks["01"];
   const againBrief = briefOf(again.candidateSha);
   assert.ok(againBrief.includes(`The previous review is \`${slash(two.review.path)}\``), againBrief);
@@ -1798,17 +1298,14 @@ test("boundary: a re-review cites the most recent completed review, and every di
   sb.reviewed("01", "changes_requested");
   suggest(again.review, "suggestion from review three");
 
-  // `--again` through a prepared action: the displaced review is kept at ack, and
-  // the brief still cites the newest one.
-  const action = JSON.parse(sb.ok("review", "01", "--prepare", "--again"));
-  assert.deepEqual(action.criteria, ["AC1"]);
-  const before = sb.state().tasks["01"];
-  assert.equal(before.review.agentId, again.review.agentId, "the action has not displaced the review yet");
-  deliver(sb, action);
+  // `--again` replaces the current review; the displaced one is kept in history,
+  // and the brief still cites the newest one.
+  sb.ok("review", "01", "--again");
   const after = sb.state().tasks["01"];
+  assert.deepEqual(after.review.criteria, ["AC1"]);
   assert.ok(after.history.some((h) => h.review?.path === again.review.path), "the displaced review stays in history");
-  const preparedBrief = briefOf(after.candidateSha);
-  assert.ok(preparedBrief.includes(`The previous review is \`${slash(again.review.path)}\``), preparedBrief);
+  const againAgainBrief = briefOf(after.candidateSha);
+  assert.ok(againAgainBrief.includes(`The previous review is \`${slash(again.review.path)}\``), againAgainBrief);
   // The cited reviews are untouched, so their blocking finding IDs are still there.
   for (const [path, id] of [[one.review.path, "S1"], [two.review.path, "P9"]]) {
     assert.match(readFileSync(path, "utf8"), new RegExp(`\\| ${id} \\|`), path);
@@ -1831,30 +1328,28 @@ test("boundary: a re-review cites the most recent completed review, and every di
 test("boundary: a rework send past the cap refuses and says to ask the user; --extra-round --reason records it", () => {
   const sb = sandbox({ init: ["--max-rework-rounds", "1"], tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   assert.equal(sb.state().config.maxReworkRounds, 1);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   const round = (n) => {
     sb.work("01", { files: { "f01.txt": `round ${n}\n` } });
-    deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+    sb.ok("review", "01");
     sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "AC1: one" }]);
   };
   round(1);
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1.")));
+  sb.ok("send", "01", "--text", "Fix S1.");
   assert.equal(sb.state().tasks["01"].rounds, 1);
 
   round(2);
   // Round 2 would pass the cap of 1: the task waits for the user.
-  const out = sb.no(/rework round 2 would pass the run's cap of 1\. The task waits for the user/, "send", "01", "--prepare", "--text", "Fix S1 again.");
-  assert.match(sb.ok("status"), /#01 changes requested, and at the rework cap \(1\) — ask the user, then `send 01 --prepare --extra-round --reason "<their decision>"`/);
-  assert.match(out, /`send 01 --prepare --extra-round --reason "<the user's decision>"`/);
-  sb.no(/--extra-round needs --reason/, "send", "01", "--prepare", "--text", "Fix S1 again.", "--extra-round");
+  const out = sb.no(/rework round 2 would pass the run's cap of 1\. The task waits for the user/, "send", "01", "--text", "Fix S1 again.");
+  assert.match(sb.ok("status"), /#01 changes requested, and at the rework cap \(1\) — ask the user, then `send 01 --extra-round --reason "<their decision>"`/);
+  assert.match(out, /`send 01 --extra-round --reason "<the user's decision>"`/);
+  sb.no(/--extra-round needs --reason/, "send", "01", "--text", "Fix S1 again.", "--extra-round");
   assert.equal(sb.state().tasks["01"].rounds, 1);
-  // The user decided to go on: the round proceeds at acknowledgement and is recorded
-  // with their reason.
-  const extra = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1 again.", "--extra-round", "--reason", "the user chose one more round"));
-  assert.equal(extra.extraRound.reason, "the user chose one more round");
-  assert.equal(sb.state().extraRounds, undefined, "nothing is recorded before the receipt");
-  deliver(sb, extra);
+  // The user decided to go on: the round proceeds with the send, and their reason
+  // is recorded with it.
+  sb.ok("send", "01", "--text", "Fix S1 again.", "--extra-round", "--reason", "the user chose one more round");
   const s = sb.state();
+  assert.equal(s.extraRounds[0].reason, "the user chose one more round");
   assert.equal(s.tasks["01"].rounds, 2);
   assert.deepEqual(s.extraRounds.map(({ task, round, cap, reason }) => ({ task, round, cap, reason })), [{ task: "01", round: 2, cap: 1, reason: "the user chose one more round" }]);
   assert.deepEqual(sb.events("extra_round").map((e) => e.round), [2]);
@@ -1863,55 +1358,55 @@ test("boundary: a rework send past the cap refuses and says to ask the user; --e
   sb.ok("config", "--max-rework-rounds", "0");
   assert.equal(sb.state().config.maxReworkRounds, 0);
   round(3);
-  sb.no(/rework round 3 would pass the run's cap of 0/, "send", "01", "--prepare", "--text", "Fix S1 once more.");
+  sb.no(/rework round 3 would pass the run's cap of 0/, "send", "01", "--text", "Fix S1 once more.");
   sb.ok("config", "--max-rework-rounds", "2");
-  assert.equal(JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1 once more.", "--extra-round", "--reason", "the user asked for it")).extraRound.round, 3);
-  deliver(sb, JSON.parse(sb.ok("action", "01")));
+  sb.ok("send", "01", "--text", "Fix S1 once more.", "--extra-round", "--reason", "the user asked for it");
+  assert.equal(sb.state().extraRounds.at(-1).round, 3);
+  assert.equal(sb.state().tasks["01"].rounds, 3);
   // A cap raised past the next round makes --extra-round the wrong flag: it records
   // a user decision that was never needed.
   sb.ok("config", "--max-rework-rounds", "6");
   round(4);
-  sb.no(/rework round 4 is within the run's cap of 6, so --extra-round is not needed/, "send", "01", "--prepare", "--text", "Fix S1.", "--extra-round", "--reason", "unneeded");
+  sb.no(/rework round 4 is within the run's cap of 6, so --extra-round is not needed/, "send", "01", "--text", "Fix S1.", "--extra-round", "--reason", "unneeded");
   assert.equal(sb.state().extraRounds.at(-1).cap, 2);
   // A plain nudge is not a rework, so it cannot claim an extra round.
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Carry on; S1 is unchanged.")));
-  sb.no(/--extra-round applies only to a rework send/, "send", "01", "--prepare", "--text", "Carry on again.", "--extra-round", "--reason", "no rework to extend");
+  sb.ok("send", "01", "--text", "Carry on; S1 is unchanged.");
+  sb.no(/--extra-round applies only to a rework send/, "send", "01", "--text", "Carry on again.", "--extra-round", "--reason", "no rework to extend");
   sb.no(/--max-rework-rounds takes a whole number of rounds/, "config", "--max-rework-rounds", "many");
   sb.no(/--max-rework-rounds takes a whole number of rounds/, "config", "--max-rework-rounds", "1.5");
 });
 
 test("boundary: only a rework send opens a round, so a send after a pass and a merge-tip send leave the cap intact", () => {
   const sb = sandbox({ init: ["--max-rework-rounds", "1"], tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01"); // pass
 
-  // A prepared nudge after a pass sends the task back to running without a round.
-  const action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Also mention the flag in the README."));
-  assert.equal(action.rework, false);
-  deliver(sb, action);
+  // A nudge after a pass sends the task back to running without a round.
+  sb.ok("send", "01", "--text", "Also mention the flag in the README.");
+  assert.equal(sb.events("send").at(-1).rework, undefined);
   assert.equal(sb.state().tasks["01"].status, "running");
   assert.equal(sb.state().tasks["01"].rounds ?? 0, 0);
 
   // A merge-tip send is not a rework either; its turn starts like any other.
-  sb.setAgent(sb.state().tasks["01"].agentId, "idle");
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--merge-tip")), { success: true }, "01");
+  sb.endTurn(sb.state().tasks["01"].agentId);
+  sb.ok("send", "01", "--merge-tip");
   assert.equal(sb.state().tasks["01"].rounds ?? 0, 0);
-  sb.setAgent(sb.state().tasks["01"].agentId, "idle");
+  sb.endTurn(sb.state().tasks["01"].agentId);
   sb.work("01", { files: { "f01.txt": "with the README note\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "AC1: one" }]);
   // The first actual rework is round 1 of a cap of 1, so it proceeds.
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1.")));
+  sb.ok("send", "01", "--text", "Fix S1.");
   assert.equal(sb.state().tasks["01"].rounds, 1);
   sb.work("01", { files: { "f01.txt": "S1 fixed\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "AC1: one" }]);
   // The next one is the first past the cap, and it says so with the right number.
-  sb.no(/rework round 2 would pass the run's cap of 1/, "send", "01", "--prepare", "--text", "Fix S1 again.");
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1 again.", "--extra-round", "--reason", "the user chose one more round")));
+  sb.no(/rework round 2 would pass the run's cap of 1/, "send", "01", "--text", "Fix S1 again.");
+  sb.ok("send", "01", "--text", "Fix S1 again.", "--extra-round", "--reason", "the user chose one more round");
   const s = sb.state();
   assert.equal(s.tasks["01"].rounds, 2);
   assert.deepEqual(s.extraRounds.map(({ round, cap }) => ({ round, cap })), [{ round: 2, cap: 1 }]);
@@ -1921,10 +1416,10 @@ test("boundary: a run without the marker keeps the reviewer brief it always had,
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   sb.legacy();
   const briefOf = (sha) => readFileSync(join(sb.runDir, "briefs", `01-review-${sha.slice(0, 8)}.md`), "utf8");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const one = sb.state().tasks["01"];
   const first = briefOf(one.candidateSha);
   assert.doesNotMatch(first, /## Boundary/);
@@ -1938,9 +1433,9 @@ test("boundary: a run without the marker keeps the reviewer brief it always had,
 
   // The next review after a rework is a full review again, not a re-review.
   sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "the standard, quoted" }]);
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1.")));
+  sb.ok("send", "01", "--text", "Fix S1.");
   sb.work("01", { files: { "f01.txt": "reworked\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const second = briefOf(sb.state().tasks["01"].candidateSha);
   assert.doesNotMatch(second, /## Re-review/);
   assert.doesNotMatch(second, /## Boundary/);
@@ -1951,29 +1446,13 @@ test("boundary: a run without the marker keeps the reviewer brief it always had,
   rmSync(join(direct.runDir, "spec.md"));
   direct.ok("init", "--direct", "--feature", "feat", "--repo", direct.repo, "--check", CHECK);
   direct.legacy();
-  deliver(direct, JSON.parse(direct.ok("dispatch", "01", "--prepare")));
+  direct.ok("dispatch", "01");
   direct.work("01");
-  deliver(direct, JSON.parse(direct.ok("review", "01", "--prepare")));
+  direct.ok("review", "01");
   const dbrief = readFileSync(join(direct.runDir, "briefs", `01-review-${direct.state().tasks["01"].candidateSha.slice(0, 8)}.md`), "utf8");
   assert.match(dbrief, /Report each as a finding with Axis `Boundary`, numbered `B1`, `B2`, …, and mark it blocking\./);
   assert.doesNotMatch(dbrief, /## Boundary/);
   assert.doesNotMatch(dbrief, /confirmed criterion or a floor class/);
-});
-
-test("boundary: a prepared send past the cap records its extra round only when the send is confirmed", () => {
-  const sb = sandbox({ init: ["--max-rework-rounds", "0"], tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  sb.work("01");
-
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
-  sb.reviewed("01", "changes_requested", [{ id: "P2", blocking: false, basis: "AC1: one" }]);
-  const action = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Rework it.", "--extra-round", "--reason", "the user chose one round"));
-  assert.deepEqual([action.extraRound.round, action.extraRound.cap, action.extraRound.reason], [1, 0, "the user chose one round"]);
-  // Prepared: nothing is sent yet, so no extra round is recorded yet.
-  assert.equal(sb.state().extraRounds, undefined);
-  deliver(sb, action);
-  assert.deepEqual(sb.state().extraRounds.map(({ task, round, cap, reason }) => ({ task, round, cap, reason })), [{ task: "01", round: 1, cap: 0, reason: "the user chose one round" }]);
-  assert.deepEqual(sb.events("extra_round").map((e) => e.round), [1]);
 });
 
 test("boundary: a review is judged against the criteria confirmed when it started, so a later criteria change does not reclassify it", () => {
@@ -1981,9 +1460,9 @@ test("boundary: a review is judged against the criteria confirmed when it starte
 
   const later = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   const ticket = join(later.runDir, "issues", "01-a.md");
-  deliver(later, JSON.parse(later.ok("dispatch", "01", "--prepare")));
+  later.ok("dispatch", "01");
   later.work("01");
-  deliver(later, JSON.parse(later.ok("review", "01", "--prepare")));
+  later.ok("review", "01");
   later.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "AC2: a criterion that came later" }]);
   assert.match(later.ok("status"), /out-of-boundary findings: 1 blocking finding/);
   later.ok("integrate", "01"); // nothing in-boundary was blocking
@@ -1996,9 +1475,9 @@ test("boundary: a review is judged against the criteria confirmed when it starte
   // (b) A finding inside the boundary when raised stays inside after AC2 is removed.
   const earlier = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n- [ ] AC2: two — manual: a reviewer reads it\n" } });
   const file = join(earlier.runDir, "issues", "01-a.md");
-  deliver(earlier, JSON.parse(earlier.ok("dispatch", "01", "--prepare")));
+  earlier.ok("dispatch", "01");
   earlier.work("01");
-  deliver(earlier, JSON.parse(earlier.ok("review", "01", "--prepare")));
+  earlier.ok("review", "01");
   earlier.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "AC2: two" }]);
   assert.doesNotMatch(earlier.ok("status"), /out-of-boundary findings/);
   writeFileSync(file, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n");
@@ -2015,45 +1494,45 @@ test("boundary: a review is judged against the criteria confirmed when it starte
 test("boundary: a run without the marker keeps unbounded reviews, suggestions and no cap", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   sb.legacy();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "the function is long" }]);
   // Nothing is a suggestion here: the finding stands as written.
   assert.doesNotMatch(sb.ok("status"), /out-of-boundary/);
   assert.deepEqual(JSON.parse(sb.ok("status", "--json")).suggestions, []);
   sb.no(/verdict is changes_requested/, "integrate", "01");
-  sb.no(/does not account for blocking finding S1/, "send", "01", "--prepare", "--text", "Rework please.");
+  sb.no(/does not account for blocking finding S1/, "send", "01", "--text", "Rework please.");
   // Rounds are uncapped, and no extra round is recorded.
   for (const n of [1, 2, 3]) {
-    deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", `Fix S1, round ${n}.`)));
+    sb.ok("send", "01", "--text", `Fix S1, round ${n}.`);
     sb.work("01", { files: { "f01.txt": `rework ${n}\n` } });
-    deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+    sb.ok("review", "01");
     sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "the function is still long" }]);
   }
   assert.equal(sb.state().tasks["01"].rounds, 3);
   assert.equal(sb.state().extraRounds, undefined);
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1, round 4.")));
+  sb.ok("send", "01", "--text", "Fix S1, round 4.");
   assert.equal(sb.state().tasks["01"].rounds, 4);
 });
 
 test("boundary: finish lists every extra round, out-of-boundary finding and Out of scope suggestion, or says there were none", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
   sb.ok("config", "--max-rework-rounds", "0");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested", [{ id: "S1", blocking: true, basis: "the naming could be clearer" }]);
   const first = sb.state().tasks["01"].review.path;
   // A wrapped item is one suggestion, and the fenced Result block after the list is none.
   writeFileSync(first, `${readFileSync(first, "utf8")}\n## Out of scope\n- src/a.ts could be split\n  into two modules\n- the README could mention this\n\n\`\`\`text\nResult: changes_requested\nSummary: one naming nit\n\`\`\`\n`);
   // The only blocking finding is out of boundary, so the rework needs no accounting;
   // the cap is 0, so the round itself needs the user's decision.
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Rename it; S1 is a suggestion the user accepts.", "--extra-round", "--reason", "the user chose one round")));
+  sb.ok("send", "01", "--text", "Rename it; S1 is a suggestion the user accepts.", "--extra-round", "--reason", "the user chose one round");
   sb.work("01", { files: { "f01.txt": "renamed\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   sb.finalPass();
@@ -2069,9 +1548,9 @@ test("boundary: finish lists every extra round, out-of-boundary finding and Out 
   assert.doesNotMatch(listed, /Result:|Summary:/);
 
   const none = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — manual: a reviewer reads it\n" } });
-  deliver(none, JSON.parse(none.ok("dispatch", "01", "--prepare")));
+  none.ok("dispatch", "01");
   none.work("01");
-  deliver(none, JSON.parse(none.ok("review", "01", "--prepare")));
+  none.ok("review", "01");
   none.reviewed("01");
   none.ok("integrate", "01");
   none.finalPass();
@@ -2095,18 +1574,19 @@ test("integrate merges with --no-ff, retains sessions, and unblocks dependents",
   assert.equal(sb.g(s.integration.worktree, "rev-parse", "HEAD^2"), t.candidateSha);
   assert.equal(existsSync(t.worktree), true);
   assert.equal(sb.g(sb.repo, "rev-parse", t.branch), t.candidateSha);
-  assert.ok(sb.db().workspaces.every((w) => !w.archived));
-  assert.ok(!sb.agent(t.agentId).archived && !sb.agent(t.review.agentId).archived);
+  assert.ok(sb.db().blocks.filter((b) => b.session === s.rex.session).every((b) => !b.closed), "no tab was closed");
+  assert.equal(s.agents[t.agentId].archivedAt, undefined);
+  assert.equal(s.agents[t.review.agentId].archivedAt, undefined);
   assert.equal(t.cleanedAt, undefined);
   assert.match(sb.ok("status"), /next: dispatch 02/);
 });
 
 test("integrate rolls back when checks fail on the merge", () => {
   const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01", { files: { BROKEN: "" } });
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   const tip = sb.state().integration.tip;
   sb.no(/fails after merging; integration rolled back/, "integrate", "01");
@@ -2131,7 +1611,7 @@ test("acceptance: init and import refuse a criterion with neither a command nor 
   // A ticket with no checklist confirms an empty set, and nothing warns about it any more.
   const sb = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: reads well — manual: a judgement about wording\n", "02-b.md": "# 02: B\n\nBlocked by: None\n" } });
   assert.doesNotMatch(sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK), /warning/);
-  sb.ok("dispatch", "01", "--prepare");
+  sb.ok("dispatch", "01");
   // Import holds new tickets to the same rule.
   const add = (text) => writeFileSync(join(sb.runDir, "issues", "03-c.md"), `# 03: C\n\nBlocked by: None\n\n${text}\n`);
   add("- [ ] AC1: works — check: `<cmd>`");
@@ -2159,10 +1639,10 @@ test("acceptance: a manual reason is part of the confirmed criterion, and a run 
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: reads well — manual: a judgement about wording\n" } });
   const ticket = join(sb.runDir, "issues", "01-a.md");
   writeFileSync(ticket, "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: reads well — manual: a person reads it aloud\n");
-  sb.no(/#01: its acceptance criteria changed since the user confirmed them \(AC1\)/, "dispatch", "01", "--prepare");
+  sb.no(/#01: its acceptance criteria changed since the user confirmed them \(AC1\)/, "dispatch", "01");
   sb.ok("criteria", "01", "--reason", "the user changed how AC1 is checked");
   assert.deepEqual(sb.state().tasks["01"].criteria, [{ id: "AC1", criterion: "reads well", command: null, manual: "a person reads it aloud" }]);
-  sb.ok("dispatch", "01", "--prepare");
+  sb.ok("dispatch", "01");
 
   // State without the marker predates the rule: a bare criterion still imports as manual.
   const older = sandbox();
@@ -2201,10 +1681,10 @@ test("acceptance: integrate runs the checks, then this ticket's commands, then t
   writeFileSync(join(sb.runDir, "issues", "02-b.md"), ticket("02", "01", "02") + `- [ ] AC2: more — check: \`${run("02b")}\`\n`);
   sb.ok("criteria", "02", "--reason", "the user added AC2");
   writeFileSync(log, "");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "02");
   sb.work("02");
 
-  deliver(sb, JSON.parse(sb.ok("review", "02", "--prepare")));
+  sb.ok("review", "02");
   sb.reviewed("02");
   sb.ok("integrate", "02");
   assert.deepEqual(ran(), ["check", "02", "02b", "01"], "checks, then this ticket's commands, then the integrated ticket's, in ticket order");
@@ -2217,10 +1697,10 @@ test("acceptance: a later ticket that breaks an earlier command rolls back, nami
     "02-b.md": "# 02: B\n\nBlocked by: 01\n",
   } });
   sb.complete("01");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "02");
   sb.work("02", { files: { REGRESSED: "" } });
 
-  deliver(sb, JSON.parse(sb.ok("review", "02", "--prepare")));
+  sb.ok("review", "02");
   sb.reviewed("02");
   const tip = sb.state().integration.tip;
   const out = sb.no(/#01 acceptance `[^`]*` fails after merging #02; integration rolled back to/, "integrate", "02");
@@ -2294,10 +1774,10 @@ test("check phase: a check that outlives the limit is stopped with its grandchil
   const slow = `node -e "const {spawn}=require('child_process');`
     + `const g=spawn(process.execPath,['-e','setTimeout(()=>{},60000)'],{stdio:'ignore'});`
     + `require('fs').writeFileSync('${pidFile}',String(g.pid));setTimeout(()=>{},60000)"`;
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("config", "--check", slow, "--check-timeout", "0.05");
   const tip = sb.state().integration.tip;
@@ -2324,7 +1804,7 @@ test("check phase: a check that times out at init keeps nothing", () => {
   assert.equal(spawnSync("git", ["-C", sb.repo, "rev-parse", "--verify", "workloop/feat"], { env: sb.env }).status, 128);
 });
 
-test("check phase: status, watch, note and hold work while integrate's checks run; other commands refuse", async () => {
+test("check phase: status, note and hold work while integrate's checks run; other commands refuse", async () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n", "02-b.md": "# 02: B\n\nBlocked by: None\n" } });
   const release = sb.heldIntegrate();
   const before = sb.state();
@@ -2341,14 +1821,11 @@ test("check phase: status, watch, note and hold work while integrate's checks ru
   assert.equal(JSON.parse(sb.ok("status", "--json")).checking.interrupted, false);
   sb.ok("note", "--text", "recorded during the checks");
   sb.ok("hold", "02", "--reason", "held during the checks");
-  sb.ok("watch");
-  assert.equal(sb.db().heartbeats.length, 1, "watch keeps the heartbeat armed while the checks run");
   // `config` refuses, so the checks that run are the checks configured; so does a
   // rework `send` to the task under check.
-  const refused = [["dispatch", "02", "--prepare"], ["review", "01", "--prepare"], ["integrate", "02"], ["integrate", "01"], ["finish"],
-    ["config", "--check", CHECK], ["config", "--check-timeout", "1"], ["send", "01", "--prepare", "--text", "Please revise"]];
+  const refused = [["dispatch", "02"], ["review", "01"], ["integrate", "02"], ["integrate", "01"], ["finish"],
+    ["config", "--check", CHECK], ["config", "--check-timeout", "1"], ["send", "01", "--text", "Please revise"]];
   for (const args of refused) sb.no(phase, ...args);
-  assert.equal(sb.state().tasks["01"].pendingAction ?? null, null);
   assert.deepEqual(sb.state().config, before.config);
 
   release();
@@ -2378,9 +1855,8 @@ test("check phase: an interrupted integrate is reported, and rerunning it resets
   const interrupted = new RegExp(`interrupted check phase: integrate on #01 \\(pid ${checking.pid} is gone\\); rerun \`integrate 01\``);
   assert.match(sb.ok("status", "--live"), interrupted);
   assert.equal(JSON.parse(sb.ok("status", "--json")).checking.interrupted, true);
-  assert.match(sb.ok("watch"), interrupted);
-  assert.equal(sb.db().heartbeats.length, 1, "an interrupted phase keeps the heartbeat armed until it is recovered");
-  for (const args of [["dispatch", "02", "--prepare"], ["integrate", "02"], ["finish"]]) sb.no(interrupted, ...args);
+  assert.match(sb.ok("wait"), /no turn is running\nnext: integrate 01 — recover the interrupted check phase/);
+  for (const args of [["dispatch", "02"], ["integrate", "02"], ["finish"]]) sb.no(interrupted, ...args);
   assert.equal(sb.g(sb.state().integration.worktree, "rev-parse", "HEAD"), checking.mergeSha);
 
   const out = sb.ok("integrate", "01");
@@ -2434,29 +1910,6 @@ test("check phase: an interrupted finish is cleared by rerunning finish", async 
   assert.match(sb.ok("finish"), /delivery checked/);
   assert.equal(sb.state().checking, null);
   assert.ok(sb.state().completion);
-});
-
-test("check phase: integrate rolls back when the task under check carries a pending action at the end", async () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n" } });
-  const release = sb.heldIntegrate();
-  const run = sb.start("integrate", "01");
-  const checking = await sb.waitFor("the check's identity", () => sb.state().checking?.check && sb.state().checking);
-  // No command can prepare an action for #01 while its checks run (send, dispatch
-  // and review refuse), so the state is written the way a concurrent writer would.
-  const s = sb.state();
-  s.tasks["01"].pendingAction = { action: "injected-send", kind: "send", tool: "send_agent_prompt", arguments: {}, preparedAt: new Date().toISOString() };
-  writeFileSync(join(sb.runDir, "state.json"), `${JSON.stringify(s, null, 2)}\n`);
-  release();
-  const { code, out } = await run.done;
-  assert.notEqual(code, 0, out);
-  assert.match(out, /gate no longer holds after the checks: #01: pending MCP action injected-send/);
-  assert.match(out, /integration rolled back to/);
-  const after = sb.state();
-  assert.equal(after.checking, null);
-  assert.equal(after.tasks["01"].status, "in_review");
-  assert.equal(after.integration.tip, checking.prevTip);
-  assert.equal(sb.g(after.integration.worktree, "rev-parse", "HEAD"), checking.prevTip);
-  assert.equal(sb.events("integrate_failed").at(-1).gate, "#01: pending MCP action injected-send; reconcile with action/ack first");
 });
 
 test("check phase: finish refuses config while its checks run and records no delivery when a ticket was imported meanwhile", async () => {
@@ -2591,27 +2044,12 @@ test("check phase: recovery refuses and names a check pid whose identity cannot 
   release();
 });
 
-test("check phase: a pending action on another task is not re-printed by --prepare while the checks run", async () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n", "02-b.md": "# 02: B\n\nBlocked by: None\n" } });
-  const release = sb.heldIntegrate();
-  assert.match(sb.ok("dispatch", "02", "--prepare"), /"tool": "create_agent"/);
-  const run = sb.start("integrate", "01");
-  await sb.waitFor("the check's identity", () => sb.state().checking?.check && sb.state().checking);
-  const out = sb.no(new RegExp(`check phase: integrate on #01 is running its checks \\(pid ${run.child.pid}`), "dispatch", "02", "--prepare");
-  assert.doesNotMatch(out, /create_agent/);
-  assert.match(sb.ok("action", "02"), /"tool": "create_agent"/);
-  release();
-  const { code, out: done } = await run.done;
-  assert.equal(code, 0, done);
-  assert.equal(sb.state().tasks["02"].pendingAction.kind, "dispatch");
-});
-
 test("check phase: a timed-out check that cannot be stopped keeps the phase and names the group and error", { skip: process.platform === "win32" && "POSIX kill" }, async () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("config", "--check", `node -e "setTimeout(()=>{},60000)"`, "--check-timeout", "0.05");
   const undo = sb.failGroupKills();
@@ -2855,29 +2293,28 @@ test("check phase: printed recovery commands quote paths for the shell", { skip:
 
 test("a conflict aborts the merge; --merge-tip routes it back to the executor", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n", "02-b.md": "# 02: B\n\nBlocked by: None\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "01");
+  sb.ok("dispatch", "02");
   sb.work("01", { files: { "shared.txt": "from 01\n" } });
   sb.work("02", { files: { "shared.txt": "from 02\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
-  sb.no(/reviewer budget full \(1\/1\)/, "review", "02", "--prepare");
+  sb.ok("review", "01");
+  sb.no(/reviewer budget full \(1\/1\)/, "review", "02");
   assert.equal(sb.state().tasks["02"].status, "running"); // not frozen behind a full budget
   sb.reviewed("01");
-  deliver(sb, JSON.parse(sb.ok("review", "02", "--prepare")));
+  sb.ok("review", "02");
   sb.reviewed("02");
   sb.ok("integrate", "01");
   const tip = sb.state().integration.tip;
   sb.no(/conflicts with workloop\/feat \(shared\.txt\).*\n.*send 02 --merge-tip/, "integrate", "02");
   assert.equal(sb.state().integration.tip, tip);
   assert.equal(sb.g(sb.state().integration.worktree, "status", "--porcelain"), "");
-  const mergeTip = JSON.parse(sb.ok("send", "02", "--prepare", "--merge-tip"));
-  assert.ok(mergeTip.arguments.prompt.includes(tip));
-  deliver(sb, mergeTip);
+  sb.ok("send", "02", "--merge-tip");
   const t = sb.state().tasks["02"];
+  assert.ok(readFileSync(`${sb.turn(t.agentId).base}.prompt.md`, "utf8").includes(tip), "the turn's prompt names the tip to merge");
   // The executor merges the tip and resolves the conflict.
   spawnSync("git", ["-C", t.worktree, "merge", tip], { env: sb.env });
   sb.work("02", { files: { "shared.txt": "from 01\nfrom 02\n" } });
-  deliver(sb, JSON.parse(sb.ok("review", "02", "--prepare")));
+  sb.ok("review", "02");
   sb.reviewed("02");
   sb.ok("integrate", "02");
   assert.equal(readFileSync(join(sb.state().integration.worktree, "shared.txt"), "utf8"), "from 01\nfrom 02\n");
@@ -2888,7 +2325,7 @@ test("finish needs every ticket closed and a passing final review of the current
   sb.complete("01");
   sb.no(/not finished: #02 ready/, "finish");
   sb.ok("cancel", "02", "--reason", "out of scope after all");
-  sb.no(/no final review round for the current tip .*final-review --prepare/, "finish");
+  sb.no(/no final review round for the current tip .*final-review/, "finish");
   const tip = sb.state().integration.tip;
   // The reviewer's pass counts only for the tip its report names.
   const round = sb.finalReview({ report: false });
@@ -2907,7 +2344,7 @@ test("finish needs every ticket closed and a passing final review of the current
   sb.ok("archive");
   assert.equal(existsSync(sb.state().integration.worktree), false);
   assert.equal(sb.g(sb.repo, "rev-parse", "workloop/feat"), tip);
-  sb.no(/finished/, "dispatch", "02", "--prepare");
+  sb.no(/finished/, "dispatch", "02");
 });
 
 test("each brief names its agent's evidence and scratch folders; archive deletes scratch and keeps evidence", () => {
@@ -2925,28 +2362,28 @@ test("each brief names its agent's evidence and scratch folders; archive deletes
       assert.ok(existsSync(folder), `${folder} exists before the agent starts`);
     }
   }
-  // Another commit's tree is what a reviewer can regenerate; its receipt is evidence.
+  // Another commit's tree is what a reviewer can regenerate; what it saved is evidence.
   mkdirSync(join(sb.runDir, "scratch", names[1], "base"), { recursive: true });
   writeFileSync(join(sb.runDir, "scratch", names[1], "base", "big.bin"), Buffer.alloc(1048576));
-  writeFileSync(join(sb.runDir, "evidence", names[1], "receipt.json"), "{}\n");
+  writeFileSync(join(sb.runDir, "evidence", names[1], "captured.json"), "{}\n");
   sb.ok("finish");
   sb.ok("retro", "--skip", "--reason", "No recurring problem in this fixture");
   assert.match(sb.ok("archive"), /after deleting 1\.0 MB of scratch/);
   assert.equal(existsSync(join(sb.runDir, "scratch")), false);
-  assert.ok(existsSync(join(sb.runDir, "evidence", names[1], "receipt.json")));
+  assert.ok(existsSync(join(sb.runDir, "evidence", names[1], "captured.json")));
   assert.equal(sb.events("archive")[0].scratchFreed, 1048576);
 });
 
 test("review refuses files outside the ticket's Scope, renames and deletions included; a widened Scope applies at once", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\n**Blocked by:** None\n\n**Scope:** `f01.txt`, docs/\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.g(sb.state().tasks["01"].worktree, "mv", "shared.txt", "moved.txt");
   sb.work("01");
 
-  sb.no(/outside the ticket's Scope \(f01\.txt, docs\/\*\*\):\n  moved\.txt\n  shared\.txt\n/, "review", "01", "--prepare");
+  sb.no(/outside the ticket's Scope \(f01\.txt, docs\/\*\*\):\n  moved\.txt\n  shared\.txt\n/, "review", "01");
   assert.equal(sb.state().tasks["01"].status, "running");
   writeFileSync(sb.state().tasks["01"].file, "# 01: A\n\n**Blocked by:** None\n\n**Scope:** f01.txt, moved.txt, shared.txt\n");
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const t = sb.state().tasks["01"];
   assert.equal(t.status, "in_review");
   const freeze = readFileSync(join(sb.runDir, "events.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.kind === "freeze");
@@ -2959,10 +2396,10 @@ test("acceptance: an acceptance command falls under the check time limit", () =>
     "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: slow — check: `node -e \"setTimeout(() => {}, 60000)\"`\n",
   } });
   sb.ok("config", "--check-timeout", "0.02");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   const tip = sb.state().integration.tip;
   const out = sb.no(/#01 acceptance `node -e "setTimeout[^`]*` timed out after 0\.02 minutes[\s\S]*integration rolled back to/, "integrate", "01");
@@ -3004,10 +2441,10 @@ test("a direct run takes one ticket with a Scope, briefs the reviewer for it, an
   sb.no(/holds one ticket/, "import");
   rmSync(extra);
 
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   const t = sb.state().tasks["01"];
   const brief = readFileSync(join(sb.runDir, "briefs", `01-review-${t.candidateSha.slice(0, 8)}.md`), "utf8");
   // Both modes get the acceptance rule; the direct addendum no longer repeats it.
@@ -3044,7 +2481,7 @@ test("decisions commits ADR and glossary changes and the next dispatch branches 
     .map((line) => JSON.parse(line)).find((e) => e.kind === "decisions");
   assert.equal(event.tip, s.integration.tip);
   assert.deepEqual(event.paths.sort(), ["GLOSSARY.md", "docs/adr/0001-store-decisions.md"]);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   assert.equal(sb.g(sb.state().tasks["01"].worktree, "rev-parse", "HEAD"), s.integration.tip);
 });
 
@@ -3126,7 +2563,7 @@ test("decisions is refused on a different branch at the tip's SHA, and on a deta
   assert.equal(sb.g(wt, "rev-parse", s.integration.branch), s.integration.tip);
   assert.equal(sb.g(wt, "branch", "--show-current"), s.integration.branch);
   assert.equal(sb.g(wt, "rev-list", "--count", `${tip}..${s.integration.tip}`), "1");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   assert.equal(sb.g(sb.state().tasks["01"].worktree, "rev-parse", "HEAD"), s.integration.tip);
 });
 
@@ -3146,7 +2583,7 @@ test("decisions is refused when there are no changes and after a dispatch", () =
   const sb = sandbox();
   const wt = sb.state().integration.worktree;
   sb.no(/nothing to record/, "decisions");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   writeFileSync(join(wt, "GLOSSARY.md"), "# Glossary\n");
   const tip = sb.state().integration.tip;
   sb.no(/#01 is running/, "decisions");
@@ -3265,7 +2702,7 @@ test("decisions reports a failed rollback instead of claiming one when Git refus
   assert.equal(readFileSync(join(wt, "docs/adr/0001-fix.md"), "utf8"), "# 1: Accepted\n");
 
   // The tip the script advanced is the one dispatch branches from, with the checks having passed.
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   assert.equal(sb.g(sb.state().tasks["01"].worktree, "rev-parse", "HEAD"), s.integration.tip);
 });
 
@@ -3274,7 +2711,7 @@ test("repair tickets after integration go through the normal loop", () => {
   sb.complete("01");
   writeFileSync(join(sb.runDir, "issues", "02-fix-a.md"), "# 02: Fix A\n\nBlocked by: 01\n");
   sb.ok("import");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "02");
   assert.equal(sb.g(sb.state().tasks["02"].worktree, "rev-parse", "HEAD"), sb.state().integration.tip);
 });
 
@@ -3308,10 +2745,10 @@ test("a full run refuses to finish while a document it added is unregistered, an
   sb.g(sb.repo, "commit", "-q", "-m", "old notes");
   sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
 
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01", { files: { "PROGRESS.md": "progress\n" } });
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
 
@@ -3325,10 +2762,10 @@ test("a full run refuses to finish while a document it added is unregistered, an
   // The repair ticket removes the process document; the final review is redone at the new tip.
   writeFileSync(join(sb.runDir, "issues", "02-fix-docs.md"), "# 02: Fix documents\n\nBlocked by: 01\n");
   sb.ok("import");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "02");
   sb.g(sb.state().tasks["02"].worktree, "rm", "-q", "PROGRESS.md");
   sb.work("02", { files: {} });
-  deliver(sb, JSON.parse(sb.ok("review", "02", "--prepare")));
+  sb.ok("review", "02");
   sb.reviewed("02");
   sb.ok("integrate", "02");
   assert.match(sb.ok("status"), /do the acceptance mapping: write the acceptance mapping/);
@@ -3344,9 +2781,9 @@ function finishedRun({ prepare = () => {}, files = { "PROGRESS.md": "progress\n"
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n" }, init: null });
   prepare(sb);
   sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01", { files });
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   sb.finalPass();
@@ -3391,10 +2828,10 @@ test("a direct run adding a Markdown file inside its Scope finishes without the 
   sb.g(sb.repo, "add", "AGENTS.md");
   sb.g(sb.repo, "commit", "-q", "-m", "registry");
   sb.ok("init", "--direct", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01", { files: { "NOTES.md": "notes\n" } });
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   assert.doesNotMatch(sb.ok("status"), /aren't in the registry/);
@@ -3409,10 +2846,10 @@ test("the run's own registry row and a root instruction file are never the run's
   sb.g(sb.repo, "add", "AGENTS.md");
   sb.g(sb.repo, "commit", "-q", "-m", "registry");
   sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01", { files: { "CLAUDE.md": "@AGENTS.md\n", "docs/api/billing.md": "# Billing\n" } });
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   assert.match(sb.ok("status"), /1 new documents aren't in the registry \(docs\/api\/billing\.md\)/);
@@ -3420,11 +2857,11 @@ test("the run's own registry row and a root instruction file are never the run's
   // The repair ticket registers it, and the run finishes.
   writeFileSync(join(sb.runDir, "issues", "02-register.md"), "# 02: Register the API doc\n\nBlocked by: 01\n");
   sb.ok("import");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "02");
   const wt = sb.state().tasks["02"].worktree;
   writeFileSync(join(wt, "AGENTS.md"), `${REGISTRY}| docs/api/billing.md | product | billing |\n| legacy/** | product | global |\n`);
   sb.work("02", { files: {} });
-  deliver(sb, JSON.parse(sb.ok("review", "02", "--prepare")));
+  sb.ok("review", "02");
   sb.reviewed("02");
   sb.ok("integrate", "02");
   assert.doesNotMatch(sb.ok("status"), /aren't in the registry/);
@@ -3440,10 +2877,10 @@ test("an inventory that cannot report is a refusal, not an empty report", () => 
   sb.g(sb.repo, "add", "AGENTS.md");
   sb.g(sb.repo, "commit", "-q", "-m", "registry");
   sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   assert.match(sb.ok("status"), /has no table/);
@@ -3455,12 +2892,12 @@ test("a registered document renamed to an unregistered path blocks; a rename ins
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n" }, init: null });
   withRegistry(sb);
   sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   const wt = sb.state().tasks["01"].worktree;
   sb.g(wt, "mv", "shared.txt", "NOTES.md");
   sb.work("01", { files: {} });
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01");
   sb.ok("integrate", "01");
   assert.match(sb.ok("status"), /1 new documents aren't in the registry \(NOTES\.md\)/);
@@ -3475,11 +2912,11 @@ test("a registered document renamed to an unregistered path blocks; a rename ins
   inside.g(inside.repo, "add", "AGENTS.md");
   inside.g(inside.repo, "commit", "-q", "-m", "registry");
   inside.ok("init", "--feature", "feat", "--repo", inside.repo, "--check", CHECK);
-  deliver(inside, JSON.parse(inside.ok("dispatch", "01", "--prepare")));
+  inside.ok("dispatch", "01");
   const wt2 = inside.state().tasks["01"].worktree;
   inside.g(wt2, "mv", "docs/adr/shared.txt", "docs/adr/0002-shared.txt");
   inside.work("01", { files: {} });
-  deliver(inside, JSON.parse(inside.ok("review", "01", "--prepare")));
+  inside.ok("review", "01");
   inside.reviewed("01");
   inside.ok("integrate", "01");
   assert.doesNotMatch(inside.ok("status"), /aren't in the registry/);
@@ -3487,38 +2924,19 @@ test("a registered document renamed to an unregistered path blocks; a rename ins
 
 test("retry starts a new attempt on a new branch and keeps the old one", () => {
   const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   const old = sb.state().tasks["01"];
   sb.no(/needs --reason/, "retry", "01");
   sb.no(/is running/, "retry", "01", "--reason", "session lost");
   sb.setAgent(old.agentId, "closed");
   assert.match(sb.ok("retry", "01", "--new-worktree", "--reason", "session and worktree unusable"), /old attempt is kept/);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   const t = sb.state().tasks["01"];
   assert.equal(t.attempt, "a2");
   assert.equal(t.branch, "wl-feat-01-a2");
   assert.notEqual(t.agentId, old.agentId);
   assert.ok(existsSync(old.worktree));
   assert.equal(t.history[0].reason, "session and worktree unusable");
-});
-
-test("patrol returns as soon as an agent needs attention", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  const t = sb.state().tasks["01"];
-  let out = sb.ok("patrol", "--window", "1", "--interval", "1");
-  assert.match(out, /#01 executor .* running .*report=none/);
-  assert.match(out, /no change/);
-  sb.editDb((d) => { d.agents[0].pending = [{ id: "p1" }]; });
-  out = sb.ok("patrol", "--window", "30", "--interval", "1");
-  assert.match(out, /1 permission request/);
-  sb.editDb((d) => { d.agents[0].pending = []; });
-  sb.work("01", { status: "question" });
-
-  out = sb.ok("patrol", "--window", "30");
-  assert.match(out, /idle .*report=question/);
-  assert.match(out, /reported question/);
-  sb.setAgent(t.agentId, "idle");
 });
 
 test("a stale lock left by a dead process is taken over", () => {
@@ -3528,45 +2946,15 @@ test("a stale lock left by a dead process is taken over", () => {
   assert.equal(existsSync(join(sb.runDir, ".lock")), false);
 });
 
-test("session recovery handles Git worktree output with CRLF line endings", () => {
-  const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  const old = sb.state().tasks["01"];
-  writeFileSync(join(old.worktree, "uncommitted.txt"), "keep this recovery work\n");
-  sb.setAgent(old.agentId, "error");
-  sb.ok("retry", "01", "--reason", "provider session cannot be resumed");
-  const preload = join(sb.root, "git-worktree-crlf.cjs");
-  writeFileSync(preload, `
-    const cp = require('node:child_process');
-    const original = cp.spawnSync;
-    cp.spawnSync = (command, args, options) => {
-      const result = original(command, args, options);
-      if (command === 'git' && args.includes('worktree') && args.includes('list') && !args.includes('-z')) {
-        result.stdout = result.stdout.replace(/\\r?\\n/g, '\\r\\n');
-      }
-      return result;
-    };
-    require('node:module').syncBuiltinESMExports();
-  `);
-  sb.nodeArgs.push("--require", preload);
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  const fresh = sb.state().tasks["01"];
-  assert.equal(fresh.worktree, old.worktree);
-  assert.equal(fresh.branch, old.branch);
-  assert.notEqual(fresh.agentId, old.agentId);
-  assert.equal(readFileSync(join(fresh.worktree, "uncommitted.txt"), "utf8"), "keep this recovery work\n");
-  assert.equal(sb.db().workspaces.length, 1);
-});
-
 test("session replacement reuses committed and dirty work and retains review history", () => {
   const sb = sandbox();
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
 
-  deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare")));
+  sb.ok("review", "01");
   sb.reviewed("01", "changes_requested");
   const old = sb.state().tasks["01"];
-  deliver(sb, JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Fix S1 using the existing implementation")));
+  sb.ok("send", "01", "--text", "Fix S1 using the existing implementation");
   const rework = sb.state().tasks["01"];
   assert.equal(rework.agentId, old.agentId);
   assert.equal(rework.worktree, old.worktree);
@@ -3574,7 +2962,7 @@ test("session replacement reuses committed and dirty work and retains review his
   writeFileSync(join(old.worktree, "uncommitted.txt"), "keep this recovery work\n");
   sb.setAgent(old.agentId, "error");
   sb.ok("retry", "01", "--reason", "provider session cannot be resumed");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   const fresh = sb.state().tasks["01"];
   assert.notEqual(fresh.agentId, old.agentId);
   assert.equal(fresh.worktree, old.worktree);
@@ -3587,7 +2975,7 @@ test("session replacement reuses committed and dirty work and retains review his
   assert.ok(brief.includes(old.agentId));
   assert.ok(brief.includes(old.candidateSha));
   assert.ok(existsSync(join(sb.runDir, "reports", "01-a1-before-1.md")));
-  assert.equal(sb.db().workspaces.length, 1);
+  assert.equal(readdirSync(join(sb.runDir, "worktrees")).length, 1);
 });
 
 test("whole-run retro precedes archival, preserves evidence, and never applies suggestions", () => {
@@ -3600,21 +2988,23 @@ test("whole-run retro precedes archival, preserves evidence, and never applies s
   sb.ok("retro", "--file", report);
   sb.ok("finish");
   sb.no(/assess retro/, "archive"); // interim report is not a close assessment
-  assert.ok(!sb.agent(t.agentId).archived);
+  assert.equal(sb.agent(t.agentId).archivedAt, undefined);
   sb.ok("retro", "--file", report);
   const retroPath = sb.state().retro.path;
   assert.equal(existsSync(join(sb.repo, "AGENTS.md")), false);
-  sb.editDb((d) => { d.failOnce = "agent logs"; });
-  sb.no(/injected failure/, "archive");
-  assert.ok(sb.db().agents.every((a) => !a.archived));
+  // Archive stops at the first destructive step: a dirty worktree is refused, after
+  // the evidence was captured.
+  writeFileSync(join(t.worktree, "dirty.txt"), "not committed\n");
+  sb.no(/uncommitted changes/, "archive");
+  assert.ok(Object.values(sb.state().agents).every((a) => !a.archivedAt));
   assert.ok(existsSync(t.worktree));
-  sb.editDb((d) => { d.failOnce = "workspace archive"; });
-  sb.no(/injected failure/, "archive");
   assert.ok(existsSync(join(sb.runDir, "evidence", "index.json")));
-  const logCalls = sb.db().calls.filter((a) => a[0] === "agent" && a[1] === "logs").length;
+  const captured = readFileSync(join(sb.runDir, "evidence", "index.json"), "utf8");
+  rmSync(join(t.worktree, "dirty.txt"));
   sb.ok("archive");
-  assert.equal(sb.db().calls.filter((a) => a[0] === "agent" && a[1] === "logs").length, logCalls);
-  assert.ok(sb.db().agents.every((a) => a.archived));
+  // The interrupted archive reuses the snapshot it already took.
+  assert.equal(readFileSync(join(sb.runDir, "evidence", "index.json"), "utf8"), captured);
+  assert.ok(Object.values(sb.state().agents).every((a) => a.archivedAt));
   assert.equal(existsSync(t.worktree), false);
   assert.equal(existsSync(sb.state().integration.worktree), false);
   const index = JSON.parse(readFileSync(join(sb.runDir, "evidence", "index.json")));
@@ -3623,9 +3013,10 @@ test("whole-run retro precedes archival, preserves evidence, and never applies s
   assert.equal(readFileSync(retroPath, "utf8"), readFileSync(report, "utf8"));
   assert.equal(existsSync(join(sb.repo, "AGENTS.md")), false);
   assert.match(sb.ok("archive"), /already archived/);
-  sb.editDb((d) => { d.failOnce = "agent logs"; });
+  // An archived run's evidence was already captured: reading it never asks Rex.
+  const rexCalls = sb.db().calls.length;
   assert.match(sb.ok("evidence"), /preserved evidence/);
-  assert.equal(sb.db().failOnce, "agent logs"); // archived reads never need the provider
+  assert.equal(sb.db().calls.length, rexCalls);
   sb.ok("retro", "--file", report); // explicit retro also works after archival
   assert.ok(existsSync(retroPath)); // prior output retained
 });
@@ -3641,70 +3032,41 @@ test("post-integration repair gets a new session and tree; stale retro cannot cl
   writeFileSync(join(sb.runDir, "issues", "02-repair.md"), "# Repair\n\nBlocked by: 01\nScope: f02.txt\n");
   sb.ok("import");
   sb.no(/run finish/, "archive");
-  sb.no(/is done/, "send", "01", "--prepare", "--text", "reuse the integrated executor");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.no(/is done/, "send", "01", "--text", "reuse the integrated executor");
+  sb.ok("dispatch", "02");
   const repair = sb.state().tasks["02"];
   assert.notEqual(repair.agentId, old.agentId);
   assert.notEqual(repair.worktree, old.worktree);
   assert.equal(repair.baseSha, tip);
   assert.ok(existsSync(old.worktree));
-  sb.work("02"); deliver(sb, JSON.parse(sb.ok("review", "02", "--prepare"))); sb.reviewed("02"); sb.ok("integrate", "02");
+  sb.work("02"); sb.ok("review", "02"); sb.reviewed("02"); sb.ok("integrate", "02");
   sb.ok("finish");
   sb.no(/assess retro/, "archive");
   sb.ok("retro", "--skip", "--reason", "Reviewed the repair evidence; no recurring process issue");
   sb.ok("archive");
-  assert.ok(sb.db().agents.every((a) => a.archived));
+  assert.ok(Object.values(sb.state().agents).every((a) => a.archivedAt));
 });
 
 test("archival retains cancelled dirty work but archives its sessions with all attempts", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# A\n\nBlocked by: None\nScope: f01.txt\n" }, init: ["--direct"] });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   const old = sb.state().tasks["01"];
   writeFileSync(join(old.worktree, "valuable.txt"), "not integrated\n");
   sb.setAgent(old.agentId, "error");
   sb.ok("retry", "01", "--new-worktree", "--reason", "need a separate clean attempt");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   const next = sb.state().tasks["01"];
   sb.setAgent(next.agentId, "idle");
   sb.ok("cancel", "01", "--reason", "user changed scope");
   sb.ok("finish");
   sb.ok("retro", "--skip", "--reason", "No recurring issue in this synthetic fixture");
   sb.ok("archive");
-  assert.ok(sb.db().agents.every((a) => a.archived));
+  assert.ok(Object.values(sb.state().agents).every((a) => a.archivedAt));
   assert.equal(readFileSync(join(old.worktree, "valuable.txt"), "utf8"), "not integrated\n");
   assert.ok(existsSync(next.worktree));
   assert.equal(sb.state().retainedWorktrees.length, 2);
   const evidence = JSON.parse(readFileSync(join(sb.runDir, "evidence/index.json")));
   assert.equal(evidence.agents.length, 2);
-});
-
-test("a missing provider session can be replaced without losing its tree; evidence discloses the gap", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# A\n\nBlocked by: None\nScope: f01.txt\n" }, init: ["--direct"] });
-
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  const old = sb.state().tasks["01"];
-  sb.editDb((d) => { d.agents = d.agents.filter((a) => a.id !== old.agentId); });
-  sb.ok("retry", "01", "--reason", "provider session has been deleted");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
-  assert.equal(sb.state().tasks["01"].worktree, old.worktree);
-  sb.work("01"); deliver(sb, JSON.parse(sb.ok("review", "01", "--prepare"))); sb.reviewed("01"); sb.ok("integrate", "01");
-  sb.ok("finish");
-  const report = join(sb.root, "retro.md");
-  writeFileSync(report, "Session was deleted; original transcript unavailable. Suggest investigating provider retention.\n");
-  sb.ok("retro", "--file", report);
-  assert.match(sb.ok("archive"), /evidence gap/);
-  const index = JSON.parse(readFileSync(join(sb.runDir, "evidence/index.json")));
-  assert.equal(index.agents.find((a) => a.id === old.agentId).missing, true);
-});
-
-test("archival does not sweep agents in another checkout with colliding run labels", () => {
-  const sb = sandbox({ tickets: { "01-a.md": "# A\n\nBlocked by: None\nScope: f01.txt\n" }, init: ["--direct"] });
-  sb.complete("01");
-  sb.editDb((d) => d.agents.push({ id: "foreign", cwd: "/other/repo", status: "idle", archived: false, labels: { workloop: sb.state().runKey, task: "01" }, prompts: ["unrelated work"] }));
-  sb.ok("finish"); sb.ok("retro", "--skip", "--reason", "No recurring issue"); sb.ok("archive");
-  assert.equal(sb.agent("foreign").archived, false);
-  const index = JSON.parse(readFileSync(join(sb.runDir, "evidence/index.json")));
-  assert.equal(index.agents.some((a) => a.id === "foreign"), false);
 });
 
 // ------------------------------------------ independent final review (ticket #04)
@@ -3727,61 +3089,60 @@ function repairTicket(sb, id, blockedBy) {
   writeFileSync(join(sb.runDir, "issues", `${id}-fix.md`),
     `# ${id}: Fix\n\nBlocked by: ${blockedBy}\n\n- [ ] AC1: still works — check: \`node --version\`\n`);
   sb.ok("import");
-  deliver(sb, JSON.parse(sb.ok("dispatch", id, "--prepare")));
+  sb.ok("dispatch", id);
   sb.work(id);
-  deliver(sb, JSON.parse(sb.ok("review", id, "--prepare")));
+  sb.ok("review", id);
   sb.reviewed(id);
   sb.ok("integrate", id);
   return sb.state().integration.tip;
 }
 
-test("final review: prepare refuses in a direct run, with an open ticket, pending document work, during a check phase, and without a current mapping", async () => {
+test("final review: the start refuses in a direct run, with an open ticket, pending document work, during a check phase, and without a current mapping", async () => {
   const direct = sandbox({ init: null, tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\nScope: f01.txt\n" } });
 
   rmSync(join(direct.runDir, "spec.md"));
   direct.ok("init", "--direct", "--feature", "feat", "--repo", direct.repo, "--check", CHECK);
   direct.complete("01");
-  direct.no(/a direct run has no final review/, "final-review", "--prepare");
+  direct.no(/a direct run has no final review/, "final-review");
 
   const open = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n", "02-b.md": "# 02: B\n\nBlocked by: 01\n" } });
   open.complete("01");
-  open.no(/final-review needs every ticket closed: #02 ready/, "final-review", "--prepare");
+  open.no(/final-review needs every ticket closed: #02 ready/, "final-review");
   open.ok("cancel", "02", "--reason", "out of scope after all");
   // The mapping is the reviewer's input, so it comes first.
-  open.no(/write the acceptance mapping to .*final-review\.md first/, "final-review", "--prepare");
+  open.no(/write the acceptance mapping to .*final-review\.md first/, "final-review");
   open.finalMapping("deadbeef");
-  open.no(/is for integration tip deadbeef, but the tip is/, "final-review", "--prepare");
+  open.no(/is for integration tip deadbeef, but the tip is/, "final-review");
   open.finalMapping();
   const stale = new Date(Date.parse(open.state().lastIntegratedAt) - 60000);
   utimesSync(join(open.runDir, "final-review.md"), stale, stale);
-  open.no(/is older than the last integration .*rewrite the mapping for the current tip/, "final-review", "--prepare");
-  open.no(/final-review starts an independent final reviewer; pass --prepare/, "final-review");
+  open.no(/is older than the last integration .*rewrite the mapping for the current tip/, "final-review");
 
   const docs = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n" }, init: null });
   withRegistry(docs);
   docs.ok("init", "--feature", "feat", "--repo", docs.repo, "--check", CHECK);
-  deliver(docs, JSON.parse(docs.ok("dispatch", "01", "--prepare")));
+  docs.ok("dispatch", "01");
   docs.work("01", { files: { "PROGRESS.md": "progress\n" } });
-  deliver(docs, JSON.parse(docs.ok("review", "01", "--prepare")));
+  docs.ok("review", "01");
   docs.reviewed("01");
   docs.ok("integrate", "01");
   docs.finalMapping();
-  docs.no(/the end-of-run document step still reports work: 1 new documents aren't in the registry/, "final-review", "--prepare");
+  docs.no(/the end-of-run document step still reports work: 1 new documents aren't in the registry/, "final-review");
 
   const held = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n" } });
   const release = held.heldIntegrate();
   const run = held.start("integrate", "01");
   await held.waitFor("the check's identity", () => held.state().checking?.check && held.state().checking);
-  held.no(/check phase: integrate on #01/, "final-review", "--prepare");
+  held.no(/check phase: integrate on #01/, "final-review");
   release();
   const { code, out } = await run.done;
   assert.equal(code, 0, out);
 });
 
-test("final review: prepare starts a round at the tip with its own branch, worktree, brief and labelled request", () => {
+test("final review: the start makes a round at the tip with its own branch, worktree, brief and Rex tab", () => {
   const sb = finalRun();
   sb.finalMapping();
-  const action = JSON.parse(sb.ok("final-review", "--prepare"));
+  const out = sb.ok("final-review");
   const s = sb.state();
   const f = s.finalReview;
   assert.equal(f.round, 1);
@@ -3792,18 +3153,17 @@ test("final review: prepare starts a round at the tip with its own branch, workt
   assert.notEqual(f.worktree, s.integration.worktree);
   assert.equal(sb.g(f.worktree, "rev-parse", "HEAD"), f.tip, "branched at the integration tip");
   assert.equal(sb.g(f.worktree, "branch", "--show-current"), "wl-feat-final-1");
-  assert.ok(sb.db().calls.some((c) => c[0] === "workspace" && c[1] === "create" && c.includes("wl-feat-final-1")), "created through Paseo");
+  assert.match(out, /final review round 1: devin model=review-model mode=dangerous .* started in Rex tab "final r1/);
 
-  // The create_agent request the orchestrator executes: reviewer settings and labels.
-  assert.equal(action.tool, "create_agent");
-  assert.equal(action.arguments.provider, "fake/review-model");
-  assert.equal(action.arguments.settings.modeId, "full");
-  assert.equal(action.arguments.settings.thinkingOptionId, "high");
-  assert.equal(action.arguments.notifyOnFinish, true);
-  assert.ok(action.arguments.workspaceId);
-  const { action: actionId, ...labels } = action.arguments.labels;
-  assert.deepEqual(labels, { workloop: s.runKey, task: "final", attempt: "r1", role: "reviewer" });
-  assert.ok(actionId);
+  // The reviewer runs as a turn in the run's Rex session, at the round's worktree,
+  // with the reviewer role's launch settings.
+  const tab = sb.block(s.agents[f.agentId].turns[0].block);
+  assert.equal(tab.session, s.rex.session);
+  assert.equal(tab.cwd, f.worktree);
+  const spec = JSON.parse(readFileSync(tab.argv.at(-1), "utf8"));
+  assert.deepEqual([spec.provider, spec.settings], ["devin", { model: "review-model", mode: "dangerous" }]);
+  assert.equal(s.agents[f.agentId].role, "reviewer");
+  assert.equal(s.agents[f.agentId].task, "final");
 
   // The brief: every input the spec names, the method, the rules and the report shape.
   const brief = readFileSync(join(sb.runDir, "briefs", `final-1-${s.integration.tip.slice(0, 8)}.md`), "utf8");
@@ -3837,7 +3197,7 @@ test("final review: prepare starts a round at the tip with its own branch, workt
 test("final review: a second round at the same tip needs --again, earlier rounds stay in history, and a moved tip allows a new round", () => {
   const sb = finalRun();
   const first = sb.finalReview();
-  sb.no(/the final review already has round 1 for the current tip .*pass --again/, "final-review", "--prepare");
+  sb.no(/the final review already has round 1 for the current tip .*pass --again/, "final-review");
 
   const second = sb.finalReview({ again: true, report: false });
   assert.equal(second.round, 2);
@@ -3852,14 +3212,14 @@ test("final review: a second round at the same tip needs --again, earlier rounds
   // A repair moves the tip, so the next round needs no --again.
   writeFileSync(join(sb.runDir, "issues", "02-fix.md"), "# 02: Fix\n\nBlocked by: 01\n\n- [ ] AC1: still works — check: `node --version`\n");
   sb.ok("import");
-  deliver(sb, JSON.parse(sb.ok("dispatch", "02", "--prepare")));
+  sb.ok("dispatch", "02");
   sb.work("02");
 
-  deliver(sb, JSON.parse(sb.ok("review", "02", "--prepare")));
+  sb.ok("review", "02");
   sb.reviewed("02");
   sb.ok("integrate", "02");
   // A round exists for the old tip, so --again is not what starts the next one.
-  sb.no(/--again starts a second round at the same tip, and no round covers the current tip/, "final-review", "--prepare", "--again");
+  sb.no(/--again starts a second round at the same tip, and no round covers the current tip/, "final-review", "--again");
   const third = sb.finalReview({ report: false });
   assert.equal(third.round, 3);
   assert.equal(third.tip, sb.state().integration.tip);
@@ -3927,7 +3287,7 @@ test("final review: a run without numbered criteria gets no re-review section an
   repairTicket(sb, "02", "01");
   sb.finalMapping();
   // No boundary means no cap: the round after a reported one waits for nothing.
-  sb.no(/this run predates the review boundary and its cap, so final-review --extra-round does not apply/, "final-review", "--prepare", "--extra-round", "--reason", "the user said so");
+  sb.no(/this run predates the review boundary and its cap, so final-review --extra-round does not apply/, "final-review", "--extra-round", "--reason", "the user said so");
   const second = sb.finalReview({ report: false });
   assert.doesNotMatch(finalBrief(sb, second), /## Re-review/);
   assert.doesNotMatch(finalBrief(sb, first), /## Re-review/);
@@ -3938,76 +3298,37 @@ test("final review: a repair cycle past the cap waits for the user; --extra-roun
   sb.ok("config", "--max-rework-rounds", "0");
   // The first round is not a repair cycle, whatever the cap.
   sb.finalReview({ verdict: "changes_requested", findings: [{ id: "X1", blocking: true, basis: "M1: spec item M1" }] });
-  assert.match(sb.ok("status"), /The next round would be repair cycle 1, past the run's cap of 0: ask the user before writing repair tickets, then start it with `final-review --prepare --extra-round --reason/);
+  assert.match(sb.ok("status"), /The next round would be repair cycle 1, past the run's cap of 0: ask the user before writing repair tickets, then start it with `final-review --extra-round --reason/);
 
   repairTicket(sb, "02", "01");
   sb.finalMapping();
-  sb.no(/final review round 2 would be repair cycle 1, past the run's cap of 0\. The run waits for the user/, "final-review", "--prepare");
-  sb.no(/final-review --extra-round needs --reason/, "final-review", "--prepare", "--extra-round");
-  sb.no(/final-review --reason belongs to --waive <IDs>/, "final-review", "--prepare", "--reason", "the cap was reached");
-  assert.equal(sb.state().extraRounds, undefined, "a refused prepare records nothing");
+  sb.no(/final review round 2 would be repair cycle 1, past the run's cap of 0\. The run waits for the user/, "final-review");
+  sb.no(/final-review --extra-round needs --reason/, "final-review", "--extra-round");
+  sb.no(/final-review --reason belongs to --waive <IDs>/, "final-review", "--reason", "the cap was reached");
+  assert.equal(sb.state().extraRounds, undefined, "a refused start records nothing");
 
   // The user decided to go on: the round starts and their decision is recorded with it.
-  const action = JSON.parse(sb.ok("final-review", "--prepare", "--extra-round", "--reason", "the user chose one more repair cycle"));
-  const round = sb.ackFinal(action);
+  sb.ok("final-review", "--extra-round", "--reason", "the user chose one more repair cycle");
+  const round = sb.state().finalReview;
   writeFileSync(round.path, `Verdict: changes_requested\nIntegration tip: ${round.tip}\n${findingsTable([{ id: "X2", blocking: true, basis: "M1: the row still does not hold" }])}`);
+  sb.endTurn(round.agentId);
   const s = sb.state();
   assert.deepEqual(s.extraRounds.map(({ task, round, cycle, cap, reason }) => ({ task, round, cycle, cap, reason })),
     [{ task: "final", round: 2, cycle: 1, cap: 0, reason: "the user chose one more repair cycle" }]);
   assert.deepEqual(sb.events("extra_round").map((e) => [e.task, e.round, e.cycle, e.cap]), [["final", 2, 1, 0]]);
 
   // At the same tip nothing is repaired, so --again needs no decision.
-  sb.no(/--extra-round goes past the cap at a new tip; --again at the same tip repairs nothing and needs no decision/, "final-review", "--prepare", "--again", "--extra-round", "--reason", "x");
+  sb.no(/--extra-round goes past the cap at a new tip; --again at the same tip repairs nothing and needs no decision/, "final-review", "--again", "--extra-round", "--reason", "x");
 
   // A cap the next cycle stays within makes --extra-round the wrong flag.
   sb.ok("config", "--max-rework-rounds", "5");
   repairTicket(sb, "03", "02");
   sb.finalMapping();
-  sb.no(/final review round 3 is repair cycle 2, within the run's cap of 5, so --extra-round is not needed/, "final-review", "--prepare", "--extra-round", "--reason", "unneeded");
+  sb.no(/final review round 3 is repair cycle 2, within the run's cap of 5, so --extra-round is not needed/, "final-review", "--extra-round", "--reason", "unneeded");
   const third = sb.finalReview({ verdict: "pass" });
   assert.equal(third.round, 3);
   const out = sb.ok("finish");
   assert.match(out, /rework past the cap — the user decided each one:\n- final review round 2, repair cycle 1 of cap 0: the user chose one more repair cycle/);
-});
-
-test("final review: action final shows the request, and ack final refuses a receipt for the wrong labels, worktree or parent", () => {
-  const sb = finalRun();
-  sb.finalMapping();
-  const action = JSON.parse(sb.ok("final-review", "--prepare"));
-  assert.deepEqual(JSON.parse(sb.ok("action", "final")), action);
-  // While the request waits, nothing else starts: it needs its receipt first.
-  sb.no(/the final review has pending MCP action .*action final/, "finish");
-  sb.no(/the final review has pending MCP action .*action final/, "final-review", "--prepare");
-  sb.ok("note", "--text", "recorded while the request waits");
-
-  const receipt = (payload) => {
-    writeFileSync(join(sb.root, "final-receipt.json"), JSON.stringify(payload));
-    return join(sb.root, "final-receipt.json");
-  };
-  sb.no(/receipt action does not match the pending action/, "ack", "final", "--receipt", receipt({ action: "nope", result: { agentId: "x" } }));
-  // An agent with another run's labels is not this reviewer.
-  sb.editDb((d) => d.agents.push({ id: "stray", cwd: sb.state().finalReview.worktree, labels: { workloop: "other", task: "final" }, status: "idle", archived: false, parentAgentId: sb.env.PASEO_AGENT_ID, updatedAt: new Date().toISOString(), prompts: ["x"] }));
-  sb.no(/does not match the prepared labels and worktree/, "ack", "final", "--receipt", receipt({ action: action.action, result: { agentId: "stray", status: "idle" } }));
-  // The right labels, but in another directory.
-  sb.editDb((d) => d.agents.push({ id: "elsewhere", cwd: sb.repo, labels: action.arguments.labels, status: "idle", archived: false, parentAgentId: sb.env.PASEO_AGENT_ID, updatedAt: new Date().toISOString(), prompts: ["x"] }));
-  sb.no(/does not match the prepared labels and worktree/, "ack", "final", "--receipt", receipt({ action: action.action, result: { agentId: "elsewhere", status: "idle" } }));
-  sb.editDb((d) => { d.agents = d.agents.filter((a) => a.id !== "elsewhere"); });
-  // The right labels and worktree, but another orchestrator's child.
-  sb.editDb((d) => d.agents.push({ id: "orphan", cwd: sb.state().finalReview.worktree, labels: action.arguments.labels, status: "idle", archived: false, parentAgentId: "someone-else", updatedAt: new Date().toISOString(), prompts: ["x"] }));
-  sb.no(/does not belong to this orchestrator/, "ack", "final", "--receipt", receipt({ action: action.action, result: { agentId: "orphan", status: "idle" } }));
-  assert.ok(sb.state().finalReview.pendingAction, "a refused receipt retains the request");
-  sb.editDb((d) => { d.agents = d.agents.filter((a) => a.id !== "orphan"); });
-
-  // The real launch: an agent in the round's worktree, under this orchestrator.
-  sb.editDb((d) => d.agents.push({ id: "good", title: action.arguments.title, cwd: sb.state().finalReview.worktree, labels: action.arguments.labels, status: "running", archived: false, parentAgentId: sb.env.PASEO_AGENT_ID, updatedAt: new Date().toISOString(), prompts: ["p"] }));
-  const out = sb.ok("ack", "final", "--receipt", receipt({ action: action.action, result: { agentId: "good", status: "running" } }));
-  assert.match(out, /final review round 1: reviewer good acknowledged/);
-  const f = sb.state().finalReview;
-  assert.equal(f.agentId, "good");
-  assert.equal(f.pendingAction, null);
-  assert.equal(f.launch, "fake model=review-model mode=full thinking=high ← profile \"wl-reviewer\"");
-  assert.deepEqual(sb.events("final_review").map((e) => e.round), [1]);
-  assert.deepEqual(sb.events("final_reviewer").map((e) => [e.round, e.agent]), [[1, "good"]]);
 });
 
 test("final review: finish needs this round's report for this tip, and accepts changes_requested once every blocking finding is waived", () => {
@@ -4086,27 +3407,22 @@ test("final review: a finding outside the mapping, criteria, ledger and floor cl
   assert.equal(sb.state().waivers, undefined);
 });
 
-test("final review: status leads through the mapping, the round, finish, repairs and waivers, and watch treats the reviewer as a worker", () => {
+test("final review: status leads through the mapping, the round, finish, repairs and waivers, and the reviewer is a live turn", () => {
   const sb = finalRun();
   assert.match(sb.ok("status"), /do the acceptance mapping: write the acceptance mapping to .*final-review\.md first/);
   sb.finalMapping();
-  assert.match(sb.ok("status"), /final-review --prepare — start the independent final reviewer at/);
-  const action = JSON.parse(sb.ok("final-review", "--prepare"));
-  assert.match(sb.ok("status"), /action final — reconcile pending MCP action .*; do not repeat an unacknowledged call/);
-  assert.match(sb.ok("watch"), /final review round 1: pending MCP action/);
-
-  const round = sb.ackFinal(action, { idle: false });
-  const running = sb.ok("watch");
-  assert.match(running, /【保温心跳】正常/);
-  // The live view knows the final reviewer; it is not an unrecorded dispatch.
-  assert.doesNotMatch(sb.ok("status", "--live"), /carries this run's label but is not recorded/);
+  assert.match(sb.ok("status"), /final-review — start the independent final reviewer at/);
+  sb.ok("final-review");
+  const round = sb.state().finalReview;
+  // The live view knows the final reviewer: its turn is running in the run's session.
+  assert.match(sb.ok("status", "--live"), /final review round 1: running/);
   assert.equal(JSON.parse(sb.ok("status", "--json")).finalReview.agentId, round.agentId);
-  assert.match(sb.ok("status"), /wait for the final reviewer \(round 1\) to write .*watch.*; then finish, write repair tickets or waive its findings/);
-  sb.setAgent(round.agentId, "idle");
-  assert.match(sb.ok("watch"), new RegExp(`final review ${round.agentId.slice(0, 8)}: idle; read .* and continue the loop`));
+  assert.match(sb.ok("status"), /wait for the final reviewer \(round 1\) to write .*; then finish, write repair tickets or waive its findings/);
+  sb.endTurn(round.agentId);
+  assert.match(sb.ok("status", "--live"), /final review round 1: idle/);
 
   writeFileSync(round.path, `Verdict: changes_requested\nIntegration tip: ${round.tip}\n${findingsTable([{ id: "X1", blocking: true, basis: "M1: spec item M1" }])}`);
-  assert.match(sb.ok("status"), /final review changes requested \(X1\): read .*write repair tickets .*final-review --waive X1 .*--prepare --again/);
+  assert.match(sb.ok("status"), /final review changes requested \(X1\): read .*write repair tickets .*final-review --waive X1 .*--again/);
   sb.ok("final-review", "--waive", "X1", "--reason", "the user accepted the drift");
   assert.match(sb.ok("status"), /finish — the final review's blocking findings are all waived/);
 
@@ -4122,7 +3438,7 @@ test("final review: evidence captures the reviewer session and archive removes a
   sb.ok("finish");
   sb.ok("retro", "--skip", "--reason", "No recurring problem in this fixture");
   sb.ok("archive");
-  assert.equal(sb.agent(round.agentId).archived, true, "the session is archived with the run");
+  assert.ok(sb.agent(round.agentId).archivedAt, "the session is archived with the run");
   assert.equal(existsSync(round.worktree), false, "the clean worktree goes");
   assert.equal(spawnSync("git", ["-C", sb.repo, "rev-parse", "--verify", round.branch], { env: sb.env }).status, 128, "and its branch");
   const index = JSON.parse(readFileSync(join(sb.runDir, "evidence", "index.json"), "utf8"));
@@ -4143,7 +3459,7 @@ test("final review: archive retains and lists a dirty final worktree", () => {
   assert.ok(out.includes(round.worktree), out);
   assert.equal(readFileSync(join(round.worktree, "leftover.txt"), "utf8"), "keep this\n");
   assert.deepEqual(sb.state().retainedWorktrees.map((w) => [w.worktree, w.branch]), [[round.worktree, round.branch]]);
-  assert.equal(sb.agent(round.agentId).archived, true, "its session is archived anyway");
+  assert.ok(sb.agent(round.agentId).archivedAt, "its session is archived anyway");
 });
 
 test("final review: finish re-checks the final gate after its checks and records no delivery when the report is gone", async () => {
@@ -4187,28 +3503,6 @@ test("final review: archive keeps a final branch that holds work of its own", ()
   assert.deepEqual(sb.state().retainedWorktrees.map((w) => [w.worktree, w.branch]), [[round.worktree, round.branch]]);
 });
 
-test("final review: finish refuses a report for a round whose reviewer was never acknowledged", () => {
-  const sb = finalRun();
-  sb.finalMapping();
-  const action = JSON.parse(sb.ok("final-review", "--prepare"));
-  const receipt = join(sb.root, "failed-final.json");
-  writeFileSync(receipt, JSON.stringify({ action: action.action, result: { isError: true, content: [{ type: "text", text: "the provider rejected the launch" }] } }));
-  assert.match(sb.ok("ack", "final", "--receipt", receipt), /failed; no success recorded/);
-  const f = sb.state().finalReview;
-  assert.equal(f.agentId, undefined);
-  writeFileSync(f.path, `Verdict: pass\nIntegration tip: ${f.tip}\n`);
-  // A fresh pass file is not a verdict: no independent reviewer ever ran.
-  sb.no(/round 1 has no acknowledged reviewer: .*final-review --prepare --again/, "finish");
-  assert.match(sb.ok("status"), /final review round 1 has no acknowledged reviewer/);
-  assert.equal(sb.state().completion ?? null, null);
-
-  // Recovery: a new round, this time acknowledged, takes the same pass.
-  const round = sb.finalReview({ again: true });
-  assert.equal(round.round, 2);
-  assert.ok(round.agentId);
-  assert.match(sb.ok("finish"), /Nothing was pushed/);
-});
-
 test("final review: a waiver covers the finding it waived, not a later finding that reuses its ID", () => {
   const sb = finalRun();
   const round = sb.finalReview({ verdict: "changes_requested", findings: [
@@ -4232,11 +3526,10 @@ test("final review: a waiver covers the finding it waived, not a later finding t
   assert.match(out, /final review X1 · final · Cross-ticket · src\/x\.ts:1 · Security: a new, unrelated injection · reason: the user accepted the rewritten finding too/);
 });
 
-test("final review: an interrupted prepare adopts its worktree only when it is clean", () => {
+test("final review: an interrupted start adopts its worktree only when it is clean", () => {
   const sb = finalRun();
   sb.finalMapping();
-  const action = JSON.parse(sb.ok("final-review", "--prepare"));
-  assert.equal(action.tool, "create_agent");
+  sb.ok("final-review");
   const wt = sb.state().finalReview.worktree;
   // Simulate a crash before the state was saved: the branch and worktree exist, the round does not.
   const crashed = sb.state();
@@ -4244,27 +3537,28 @@ test("final review: an interrupted prepare adopts its worktree only when it is c
   writeFileSync(join(sb.runDir, "state.json"), `${JSON.stringify(crashed, null, 2)}\n`);
 
   writeFileSync(join(wt, "shared.txt"), "edited by hand\n");
-  sb.no(/left by an interrupted prepare with uncommitted or untracked changes[\s\S]*Nothing was changed/, "final-review", "--prepare");
+  sb.no(/left by an interrupted start with uncommitted or untracked changes[\s\S]*Nothing was changed/, "final-review");
   assert.equal(readFileSync(join(wt, "shared.txt"), "utf8"), "edited by hand\n", "refused without touching the tree");
   assert.match(sb.g(wt, "status", "--porcelain"), /M shared\.txt/);
   sb.g(wt, "checkout", "--", "shared.txt");
 
   writeFileSync(join(wt, "untracked.txt"), "new\n");
-  sb.no(/uncommitted or untracked changes/, "final-review", "--prepare");
+  sb.no(/uncommitted or untracked changes/, "final-review");
   assert.ok(existsSync(join(wt, "untracked.txt")), "refused without touching the tree");
   rmSync(join(wt, "untracked.txt"));
 
-  // Clean again: the round adopts the worktree the interrupted prepare left.
-  const resumed = JSON.parse(sb.ok("final-review", "--prepare"));
-  assert.equal(resumed.tool, "create_agent");
-  // The same directory; Git may spell it differently from Paseo (a Windows 8.3 alias).
-  assert.equal(realpathSync.native(sb.state().finalReview.worktree), realpathSync.native(wt));
-  assert.equal(sb.state().finalReview.pendingAction.action, resumed.action);
+  // Clean again: the round adopts the worktree the interrupted start left.
+  sb.ok("final-review");
+  const resumed = sb.state().finalReview;
+  assert.equal(resumed.round, 1);
+  assert.ok(resumed.agentId);
+  // The same directory; Git may spell it differently from Rex (a Windows 8.3 alias).
+  assert.equal(realpathSync.native(resumed.worktree), realpathSync.native(wt));
 });
 
 test("final review: every ledger entry has a label the reviewer can cite, including an override with no findings", () => {
   const sb = sandbox({ tickets: { "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one — check: `node --version`\n" } });
-  deliver(sb, JSON.parse(sb.ok("dispatch", "01", "--prepare")));
+  sb.ok("dispatch", "01");
   sb.work("01");
   sb.ok("freeze", "01"); // a candidate with no review at all
   sb.ok("integrate", "01", "--override", "the user read the diff themselves");
@@ -4290,107 +3584,23 @@ test("final review: every ledger entry has a label the reviewer can cite, includ
   assert.match(out, /final review W1 · final · Waiver · #01 · Waiver L1: the override's reason no longer covers the change/);
 });
 
-// The orchestrator's view of `ack --receipt -`: the MCP response goes in on stdin.
-function wlStdin(sb, input, ...args) {
-  const r = spawnSync(process.execPath, [...sb.nodeArgs, CLI, "--run", "repo/feat", ...args], { env: sb.env, cwd: sb.repo, encoding: "utf8", input });
-  return { code: r.status, out: `${r.stdout}${r.stderr}` };
-}
-// The external create_agent call: an agent carrying the prepared labels in the worktree.
-function createAgent(sb, action, cwd) {
-  const id = `mcp-${sb.db().n + 1}`;
-  sb.editDb((d) => { d.n++; d.agents.push({ id, title: action.arguments.title, cwd, labels: action.arguments.labels,
-    parentAgentId: sb.env.PASEO_AGENT_ID, status: "running", archived: false, updatedAt: new Date().toISOString() }); });
-  return id;
-}
-
-test("ack: a bare MCP response on stdin acknowledges the pending action and is kept under messages/", () => {
-  const sb = sandbox();
-  let r = wlStdin(sb, JSON.stringify({ agentId: "x" }), "ack", "02", "--receipt", "-");
-  assert.notEqual(r.code, 0, r.out);
-  assert.match(r.out, /#02 has no pending MCP action to acknowledge/);
-  const prepared = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
-  const id = createAgent(sb, prepared, sb.state().tasks["01"].worktree);
-  r = wlStdin(sb, "not json", "ack", "01", "--receipt", "-");
-  assert.notEqual(r.code, 0, r.out);
-  assert.match(r.out, /the receipt is not JSON/);
-  assert.ok(sb.state().tasks["01"].pendingAction, "a bad receipt leaves the action pending");
-  // The tool's whole response, unchanged: structuredContent is read as before.
-  r = wlStdin(sb, JSON.stringify({ structuredContent: { agentId: id, status: "running" } }), "ack", "01", "--receipt", "-");
-  assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /#01: dispatch acknowledged/);
-  const t = sb.state().tasks["01"];
-  assert.equal(t.agentId, id);
-  assert.equal(t.pendingAction, null);
-  const saved = JSON.parse(readFileSync(join(sb.runDir, "messages", `receipt-01-${prepared.action}.json`), "utf8"));
-  assert.deepEqual(saved, { action: prepared.action, result: { structuredContent: { agentId: id, status: "running" } } });
-  // A repeat is harmless, bare or wrapped.
-  r = wlStdin(sb, JSON.stringify({ agentId: id }), "ack", "01", "--receipt", "-");
-  assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /#01 has no pending MCP action; its last one, .* is already acknowledged/);
-  r = wlStdin(sb, JSON.stringify({ action: prepared.action, result: { agentId: id } }), "ack", "01", "--receipt", "-");
-  assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /already acknowledged/);
-});
-
-test("ack: a wrapped receipt on stdin is checked against the pending action id, and a bare send response confirms the send", () => {
-  const sb = sandbox();
-  const prepared = JSON.parse(sb.ok("dispatch", "01", "--prepare"));
-  const id = createAgent(sb, prepared, sb.state().tasks["01"].worktree);
-  assert.equal(wlStdin(sb, JSON.stringify({ agentId: id }), "ack", "01", "--receipt", "-").code, 0);
-  sb.setAgent(id, "idle");
-  const send = JSON.parse(sb.ok("send", "01", "--prepare", "--text", "Also add a test for the empty case."));
-  let r = wlStdin(sb, JSON.stringify({ action: "some-other-action", result: { success: true } }), "ack", "01", "--receipt", "-");
-  assert.notEqual(r.code, 0, r.out);
-  assert.match(r.out, /receipt action does not match the pending action/);
-  assert.ok(sb.state().tasks["01"].pendingAction);
-  r = wlStdin(sb, JSON.stringify({ success: true, deliveryStatus: "queued", messageId: "m-1" }), "ack", "01", "--receipt", "-");
-  assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /#01: send acknowledged/);
-  assert.equal(sb.state().tasks["01"].pendingAction, null);
-  assert.ok(existsSync(join(sb.runDir, "messages", `receipt-01-${send.action}.json`)));
-});
-
-test("ack: ack final reads the final reviewer's MCP response from stdin", () => {
-  const sb = finalRun();
-  sb.finalMapping();
-  const action = JSON.parse(sb.ok("final-review", "--prepare"));
-  const id = createAgent(sb, action, sb.state().finalReview.worktree);
-  const r = wlStdin(sb, JSON.stringify({ agentId: id, status: "running" }), "ack", "final", "--receipt", "-");
-  assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /final review round 1: reviewer .* acknowledged/);
-  assert.equal(sb.state().finalReview.agentId, id);
-  assert.ok(existsSync(join(sb.runDir, "messages", `receipt-final-${action.action}.json`)));
-});
-
-test("status: a prepared action that was never acknowledged says how long it has waited", () => {
-  const sb = sandbox();
-  sb.ok("dispatch", "01", "--prepare");
-  assert.match(sb.ok("status"), /action 01 — reconcile pending MCP action \S+ \(prepared just now\)/);
-  const file = join(sb.runDir, "state.json");
-  const s = JSON.parse(readFileSync(file, "utf8"));
-  s.tasks["01"].pendingAction.preparedAt = new Date(Date.now() - 3 * 3600 * 1000).toISOString();
-  writeFileSync(file, JSON.stringify(s));
-  assert.match(sb.ok("status"), /\(prepared 3h ago\)/);
-});
-
-test("config: --clear-launch drops a role's run overrides, so it follows its edited Paseo profile again", () => {
+test("config: --clear-launch drops a role's run overrides, so it follows the edited launch defaults again", () => {
   const sb = sandbox();
   const launch = (role) => JSON.parse(sb.ok("status", "--json")).launch.find((l) => l.role === role);
-  sb.ok("config", "--model", "pinned-model", "--review-model", "pinned-review");
-  assert.equal(launch("executor").model, "pinned-model");
-  sb.setProfiles([{ ...PROFILES[0], model: "edited-model" }, PROFILES[1]]);
-  assert.equal(launch("executor").model, "pinned-model", "the run's override still wins over the edited profile");
+  sb.ok("config", "--profile", "pinned-profile", "--review-model", "pinned-model");
+  assert.equal(launch("executor").profile, "pinned-profile");
+  sb.setLaunch({ ...LAUNCH, executor: { provider: "dsh", mode: "danger-full-access", profile: "edited-profile" } });
+  assert.equal(launch("executor").profile, "pinned-profile", "the run's override still wins over the edited defaults");
   sb.no(/--clear-launch takes executor or reviewer, not "planner"/, "config", "--clear-launch", "planner");
   const out = sb.ok("config", "--clear-launch", "executor");
-  assert.match(out, /executor: the run's launch overrides were dropped; agents started from now on use its Paseo profile/);
-  assert.equal(launch("executor").model, "edited-model");
-  assert.match(launch("executor").source, /^profile "wl-executor"$/);
-  assert.equal(launch("reviewer").model, "pinned-review", "the other role keeps its overrides");
+  assert.match(out, /executor: the run's launch overrides were dropped; agents started from now on use the defaults in .*launch\.json/);
+  assert.equal(launch("executor").profile, "edited-profile");
+  assert.equal(launch("executor").source, join(sb.env.WORKLOOP_ROOT, "launch.json"));
+  assert.equal(launch("reviewer").model, "pinned-model", "the other role keeps its overrides");
   // Flags in the same command apply after the clear.
-  sb.ok("config", "--clear-launch", "reviewer", "--review-thinking", "low");
-  assert.equal(launch("reviewer").model, "review-model");
-  assert.equal(launch("reviewer").thinking, "low");
-  assert.deepEqual(sb.state().config.reviewer, { thinking: "low" });
+  sb.ok("config", "--clear-launch", "reviewer", "--review-model", "other-model");
+  assert.equal(launch("reviewer").model, "other-model");
+  assert.deepEqual(sb.state().config.reviewer, { model: "other-model" });
   assert.ok(readFileSync(join(sb.runDir, "events.jsonl"), "utf8").includes('"clearedLaunch":["executor"]'));
 });
 
