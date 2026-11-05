@@ -320,7 +320,7 @@ function inspectAgent(id) {
   const code = p.exitCode ?? meta?.exitCode ?? null;
   return { ...base, status: code == null ? "closed" : code === 0 ? "idle" : "error", exitCode: code };
 }
-const settingsOf = (l) => Object.fromEntries(["model", "mode", "profile"].filter((k) => l[k]).map((k) => [k, l[k]]));
+const settingsOf = (l) => Object.fromEntries(["model", "mode", "profile", "thinking"].filter((k) => l[k]).map((k) => [k, l[k]]));
 function newAgent(s, { role, task, attempt, cwd, launch }) {
   s.agents ||= {};
   let id;
@@ -2897,8 +2897,9 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
   Launch settings per role, most specific first: the command's flags, the run's
   config, then WORKLOOP_ROOT/launch.json ({"executor": {...}, "reviewer": {...}}).
   Providers: dsh (--mode <permission preset>, --profile <dsh profile>, default
-  headless) and devin (--mode <permission mode>, --model). No provider, a setting
-  the CLI does not take, or a missing --mode is an error.
+  headless), devin (--mode <permission mode>, --model), codex (--mode <sandbox>,
+  --model, --thinking <effort>) and pi (--model, --thinking; no modes). No provider,
+  a setting the CLI does not take, or a missing --mode is an error.
   import                               re-read the tickets directory (new/repair tickets)
   decisions                            commit ADR/glossary changes before the first dispatch
   status [--live] [--json]             table + next steps; --live asks Rex about each agent

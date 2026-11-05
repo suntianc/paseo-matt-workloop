@@ -1,12 +1,12 @@
 # Supervising turns
 
-Every executor, reviewer and final reviewer is an **agent**: one conversation with a headless CLI (`dsh` or `devin`) in one worktree. Each prompt it gets is a **turn**: a process in a tab of the run's Rex session, which exits when the turn is over. Nothing runs between turns, and nothing reports in the middle of one. This is not real-time supervision: do not add a monitor model or frequent status summaries unless the user asks.
+Every executor, reviewer and final reviewer is an **agent**: one conversation with a headless CLI (`dsh`, `devin`, `codex` or `pi`) in one worktree. Each prompt it gets is a **turn**: a process in a tab of the run's Rex session, which exits when the turn is over. Nothing runs between turns, and nothing reports in the middle of one. This is not real-time supervision: do not add a monitor model or frequent status summaries unless the user asks.
 
 ## Starting turns
 
 `WL dispatch NN`, `WL review NN`, `WL send NN --file <message>` and `WL final-review` each check the usual budgets and guards, write the brief or message, start the turn in a new tab, record it, and return at once. There is nothing to acknowledge.
 
-A turn after an agent's first goes on in the same conversation: the script reads the conversation id the previous turn recorded and passes it to the CLI (`dsh --session-id`, `devin -r`). If the previous turn left none, `send` refuses and names the file; `retry` the task instead. The previous turn's tab closes when the next one starts; its files stay.
+A turn after an agent's first goes on in the same conversation: the script reads the conversation id the previous turn recorded and passes it to the CLI (`dsh --session-id`, `devin -r`, `codex exec resume`, `pi --session`). Each of them fails on an id it does not know rather than starting a new conversation, so a lost one shows as an error, never as an executor that forgot its work. If the previous turn left none, `send` refuses and names the file; `retry` the task instead. The previous turn's tab closes when the next one starts; its files stay.
 
 The run's Rex session is `wl-<project>-<feature>`, made the first time a turn needs it, and made again if it was closed. Its first tab is a plain shell the run does not use.
 
@@ -18,7 +18,7 @@ For turn `n` of agent `<id>`, under `<run dir>/turns/`:
 |---|---|
 | `<id>-<n>.prompt.md` | what the turn was told |
 | `<id>-<n>.spec.json` | provider, settings, the conversation it goes on in, its paths |
-| `<id>-<n>.log` | everything the CLI printed (dsh: its JSON events) |
+| `<id>-<n>.log` | everything the CLI printed (dsh, codex and pi: their JSON events) |
 | `<id>-<n>.json` | the conversation id as soon as it is known, then the exit code and end time |
 
 [agent-run.mjs](../scripts/agent-run.mjs) runs in the tab and writes the last two; the tab shows a readable view of the same output while the turn runs. `evidence` and `archive` gather every agent's turns into `evidence/<id>.txt`.
@@ -41,7 +41,7 @@ A turn ending is a wake-up, not acceptance: read the report and act on the table
 
 A running turn cannot be steered: every message is a turn of its own. To stop one, press Ctrl-C in its tab (or ask the user to); `wait` reports it as interrupted and `status --live` shows the agent `error:<code>` or `closed`. Then `send` a complete restatement of what remains, or `retry`.
 
-The user may also take over a conversation by hand once its turn has ended: in the tab, run the CLI interactively on the same conversation (`dsh --session-id <id>`, `devin -r <id>`). When they are done, `send` the agent a message saying what changed, so its next turn starts from the tree as it is.
+The user may also take over a conversation by hand once its turn has ended: in the tab, run the CLI interactively on the same conversation (`dsh --session-id <id>`, `devin -r <id>`, `codex resume <id>`, `pi --session <id>`). When they are done, `send` the agent a message saying what changed, so its next turn starts from the tree as it is.
 
 ## Rex and the orchestrator
 

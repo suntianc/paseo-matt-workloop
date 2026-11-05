@@ -168,7 +168,7 @@ test("no launch settings, an unknown provider, or a setting the CLI does not tak
   none.no(/executor: no launch settings: the run sets no --provider, and .*launch\.json has no "executor" entry/, "dispatch", "01");
   assert.ok(!existsSync(join(none.runDir, "worktrees")), "no worktree was made");
   const sb = sandbox();
-  sb.no(/executor: provider "paseo" is not one this run can start \(dsh, devin\)/, "dispatch", "01", "--provider", "paseo");
+  sb.no(/executor: provider "paseo" is not one this run can start \(dsh, devin, codex, pi\)/, "dispatch", "01", "--provider", "paseo");
   sb.no(/executor: dsh takes no model \(its model and effort come from the dsh profile; set --profile\)/, "dispatch", "01", "--model", "m");
   // init reads them too, so a run never starts with a role it cannot launch.
   const missing = sandbox({ launch: { ...LAUNCH, executor: { provider: "dsh" } }, init: false });
@@ -253,4 +253,17 @@ test("a run the Paseo workloop started is refused, naming the copy that can cont
   writeFileSync(file, JSON.stringify(s));
   sb.no(/was started by the Paseo workloop; continue it with that copy of the skill \(this one is rex-local\)/, "status");
   sb.no(/was started by the Paseo workloop/, "dispatch", "01");
+});
+
+test("a role's thinking setting reaches its turn, and pi starts with no mode", () => {
+  const sb = sandbox({ launch: { executor: { provider: "codex", mode: "danger-full-access", thinking: "high" }, reviewer: { provider: "pi", model: "magpie/x", thinking: "low" } } });
+  sb.ok("dispatch", "01");
+  const t = sb.state().tasks["01"];
+  const exec = sb.state().agents[t.agentId];
+  const spec = JSON.parse(readFileSync(`${exec.turns[0].base}.spec.json`, "utf8"));
+  assert.deepEqual([spec.provider, spec.settings], ["codex", { mode: "danger-full-access", thinking: "high" }]);
+  sb.work("01");
+  assert.match(sb.ok("review", "01"), /reviewer pi model=magpie\/x thinking=low ← .*launch\.json started on/);
+  const rev = sb.state().agents[sb.state().tasks["01"].review.agentId];
+  assert.deepEqual(JSON.parse(readFileSync(`${rev.turns[0].base}.spec.json`, "utf8")).settings, { model: "magpie/x", thinking: "low" });
 });

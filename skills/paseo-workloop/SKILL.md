@@ -1,6 +1,6 @@
 ---
 name: paseo-workloop
-description: Take a development task from conversation to verified work. Handle small clear changes directly, or coordinate scoped tickets, independent review and integration with headless agents (dsh, devin) running in Rex tabs. Also use for run recovery, retrospective and archival.
+description: Take a development task from conversation to verified work. Handle small clear changes directly, or coordinate scoped tickets, independent review and integration with headless agents (dsh, devin, codex, pi) running in Rex tabs. Also use for run recovery, retrospective and archival.
 ---
 
 # Paseo Workloop (rex-local)
