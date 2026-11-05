@@ -26,6 +26,7 @@ Read the `implement` skill at `{{implementSkill}}` and follow it, with these ove
 - **Skip implement's final code-review step.** A separate reviewer agent reviews your work.
 - For agent-facing documents, skills, specs and instructions, read `{{skillsRoot}}/writing-for-agents/SKILL.md`. Keep human-facing documentation appropriate to its readers.
 - If the worktree has `docs/pitfalls/README.md`, read its index and open only the entries whose trigger matches the tools, paths and interfaces this ticket touches. They are past traps in this repo, not requirements; the ticket and spec still decide what to build.
+- Before ad hoc browser/hardware validation, read `{{skillsRoot}}/paseo-workloop/reference/validation.md`: choose a new evidence directory, verify the current UI lifecycle, and preserve the first failed attempt. Report the named gap when validation consumes its budget without new evidence.
 - Where a skill says "call the Skill tool with X", read `{{skillsRoot}}/X/SKILL.md` and follow it instead, so you use the same skill versions as the rest of the run. Don't invoke skills through a tool.
 
 After integration the orchestrator runs these checks: {{checks}}. It then runs the acceptance commands this ticket names (each criterion ending in `— check: \`<command>\``) and those of every ticket already integrated, from the root of the integrated tree and within the run's check time limit. Make sure they all pass in your worktree before you report `done`.

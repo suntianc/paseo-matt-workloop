@@ -47,6 +47,12 @@ A turn ending is a wake-up, not acceptance: read the report and act on the table
 - One `wait` is enough; a second one does no harm.
 - Never poll in a shell loop or sleep, and never read logs to pass the time.
 
+## A shorter validation budget
+
+When the user asks you to watch a task, or you give a validation task a budget shorter than `wait`'s default, bind that budget to an actual wake-up before ending your turn. A time limit written in a prompt does not wake you. Arm `WL wait --for <minutes to the deadline>` the way your CLI arms `wait` (with `--wake codex` on codex): it returns at the deadline even when no turn has ended, so that return is the checkpoint. It creates nothing outside the run, so there is nothing to record or delete; when the turn ends early, `wait` returns then.
+
+At the checkpoint, check the latest report, newly completed receipts and the processes the task owns, even if its turn printed recently. Continued validation should resolve a named gap with new evidence; repeated launcher or selector rewrites without a result call for a bounded handoff in the original conversation: stop the turn (below) and `send` what remains. If it is making progress, arm `wait --for` again with the next deadline. Prefer an available host browser to developing a browser driver inside an emulated guest.
+
 ## Stopping and taking over
 
 A running turn cannot be steered: every message is a turn of its own. To stop one, press Ctrl-C in its tab (or ask the user to); `wait` reports it as interrupted and `status --live` shows the agent `error:<code>` or `closed`. Then `send` a complete restatement of what remains, or `retry`.

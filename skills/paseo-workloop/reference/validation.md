@@ -22,6 +22,14 @@ This detects persistent drift, including switching to detached HEAD at the same 
 
 The timeout defaults to 30 minutes per command; `--timeout` sets a positive number of minutes up to 1440. Process cleanup is the workloop check runner's, with the same limits ([the run procedure](run.md)). Recover an interrupted command from its saved PID/token and [recovery evidence](recovery.md), not by launching it again blindly.
 
+## Ad hoc browser and hardware checks
+
+The same evidence boundary applies to one-off scripts: create a new attempt directory before starting, keep the first failure and its raw output there, and put regenerable profiles/builds under `scratch/`. A later success gets its own receipt. Mark old attempts superseded in the report or an index; keep their original bytes. Before archive deletes `scratch/`, move any user-requested retained data and any raw evidence a report cites to the run's retained/evidence folders and record the new paths.
+
+Before browser automation, read the current component's accessible controls, loading conditions and save/close behavior. Wait for the observed state transition, then read values or capture evidence. A closed drawer cannot supply another close button, and a loading placeholder is not a settings echo. Check matching entries in `docs/pitfalls/README.md` before changing selectors or retrying.
+
+For a bounded validation delegation, follow [the checkpoint procedure](async-supervision.md#a-shorter-validation-budget). Keep the original command's outcome distinct from the script repairs it takes to observe it.
+
 ## Order checks and preserve repetitions
 
 Put cheap static checks in `--preflight`: they run before `--check` and `--repeat-check`, in order within each list, and a failed preflight stops the expensive browser tests. Any failed or drifting command stops the rest of the invocation, and the receipt keeps that first failure. When every criterion needs its own result, run each in a separate invocation with its own evidence directory. Select the commands required by the repository; the example is not a universal package-manager convention.

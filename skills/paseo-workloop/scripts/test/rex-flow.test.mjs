@@ -75,12 +75,18 @@ function sandbox({ launch = LAUNCH, init = true, tickets = { "01-a.md": "# 01: A
     writeFileSync(t.review.path, `Verdict: ${verdict}\nCandidate: ${t.candidateSha}\n${findings}`);
     return endTurn(t.review.agentId);
   };
+  // A command in the background. `.waiting` resolves once `wait` has seen the running
+  // turns ("waiting on …"), so a test ends a turn only after wait is watching it.
   const start = (...args) => {
     const child = spawn(process.execPath, [CLI, "--run", "repo/feat", ...args], { env, cwd: repo });
     let out = "";
-    child.stdout.on("data", (d) => { out += d; });
+    let watching;
+    const waiting = new Promise((resolve) => { watching = resolve; });
+    child.stdout.on("data", (d) => { out += d; if (/waiting on /.test(out)) watching(); });
     child.stderr.on("data", (d) => { out += d; });
-    return new Promise((resolve) => child.on("close", (code) => resolve({ code, out })));
+    const done = new Promise((resolve) => child.on("close", (code) => { watching(); resolve({ code, out }); }));
+    done.waiting = waiting;
+    return done;
   };
   const initArgs = ["init", "--feature", "feat", "--repo", repo, "--check", CHECK];
   if (init) ok(...initArgs);
@@ -110,10 +116,10 @@ test("a ticket goes from dispatch to archive with every agent a turn in the run'
   assert.match(sb.ok("status", "--live"), /01 +running +a1 .* running/);
 
   // `wait` reports the turn that ends, and what it left.
-  const waiting = sb.start("wait", "--for", "1");
-  await new Promise((r) => setTimeout(r, 300));
+  const waitRun = sb.start("wait", "--for", "1");
+  await waitRun.waiting;
   sb.work("01");
-  const w = await waiting;
+  const w = await waitRun;
   assert.equal(w.code, 0, w.out);
   assert.match(w.out, /waiting on "#01 exec a1"/);
   assert.match(w.out, /turn ended: "#01 exec a1" \(exit 0\); #01 reports done/);
@@ -148,7 +154,7 @@ test("a ticket goes from dispatch to archive with every agent a turn in the run'
   const round = sb.state().finalReview;
   writeFileSync(round.path, `Verdict: pass\nIntegration tip: ${tip}\n`);
   const fw = sb.start("wait");
-  await new Promise((r) => setTimeout(r, 300));
+  await fw.waiting;
   sb.endTurn(round.agentId);
   assert.match((await fw).out, /turn ended: "final r1 [0-9a-f]{8}" \(exit 0\); verdict pass/);
   sb.ok("finish");
@@ -221,7 +227,7 @@ test("a turn that exits without a report names its log and the ways on", async (
   sb.ok("dispatch", "01");
   const t = sb.state().tasks["01"];
   const w = sb.start("wait");
-  await new Promise((r) => setTimeout(r, 300));
+  await w.waiting;
   sb.endTurn(t.agentId, { code: 1 });
   const out = (await w).out;
   assert.match(out, /turn ended: "#01 exec a1" \(exit 1, exit status 1\); it left no fresh report: read its output in .*turns\/.*-1\.log, then `send 01 --text <what to do>` to go on, or `retry 01 --reason <why>`/);
@@ -282,7 +288,7 @@ test("wait --wake codex queues what it printed into the codex session that start
 
   sb.ok("dispatch", "01");
   const w = sb.start("wait", "--wake", "codex");
-  await new Promise((r) => setTimeout(r, 300));
+  await w.waiting;
   sb.work("01");
   const r = await w;
   assert.equal(r.code, 0, r.out);
