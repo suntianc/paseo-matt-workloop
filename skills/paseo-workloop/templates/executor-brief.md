@@ -31,6 +31,12 @@ Read the `implement` skill at `{{implementSkill}}` and follow it, with these ove
 
 After integration the orchestrator runs these checks: {{checks}}. It then runs the acceptance commands this ticket names (each criterion ending in `— check: \`<command>\``) and those of every ticket already integrated, from the root of the integrated tree and within the run's check time limit. Make sure they all pass in your worktree before you report `done`.
 
+## Validation planning
+
+Before changing a shared interface, credential source or request/download transport, identify its existing consumers and the behavior each must retain. Choose focused checks for affected entry points, including background launchers and local producers where relevant; carry those checks into the report.
+
+Read `{{skillsRoot}}/paseo-workloop/reference/validation.md` for setup, complete logs and per-failure diagnosis. Use its candidate guard when validating committed work. Diagnose a failure with a focused case, then verify the affected acceptance on the final candidate; preserve all required command occurrences above.
+
 ## Rules
 
 - Never ask the user anything and never wait for input. If you need a decision that the ticket, spec, ADRs and code don't settle, stop and report `question`.
@@ -58,7 +64,7 @@ What changed, grouped by intent.
 Each acceptance criterion, with the evidence for it (test names, command output).
 
 ## Checks
-Commands you ran and their results. Anything you skipped, and why.
+Commands you ran, their results and saved logs. Classify each observed failure with evidence; keep unresolved failures explicit. Anything you skipped, and why.
 
 ## Questions / blockers
 Numbered. For each question, give the options you see and your recommendation.
