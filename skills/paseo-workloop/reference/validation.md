@@ -40,14 +40,6 @@ Use `--repeat-check` for independent trials, timing observations, stress or exte
 
 This helper does not rewrite tickets, change criteria, or change how `integrate` and `finish` execute the regression set. Existing confirmed occurrences still run as agreed. For new tickets, reference a shared full-suite or smoke check deliberately rather than making every criterion repeat it accidentally; retain explicit repetitions that provide stability evidence.
 
-## Prepare and diagnose checks
-
-In a fresh worktree, read the repository's setup instructions and prepare the dependencies and generated assets needed by the selected checks. A static verification command may not build browser resources or native helpers. Keep setup output and failures in the evidence; a later successful setup does not erase the first result.
-
-Save each command's complete stdout/stderr and its actual exit code before filtering output for display. Read the saved log for another excerpt. During diagnosis, use the smallest scenario that reproduces the failure; after a relevant fix, run the affected acceptance checks on the final candidate. Repeat a broader suite when a new change, failure or unresolved risk calls for it, while retaining every required command occurrence.
-
-Classify failures individually as a candidate regression, pre-existing failure, environment/prerequisite failure, or unresolved. Give the evidence for each classification: a fixed-point comparison under equivalent conditions, a missing prerequisite followed by a passing check after setup, or a minimal reproduction. A few pre-existing failures do not classify the rest of a failing suite. Preserve unresolved failures in the report rather than declaring the whole suite clean.
-
 ## Validate the external contract
 
 When a fake sits at an API boundary, calibrate the behavior that matters using a small real API observation or controlled return values reflecting that contract. Examples include a title query that accepts patterns rather than exact strings, or an API that activates a new object before returning its identity. A green fake test does not establish that the real API has the same semantics. Preserve the original failing schedule and correct inaccurate fixtures openly.
