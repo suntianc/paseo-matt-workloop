@@ -51,7 +51,7 @@ After any retro, read [pitfalls](reference/pitfalls.md) to sort out which findin
 
 ## Validation evidence
 
-For fixed-candidate validation, fresh-worktree setup, repeated test diagnosis, failure classification, API-fake calibration or failed browser startup, read [validation](reference/validation.md). It covers complete logs, focused diagnosis and a command wrapper that detects drift, saves receipts and distinguishes approved reuse from repeated trials.
+For fixed-candidate validation, API-fake calibration or failed browser startup, read [validation](reference/validation.md). It provides a command wrapper that detects worktree drift, saves per-command receipts, runs cheap checks first, and makes approved reuse distinct from repeated trials.
 
 ## Writing and maintaining documents
 

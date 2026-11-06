@@ -17,7 +17,6 @@ Read the `code-review` skill at `{{codeReviewSkill}}` and follow it, using the i
 
 - The fixed point and the spec are given above. Skip the skill's steps that look for them, and its issue-tracker prerequisite.
 - **Acceptance commands.** Re-run every command the ticket's criteria name (a criterion line ending in `— check: \`<command>\``) on this candidate, in this worktree. Under `## Spec`, give each command and what it printed; output the executor pasted is a claim, not evidence. A criterion with no command is manual (a current ticket says why after `— manual:`): check it by reading the tree, or by running what the reason names.
-- **Changed shared boundaries.** Check the affected consumers, including alternate entry points and local producers. Evaluate the executor's failure classifications individually using the validation reference; keep any unverified attribution explicit.
 - If you can't spawn sub-agents, run the Standards axis and then the Spec axis yourself, and keep them separate.
 - Where a skill says "call the Skill tool with X", read `{{skillsRoot}}/X/SKILL.md` and follow it instead. Don't invoke skills through a tool.
 {{reReview}}{{boundary}}{{direct}}
