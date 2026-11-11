@@ -580,20 +580,27 @@ const FLOOR_PATTERNS = [
 
 // What a Basis cell cites, if anything. The citation leads the cell: markdown
 // emphasis and an opening bracket or quote are tolerated, prose before it is not,
-// so "AC2: …" cites and "see AC2" does not.
+// so "AC2: …" cites and "see AC2" does not. A finding may lead with several
+// criteria ("AC2 + AC3 named checks", "AC2, AC3: …"), with or without a colon:
+// reading such a cell as no citation would turn a blocking finding into a
+// suggestion, so the reading errs toward the boundary.
+const AC_LIST = /^(AC\d+(?:\s*(?:[+,/&]|and)\s*AC\d+)*)(?!\w)/i;
 export function citedBasis(basis) {
   const lead = String(basis ?? "").replace(/[*_`]/g, "").replace(/^[\s"'([]+/, "");
-  const id = lead.match(/^(AC\d+)\s*:/i);
-  if (id) return { id: id[1].toUpperCase(), floor: null };
-  return { id: null, floor: FLOOR_PATTERNS.find(([, re]) => re.test(lead))?.[0] ?? null };
+  const list = lead.match(AC_LIST);
+  if (list) {
+    const ids = list[1].match(/AC\d+/gi).map((x) => x.toUpperCase());
+    return { id: ids[0], ids, floor: null };
+  }
+  return { id: null, ids: [], floor: FLOOR_PATTERNS.find(([, re]) => re.test(lead))?.[0] ?? null };
 }
 
 // `ids` are the criterion IDs the ticket had confirmed when the review started: a
-// cited floor class always holds, a cited ID only when it is one of them.
+// cited floor class always holds, cited IDs when any of them is one of those.
 export function inBoundary(finding, ids = []) {
-  const { id, floor } = citedBasis(finding.basis);
-  if (floor) return true;
-  return Boolean(id) && ids.includes(id);
+  const c = citedBasis(finding.basis);
+  if (c.floor) return true;
+  return c.ids.some((id) => ids.includes(id));
 }
 
 // A task's blocking findings, split by whether they may gate integration. `blocking`
@@ -896,8 +903,14 @@ function finalBoundary(s, round) {
 // and a floor class is one of the four names.
 export function finalCitation(basis) {
   const lead = String(basis ?? "").replace(/[*_`]/g, "").replace(/^[\s"'([]+/, "");
-  const ac = lead.match(/^#(\d{1,4})\s+(AC\d+)\s*:/i);
-  if (ac) return { ticket: ac[1], criterion: ac[2].toUpperCase() };
+  // One or more ticket criteria, as in a ticket review: "#02 AC2 + AC3 …",
+  // "#02 AC2, #03 AC1: …"; a criterion without its own ticket takes the one before it.
+  const ac = lead.match(/^#\d{1,4}\s+AC\d+(?:\s*(?:[+,/&]|and)\s*(?:#\d{1,4}\s+)?AC\d+)*(?!\w)/i);
+  if (ac) {
+    let ticket = null;
+    const criteria = [...ac[0].matchAll(/(?:#(\d{1,4})\s+)?(AC\d+)/gi)].map((m) => ({ ticket: (ticket = m[1] ?? ticket), criterion: m[2].toUpperCase() }));
+    return { ...criteria[0], ...(criteria.length > 1 ? { criteria } : {}) };
+  }
   const row = lead.match(/^(M\d+)\s*:/i);
   if (row) return { mapping: row[1].toUpperCase() };
   const entry = lead.match(/^waiver\s+(L\d+)\s*:/i);
@@ -917,8 +930,8 @@ export function inFinalBoundary(finding, boundary = {}) {
   // `#2` and `#02` name the same ticket, so compare numbers; "final" only itself.
   const sameTask = (a, b) => (a === "final" || b === "final" ? a === b : Number(a) === Number(b));
   if (c.criterion) {
-    const ids = Object.entries(boundary.criteria || {}).find(([id]) => sameTask(id, c.ticket))?.[1] ?? [];
-    return ids.includes(c.criterion);
+    return (c.criteria || [c]).some(({ ticket, criterion }) =>
+      (Object.entries(boundary.criteria || {}).find(([id]) => sameTask(id, ticket))?.[1] ?? []).includes(criterion));
   }
   if (c.mapping) return Boolean(boundary.mappings?.includes(c.mapping));
   if (c.waiver?.entry) return (boundary.waivers || []).some((w, i) => ledgerLabel(i) === c.waiver.entry);

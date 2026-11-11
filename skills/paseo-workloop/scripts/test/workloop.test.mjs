@@ -1128,11 +1128,21 @@ test("boundary: a Basis cites a confirmed criterion or a floor class; anything e
   }
   assert.equal(citedBasis("ADR-0003: contradicts it").floor, "ADR");
   // Everything else: a smell in no floor class, a citation that does not lead, a bare ID.
-  for (const basis of ["the function is long", "see AC1 for why", "S1: quoted", "", "AC: no number", "AC1 - no colon"]) {
+  for (const basis of ["the function is long", "see AC1 for why", "S1: quoted", "", "AC: no number", "AC1x: not an ID"]) {
     assert.equal(inB(basis), false, basis);
   }
-  assert.deepEqual(citedBasis("AC2: x"), { id: "AC2", floor: null });
-  assert.deepEqual(citedBasis("Regression: x"), { id: null, floor: "Regression" });
+  assert.deepEqual(citedBasis("AC2: x"), { id: "AC2", ids: ["AC2"], floor: null });
+  assert.deepEqual(citedBasis("Regression: x"), { id: null, ids: [], floor: "Regression" });
+  // Several criteria lead the cell, with or without a colon: a real review wrote
+  // "AC2 + AC3 named checks: …" and was read as no citation, so a failing
+  // acceptance check passed as a suggestion.
+  for (const basis of ["AC2 + AC3 named checks: both commands exit 1", "AC1 - no colon", "**AC1**, AC2: x", "AC1/AC2 x", "AC1 and AC2: x"]) {
+    assert.equal(inB(basis), true, basis);
+  }
+  assert.deepEqual(citedBasis("AC2 + AC3 named checks").ids, ["AC2", "AC3"]);
+  // Any one confirmed ID among them is enough; none confirmed stays out.
+  assert.equal(inB("AC3 + AC1: x"), true);
+  assert.equal(inB("AC3 + AC12: x"), false);
   // A review's `## Out of scope` list, one suggestion per line, up to the next heading.
   const report = "Verdict: pass\n\n## Out of scope\n- the helper could move to its own module\n2) naming in src/b.ts\n\n## Notes\nnot a suggestion\n";
   assert.deepEqual(outOfScope(report), ["the helper could move to its own module", "naming in src/b.ts"]);
@@ -3378,6 +3388,10 @@ test("final review: a finding outside the mapping, criteria, ledger and floor cl
   assert.deepEqual(finalCitation("Waiver final W1: it stands"), { waiver: { task: "final", id: "W1" } });
   assert.deepEqual(finalCitation("Data-loss: drops a branch"), { floor: "Data loss" });
   for (const basis of ["see #02 AC3", "the modules are laid out oddly", "", "M1 - no colon"]) assert.deepEqual(finalCitation(basis), {}, basis);
+  // Several ticket criteria, as in a ticket review; a bare AC takes the ticket before it.
+  assert.deepEqual(finalCitation("#02 AC2 + AC3 named checks"), { ticket: "02", criterion: "AC2", criteria: [{ ticket: "02", criterion: "AC2" }, { ticket: "02", criterion: "AC3" }] });
+  assert.equal(inFinalBoundary({ basis: "#02 AC9, #03 AC1: x" }, { criteria: { "03": ["AC1"] } }), true);
+  assert.equal(inFinalBoundary({ basis: "#02 AC9 + AC8: x" }, { criteria: { "02": ["AC1"] } }), false);
   const boundary = { mappings: ["M1"], criteria: { "01": ["AC1"] }, waivers: [{ task: "01", findings: [{ id: "S3" }] }] };
   assert.equal(inFinalBoundary({ basis: "#01 AC1: one" }, boundary), true);
   assert.equal(inFinalBoundary({ basis: "#02 AC3: another ticket's" }, boundary), false);
