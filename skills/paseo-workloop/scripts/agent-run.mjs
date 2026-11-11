@@ -6,8 +6,8 @@
 //
 //   node agent-run.mjs <spec.json>
 //   spec: { provider, settings, session, prompt, log, meta, cwd, title }
-import { spawn } from "node:child_process";
-import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { ADAPTERS } from "./agents.mjs";
@@ -44,6 +44,16 @@ function end(code) {
 if (!adapter) {
   appendFileSync(spec.log, `agent-run: unknown provider ${spec.provider}\n`);
   end(2);
+}
+if (spec.workspace) {
+  const git = spawnSync("git", ["-C", spec.cwd, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { encoding: "utf8" });
+  const [root, branch] = (git.stdout || "").trim().split("\n");
+  if (git.status !== 0 || realpathSync(root) !== realpathSync(spec.workspace.root) || realpathSync(spec.cwd) !== realpathSync(root) || branch !== spec.workspace.branch) {
+    appendFileSync(spec.log, `agent-run: workspace mismatch: expected ${JSON.stringify(spec.workspace)}, cwd=${spec.cwd}, git=${git.stdout || git.stderr}\n`);
+    end(2);
+  }
+  meta.workspace = { root: realpathSync(root), branch };
+  appendFileSync(spec.log, `agent-run: workspace: ${meta.workspace.root} branch=${branch}\n`);
 }
 const argv = adapter.argv(spec.settings || {}, spec.session, spec.prompt);
 meta.argv = argv;

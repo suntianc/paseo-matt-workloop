@@ -32,7 +32,7 @@
   },
   "license": "MIT",
   "scripts": {
-    "test": "node --test test/install.test.mjs skills/paseo-workloop/scripts/test/workloop.test.mjs skills/paseo-workloop/scripts/test/rex-flow.test.mjs skills/paseo-workloop/scripts/test/agents.test.mjs skills/paseo-workloop/scripts/test/rendering.test.mjs skills/paseo-workloop/scripts/test/tidy-docs.test.mjs skills/paseo-workloop/scripts/test/validate.test.mjs skills/requirement-ledger/scripts/test/store.test.mjs skills/requirement-ledger/scripts/test/lookup.test.mjs skills/requirement-ledger/scripts/test/integration.test.mjs skills/requirement-ledger/scripts/test/context.test.mjs skills/requirement-ledger/scripts/test/doctor.test.mjs skills/requirement-ledger/scripts/test/acceptance.test.mjs skills/workloop-audit/scripts/test/audit.test.mjs",
+    "test": "node --test test/install.test.mjs skills/paseo-workloop/scripts/test/workloop.test.mjs skills/paseo-workloop/scripts/test/rex-flow.test.mjs skills/paseo-workloop/scripts/test/agents.test.mjs skills/paseo-workloop/scripts/test/rendering.test.mjs skills/paseo-workloop/scripts/test/tidy-docs.test.mjs skills/paseo-workloop/scripts/test/validate.test.mjs skills/paseo-workloop/scripts/test/workspace.test.mjs skills/requirement-ledger/scripts/test/store.test.mjs skills/requirement-ledger/scripts/test/lookup.test.mjs skills/requirement-ledger/scripts/test/integration.test.mjs skills/requirement-ledger/scripts/test/context.test.mjs skills/requirement-ledger/scripts/test/doctor.test.mjs skills/requirement-ledger/scripts/test/acceptance.test.mjs skills/workloop-audit/scripts/test/audit.test.mjs",
     "check:links": "node skills/tools/link-check.mjs"
   }
 }

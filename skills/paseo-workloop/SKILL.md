@@ -25,6 +25,8 @@ If the request already supplies the goal, scope and acceptance, skip further dis
 
 Read relevant project instructions and ADRs. Resolve material conflicts with the user. Carry decisions into the work rather than asking the same questions again at ticket creation.
 
+Before proposing a design, summarize the requested changes and the existing behaviour to retain from the user's feedback. If the user says they have more to add, collect that feedback before finalizing scope or design; continue authorized work that does not depend on it. Carry preserved behaviour into the spec, the ticket's `Keep as is`, and the opening of the frontend brief. For example, retain an existing date filter and its default when the user asks only to change pagination.
+
 ## Requirement lookup
 
 In a project that keeps a requirement ledger, recall before you clarify: `node <requirement-ledger>/scripts/req.mjs lookup "<the user's words>"` returns candidate requirements as evidence, and the whole ledger when the words do not settle it; you decide the owner, and ask the user only when you cannot tell. A Direct or Full run records that owner with `link` after `WL init`; `sync` is a fixed step once `WL finish` succeeds, and again once `archive` completes. [Requirement ledger](../requirement-ledger/SKILL.md) has the commands and their rules.

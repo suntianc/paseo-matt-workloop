@@ -5,7 +5,7 @@
 // conversation, a `wait` that misses a turn that already ended or never returns.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -111,6 +111,7 @@ test("a ticket goes from dispatch to archive with every agent a turn in the run'
   assert.match(tab.argv.join(" "), /agent-run\.mjs .*turns\/.*-1\.spec\.json$/);
   const spec = JSON.parse(readFileSync(tab.argv.at(-1), "utf8"));
   assert.deepEqual([spec.provider, spec.settings, spec.session], ["dsh", { mode: "danger-full-access" }, null]);
+  assert.deepEqual(spec.workspace, { root: t.worktree, branch: t.branch });
   assert.match(readFileSync(spec.prompt, "utf8"), /Read the task brief at .*briefs/);
 
   // While the turn runs, nothing that needs an idle executor proceeds.
@@ -351,4 +352,64 @@ test("wait --wake codex says so when the queue fails, and a timeout wakes the se
   const failed = await sb.start("wait", "--for", "0.01", "--wake", "codex");
   assert.notEqual(failed.code, 0);
   assert.match(failed.out, /could not wake codex session thread-2: Error: fake queue failure/);
+});
+
+function readyForFinal() {
+  const sb = sandbox();
+  sb.ok("dispatch", "01");
+  sb.work("01");
+  sb.ok("review", "01");
+  sb.reviewed("01");
+  sb.ok("integrate", "01");
+  const tip = sb.state().integration.tip;
+  writeFileSync(join(sb.runDir, "final-review.md"), `Integration tip: ${tip}\n\n## Acceptance\n\n| Row | Spec item | Evidence on the integrated tree |\n|-----|-----------|---------------------------------|\n| M1 | item | evidence |\n`);
+  return sb;
+}
+
+test("final review prepares its own ignored environment before launching the reviewer", () => {
+  const sb = readyForFinal();
+  writeFileSync(join(sb.state().integration.worktree, ".gitignore"), ".env\n");
+  // Ignore the local environment in every worktree without changing the candidate.
+  const exclude = sb.g(sb.repo, "rev-parse", "--git-path", "info/exclude");
+  writeFileSync(join(sb.repo, exclude), ".env\n");
+  unlinkSync(join(sb.state().integration.worktree, ".gitignore"));
+  sb.ok("config", "--setup", `node -e "require('fs').writeFileSync('.env', 'test-only')"`);
+  sb.ok("final-review");
+  const round = sb.state().finalReview;
+  assert.equal(readFileSync(join(round.worktree, ".env"), "utf8"), "test-only");
+  assert.equal(sb.g(round.worktree, "rev-parse", "HEAD"), round.tip);
+  assert.equal(sb.g(round.worktree, "status", "--porcelain"), "");
+});
+
+test("failed final setup keeps the same round retryable without launching an agent", () => {
+  const sb = readyForFinal();
+  const before = sb.state();
+  const tabs = sb.db().blocks.length;
+  sb.ok("config", "--setup", `node -e "console.error('setup denied');process.exit(7)"`);
+  sb.no(/final review setup failed[\s\S]*setup denied/, "final-review");
+  assert.equal(sb.state().finalReview, undefined);
+  assert.deepEqual(sb.state().agents, before.agents);
+  assert.equal(sb.db().blocks.length, tabs);
+  const evidence = join(sb.runDir, "evidence");
+  const firstAttempt = readdirSync(evidence).find((name) => name.startsWith("final-setup-r1-"));
+  const receipt = JSON.parse(readFileSync(join(evidence, firstAttempt, "receipt.json"), "utf8"));
+  assert.equal(receipt.complete, true);
+  assert.equal(receipt.checks[0].ok, false);
+  const firstLog = readFileSync(join(evidence, firstAttempt, receipt.checks[0].log), "utf8");
+  assert.match(firstLog, /setup denied/);
+  sb.ok("config", "--setup", CHECK);
+  sb.ok("final-review");
+  assert.equal(sb.state().finalReview.round, 1);
+  assert.equal(readdirSync(evidence).filter((name) => name.startsWith("final-setup-r1-")).length, 2);
+  assert.equal(readFileSync(join(evidence, firstAttempt, receipt.checks[0].log), "utf8"), firstLog);
+});
+
+test("final setup that edits the candidate cannot start a reviewer", () => {
+  const sb = readyForFinal();
+  const before = sb.state();
+  sb.ok("config", "--setup", `node -e "require('fs').appendFileSync('shared.txt', 'changed')"`);
+  sb.no(/setup changed the final review candidate/, "final-review");
+  assert.equal(sb.state().finalReview, undefined);
+  assert.deepEqual(sb.state().agents, before.agents);
+  sb.no(/uncommitted or untracked changes/, "final-review");
 });

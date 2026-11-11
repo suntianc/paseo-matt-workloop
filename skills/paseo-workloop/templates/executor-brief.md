@@ -12,7 +12,7 @@ You are the executor for one ticket in a workloop run. This brief is your whole 
 - Worktree: `{{worktree}}` (your working directory)
 - Branch: `{{branch}}`
 - Base: `{{baseSha}}`, the tip of `{{integrationBranch}}` when you were dispatched
-- Work only inside this worktree. Leave other worktrees, other branches and the main checkout alone.
+- Work only inside this worktree. Leave other worktrees, other branches and the main checkout alone. Before each dependency install or source-writing shell command, explicitly enter this worktree and check `pwd -P` and `git rev-parse --show-toplevel`; both must identify the worktree above. Keep the cwd with the command's evidence. The turn runner checks the initial worktree and branch; later tool commands still need this check.
 - Outside it, write only to two run folders: `{{evidenceDir}}` for output your report cites, which stays with the run, and `{{scratchDir}}` for what you can regenerate, which archive deletes: another commit's tree (`git archive <sha> | tar -x -C <folder>`), installs, caches.
 - Expected starting HEAD: `{{startSha}}`. If HEAD differs, reconcile with the orchestrator before editing. A recovery handoff may include uncommitted work to continue.
 {{setup}}

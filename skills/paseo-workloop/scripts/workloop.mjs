@@ -73,11 +73,27 @@ function sh(cmd, cwd) {
   const r = spawnSync(cmd, { cwd, shell: true, encoding: "utf8", maxBuffer: 64 << 20 });
   return { ok: r.status === 0, output: `${r.stdout || ""}${r.stderr || ""}`.trim() };
 }
-function runAll(cmds, cwd) {
+function runAll(cmds, cwd, evidence) {
+  const receipt = { cwd, commands: cmds, startedAt: now(), complete: false, checks: [] };
+  const save = () => evidence && writeFileSync(join(evidence, "receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+  if (evidence) mkdirSync(evidence, { recursive: true, mode: 0o700 });
+  save();
   for (const cmd of cmds) {
     const r = sh(cmd, cwd);
-    if (!r.ok) return { ok: false, cmd, output: tail(r.output, 40) };
+    if (evidence) {
+      const log = `${receipt.checks.length + 1}.log`;
+      writeFileSync(join(evidence, log), `${r.output}\n`, { mode: 0o600 });
+      receipt.checks.push({ cmd, ok: r.ok, log, endedAt: now() });
+      save();
+    }
+    if (!r.ok) {
+      receipt.complete = true;
+      save();
+      return { ok: false, cmd, output: tail(r.output, 40) };
+    }
   }
+  receipt.complete = true;
+  save();
   return { ok: true };
 }
 
@@ -349,7 +365,8 @@ function startTurn(dir, s, id, prompt, title) {
   const base = pathArg(join(dir, "turns", `${id}-${n}`));
   const f = turnFiles(base);
   writeFileSync(f.prompt, prompt);
-  writeFileSync(f.spec, `${JSON.stringify({ provider: a.provider, settings: a.settings, session: a.session, prompt: f.prompt, log: f.log, meta: f.meta, cwd: a.cwd, title }, null, 2)}\n`);
+  const workspace = { root: a.cwd, branch: a.task === "final" ? s.finalReview.branch : s.tasks[a.task].branch };
+  writeFileSync(f.spec, `${JSON.stringify({ provider: a.provider, settings: a.settings, session: a.session, prompt: f.prompt, log: f.log, meta: f.meta, cwd: a.cwd, workspace, title }, null, 2)}\n`);
   const tab = openTurn(s, title, a.cwd, [process.execPath, AGENT_RUN, f.spec]);
   a.turns.push({ n, title, block: tab.block, window: tab.window, base, startedAt: now() });
   if (prev) host.closeTab(s.rex.session, prev.block);
@@ -1125,6 +1142,16 @@ function cmdFinalReview(dir, s, opts) {
     fail(`the final review's worktree ${wt} was left by an interrupted start with uncommitted or untracked changes. Nothing was changed: inspect them, then commit or discard them yourself before starting again.`);
   }
 
+  // Ignored local configuration and dependencies belong to this new tree too.
+  // Keep each failed preparation, and leave the round retryable before any agent
+  // or final-review state is created.
+  const setupEvidence = join(dir, "evidence", `final-setup-r${round}-${randomUUID()}`);
+  const setup = runAll(s.config.setup, wt, setupEvidence);
+  if (!setup.ok) fail(`final review setup failed (\`${setup.cmd}\`) in ${wt}; no reviewer started. Evidence: ${setupEvidence}\n${setup.output}`);
+  if (head(wt) !== tip || git(wt, "branch", "--show-current") !== branch || !isClean(wt)) {
+    fail(`setup changed the final review candidate in ${wt}; no reviewer started. Inspect the tree and ${setupEvidence} before continuing.`);
+  }
+
   if (current) s.finalReviews = [...(s.finalReviews || []), current];
   s.finalReview = {
     round, worktree: wt, branch, tip, path: pathArg(path), startedAt: now(),
@@ -1146,7 +1173,7 @@ function cmdFinalReview(dir, s, opts) {
     reReview: prev ? `\n${render("final-reviewer-re-review.md", {
       previousReview: pathArg(prev.path), previousTip: prev.tip, previousShort: short(prev.tip), tip,
     })}` : "",
-    notes: notesFrom(opts),
+    notes: [`Setup completed in this worktree before dispatch. Preparation receipt: ${pathArg(join(setupEvidence, "receipt.json"))}.`, notesFrom(opts)].filter(Boolean).join("\n\n"),
   };
   writeFileSync(brief, render("final-reviewer-brief.md", vars));
   const id = newAgent(s, { role: "reviewer", task: "final", attempt: `r${round}`, cwd: wt, launch });
