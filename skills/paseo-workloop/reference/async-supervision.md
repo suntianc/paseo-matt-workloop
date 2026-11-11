@@ -34,7 +34,7 @@ For turn `n` of agent `<id>`, under `<run dir>/turns/`:
 | pi, with [pi-background-run](https://github.com/stablekernel/pi-background-run) loaded | `WL wait` through the `bgrun` tool | the job's exit; read the digest it brings |
 | codex | `WL wait --wake codex` in a background terminal; don't poll it | a message `wait` queues into your session (`codex queue --thread $CODEX_THREAD_ID --resume`), carrying what it printed |
 
-A codex background terminal does not wake codex when it ends, which is why `--wake codex` queues the news itself; the message waits for your current turn to finish if you are busy. `--wake codex` refuses when nothing runs, so it never wakes you just to be armed again. Run `integrate` and `finish` the same way your CLI runs long commands; on codex, end the command with `; codex queue --thread "$CODEX_THREAD_ID" --message "<what finished>; run status" --resume` so its end wakes you too.
+A codex background terminal does not wake codex when it ends, which is why `--wake codex` queues the news itself; the message waits for your current turn to finish if you are busy. `--wake codex` refuses when nothing runs, so it never wakes you just to be armed again. Run `integrate`, `finish` and `archive` the same way your CLI runs long commands; on codex, add `--wake codex` (`WL integrate 02 --wake codex`) so its end queues what it printed, and whether it failed, into your session.
 
 `wait` returns:
 

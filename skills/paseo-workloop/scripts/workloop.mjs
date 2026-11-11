@@ -33,7 +33,10 @@ const BUSY = new Set(["running", "initializing", "starting"]);
 
 class UserError extends Error {}
 const fail = (msg) => { throw new UserError(msg); };
-const say = (...a) => console.log(...a);
+// What a command printed, kept while a `--wake codex` command runs so the message
+// it queues carries the same words.
+let SAID = null;
+const say = (...a) => { console.log(...a); SAID?.push(a.join(" ")); };
 const now = () => new Date().toISOString();
 const short = (sha) => (sha ? sha.slice(0, 8) : "-");
 const tail = (s, n) => s.split("\n").slice(-n).join("\n");
@@ -272,13 +275,34 @@ export function runOneCheck(cmd, cwd, limitMs, onSpawn, logPath) {
 // first that fails. Every phase that runs checks goes through here. An entry may
 // be a command string or `{cmd, ...}`; an entry's extra fields come back with the
 // failure, so an acceptance command keeps the ticket it proves.
-export async function runChecks(cmds, cwd, minutes, onSpawn) {
-  for (const item of cmds) {
+// `logDir` keeps each command's whole output as `NN.log`; `skip(cmd)` returns the log
+// of an earlier pass that stands for this one (see checkPasses), and the command is
+// not run. `results` lists every command up to the first failure.
+export async function runChecks(cmds, cwd, minutes, onSpawn, { logDir, skip } = {}) {
+  const results = [];
+  for (const [i, item] of cmds.entries()) {
     const { cmd, ...meta } = typeof item === "string" ? { cmd: item } : item;
-    const r = await runOneCheck(cmd, cwd, Math.max(1, Math.round(minutes * 60000)), onSpawn);
-    if (!r.ok) return { cmd, ...meta, ...r };
+    const earlier = skip?.(cmd);
+    if (earlier) { results.push({ cmd, ...meta, ok: true, skipped: earlier }); continue; }
+    const log = logDir ? join(logDir, `${String(i + 1).padStart(2, "0")}.log`) : undefined;
+    const started = Date.now();
+    const r = await runOneCheck(cmd, cwd, Math.max(1, Math.round(minutes * 60000)), onSpawn, log);
+    results.push({ cmd, ...meta, ok: r.ok, ...(log && { log }), seconds: Math.round((Date.now() - started) / 1000) });
+    if (!r.ok) return { cmd, ...meta, ...r, ...(log && { log }), results };
   }
-  return { ok: true };
+  return { ok: true, results };
+}
+
+// One command list, each command once: a check a ticket's criterion repeats, or a
+// command two tickets share, runs at its first place only.
+export function uniqueCommands(list) {
+  const seen = new Set();
+  return list.filter((e) => {
+    const cmd = typeof e === "string" ? e : e.cmd;
+    if (seen.has(cmd)) return false;
+    seen.add(cmd);
+    return true;
+  });
 }
 
 // cmd.exe gets one command string; Node does not escape args under shell:true.
@@ -1281,25 +1305,54 @@ const ownsPhase = (s, phase) => s.checking?.pid === phase.pid && s.checking?.sta
 // `hold` written meanwhile survives. Each check's identity goes into the
 // entry as `check: {pid, token}` before the check runs (its pid leads its
 // process group on POSIX), so recovery can verify and stop it.
-async function runCheckPhase(dir, phase, commands, cwd, complete) {
-  const minutes = checkLimit(loadState(dir));
+//
+// Each command's output goes to its own log under `phase.logs`. A command that
+// already passed on this same tree (`phase.tree`, the merged tree's id) is not run
+// again unless `--fresh` was given: a retry after an environment failure, or
+// `finish` on the tree the last integration checked, runs only what has not passed.
+async function runCheckPhase(dir, phase, commands, cwd, complete, fresh = false) {
+  const s0 = loadState(dir);
+  const minutes = checkLimit(s0);
+  const passed = fresh ? {} : (s0.checkPasses?.[phase.tree] ?? {});
+  mkdirSync(phase.logs, { recursive: true });
   const checks = await runChecks(commands, cwd, minutes, (pid, token) => withLock(dir, () => {
     const s = loadState(dir);
     if (!ownsPhase(s, phase)) fail("the check phase is no longer this process's");
     s.checking.check = { pid, token };
     saveState(dir, s);
-  }));
+  }), { logDir: phase.logs, skip: (cmd) => passed[cmd] });
+  const ran = checks.results.filter((r) => !r.skipped);
+  const skipped = checks.results.filter((r) => r.skipped);
+  say(`checks: ${ran.length} ran${skipped.length ? `, ${skipped.length} passed earlier on this tree and were not run again (\`--fresh\` runs every one)` : ""}; logs in ${pathArg(phase.logs)}`);
   return withLock(dir, () => {
     const s = loadState(dir);
     if (!ownsPhase(s, phase)) {
       fail(`the ${checkPhaseLabel(phase)} check phase is no longer this process's (pid ${phase.pid}); its result was not recorded and nothing was changed. Run \`status\` and reconcile.`);
     }
+    rememberPasses(s, phase.tree, ran.filter((r) => r.ok));
     return complete(s, checks, minutes);
   });
 }
+
+// The commands that passed on a tree, by tree id, with the log that shows it; the
+// last few trees only. A tree id names every tracked file, so a command that passed
+// on it passes again unless something untracked changed (setup, the machine).
+const KEPT_TREES = 8;
+function rememberPasses(s, tree, ok) {
+  if (!tree || !ok.length) return;
+  const all = s.checkPasses || {};
+  const entry = { ...(all[tree] || {}) };
+  for (const r of ok) entry[r.cmd] = pathArg(r.log);
+  delete all[tree];
+  s.checkPasses = Object.fromEntries([...Object.entries(all), [tree, entry]].slice(-KEPT_TREES));
+}
+const treeOf = (cwd) => git(cwd, "rev-parse", "HEAD^{tree}");
+const checkLogs = (dir, label) => join(dir, "evidence", "checks", `${label}-${now().replace(/[:.]/g, "-")}`);
 // A failed command names itself and, for an acceptance command, the ticket it
 // proves: `#02 acceptance \`cmd\` fails` says whose behaviour regressed.
 const checkFailure = (r, minutes) => `${r.task ? `#${r.task} acceptance ` : ""}${r.timedOut ? timedOut(r.cmd, minutes) : `\`${r.cmd}\` fails`}`;
+// Where a failed command's whole output is, after the tail the message shows.
+const wholeOutput = (r) => (r.log ? `\nWhole output: ${pathArg(r.log)}` : "");
 // A timed-out check that could not be stopped leaves the phase recorded, and
 // nothing is rolled back or recorded as done: recovery has to stop it first.
 // How to find a check's leftover processes and confirm they are still the
@@ -2415,11 +2468,11 @@ function cmdIntegrate(dir, s, id, opts) {
     record(dir, s, "integrate_conflict", { task: t.id, sha: t.candidateSha, conflicts });
     fail(`#${t.id} conflicts with ${s.integration.branch} (${conflicts.split("\n").join(", ") || m.err}); nothing merged.\nAsk the executor to merge the tip: \`send ${t.id} --merge-tip\`, then review again.`);
   }
-  const phase = beginCheckPhase(dir, s, { kind: "integrate", task: t.id, candidateSha: t.candidateSha, prevTip: prev, mergeSha: head(integ) });
+  const phase = beginCheckPhase(dir, s, { kind: "integrate", task: t.id, candidateSha: t.candidateSha, prevTip: prev, mergeSha: head(integ), tree: treeOf(integ), logs: pathArg(checkLogs(dir, `integrate-${t.id}`)) });
   const override = verdict === "pass" ? null : opts.override;
   // The run's checks, then this ticket's acceptance commands, then the regression set.
-  const commands = [...s.config.checks, ...commandEntries(t, acceptance), ...regressionSet(s).filter((e) => e.task !== t.id)];
-  return { afterLock: () => runCheckPhase(dir, phase, commands, integ, (s2, checks, minutes) => completeIntegrate(dir, s2, phase, checks, minutes, opts.override, override, acceptance)) };
+  const commands = uniqueCommands([...s.config.checks, ...commandEntries(t, acceptance), ...regressionSet(s).filter((e) => e.task !== t.id)]);
+  return { afterLock: () => runCheckPhase(dir, phase, commands, integ, (s2, checks, minutes) => completeIntegrate(dir, s2, phase, checks, minutes, opts.override, override, acceptance), opts.fresh) };
 }
 
 // An interrupted integrate left its merge on the branch. The candidate is still
@@ -2479,7 +2532,7 @@ function completeIntegrate(dir, s, phase, checks, minutes, overrideFlag, overrid
       ...(gate ? { gate } : { check: checks.cmd, timedOut: checks.timedOut || undefined, ...(checks.task && { acceptanceTask: checks.task }) }), rolledBack: back,
     });
     const where = back ? `integration rolled back to ${short(phase.prevTip)}` : `${s.integration.branch} could NOT be rolled back to ${short(phase.prevTip)}: ${reset.err || reset.out}`;
-    fail(`${lead}${why}; ${where}.${gate ? "" : `\n${checks.output}\nRoute it to the executor with \`send ${t.id}\`.`}`);
+    fail(`${lead}${why}; ${where}.${gate ? "" : `\n${checks.output}${wholeOutput(checks)}\nRoute it to the executor with \`send ${t.id}\`.`}`);
   }
   s.checking = null;
   s.integration.tip = h;
@@ -2600,7 +2653,7 @@ function finishGates(dir, s) {
 // `finish` runs in the three steps of a check phase, like `integrate`. Step 1,
 // under the lock: the delivery gates and the `checking` entry. Finish changes
 // nothing in Git, so an interrupted finish is cleared by rerunning it.
-function cmdFinish(dir, s) {
+function cmdFinish(dir, s, opts = {}) {
   const stale = interrupted(s);
   if (stale) {
     stopInterruptedCheck(stale);
@@ -2609,11 +2662,12 @@ function cmdFinish(dir, s) {
   }
   const reminder = finishGates(dir, s);
   if (reminder) say(reminder);
-  const phase = beginCheckPhase(dir, s, { kind: "finish", tip: s.integration.tip });
+  const phase = beginCheckPhase(dir, s, { kind: "finish", tip: s.integration.tip, tree: treeOf(s.integration.worktree), logs: pathArg(checkLogs(dir, "finish")) });
   // The run's checks, then the whole regression set: every integrated ticket's
   // acceptance commands, so the tip that ships is the one that proves each ticket.
-  const commands = [...s.config.checks, ...regressionSet(s)];
-  return { afterLock: () => runCheckPhase(dir, phase, commands, s.integration.worktree, (s2, checks, minutes) => completeFinish(dir, s2, phase, checks, minutes)) };
+  // On the tree the last integration checked, each of them has passed already.
+  const commands = uniqueCommands([...s.config.checks, ...regressionSet(s)]);
+  return { afterLock: () => runCheckPhase(dir, phase, commands, s.integration.worktree, (s2, checks, minutes) => completeFinish(dir, s2, phase, checks, minutes), opts.fresh) };
 }
 
 // Step 3, under the lock: the tip must not have moved while the checks ran, and
@@ -2629,7 +2683,7 @@ function completeFinish(dir, s, phase, checks, minutes) {
   }
   if (!checks.ok) {
     record(dir, s, "finish_failed", { tip: phase.tip, check: checks.cmd, timedOut: checks.timedOut || undefined, ...(checks.task && { acceptanceTask: checks.task }) });
-    fail(`${checkFailure(checks, minutes)} on the integration tip:\n${checks.output}`);
+    fail(`${checkFailure(checks, minutes)} on the integration tip:\n${checks.output}${wholeOutput(checks)}`);
   }
   try { finishGates(dir, s); } catch (e) {
     if (!(e instanceof UserError)) throw e;
@@ -2824,9 +2878,9 @@ async function cmdWait(dir, opts) {
 // Where `wait --wake` sends its news. Read at the start, from the orchestrator's own
 // environment, so a wait started anywhere else cannot wake the wrong session.
 function wakeTarget(kind) {
-  if (kind !== "codex") fail(`wait --wake takes codex, not "${kind}" (Claude Code and pi with pi-background-run wake on a background command's exit by themselves)`);
+  if (kind !== "codex") fail(`--wake takes codex, not "${kind}" (Claude Code and pi with pi-background-run wake on a background command's exit by themselves)`);
   const thread = process.env.CODEX_THREAD_ID;
-  if (!thread) fail("wait --wake codex needs CODEX_THREAD_ID: start it from the codex session it should wake");
+  if (!thread) fail("--wake codex needs CODEX_THREAD_ID: start it from the codex session it should wake");
   return { kind, thread };
 }
 function deliverWake(dir, s, wake, lines) {
@@ -2996,7 +3050,9 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
        [--extra-round --reason r]      a rework round past the cap goes on, with the user's decision
   integrate <NN> [--override reason]   merge, then the checks and the regression set outside the run
                                        lock; retain turns/worktree; --override records the
-                                       blocking findings it lets through
+                                       blocking findings it lets through. Each command once, its
+                                       whole output in evidence/checks/; one that passed on this
+                                       same tree is not run again unless --fresh
   cleanup <NN>                         resume cleanup after finish, retro and evidence
   retry <NN> --reason r [--file handoff] [--new-worktree]
                                        replace a lost executor; reuse its worktree by default
@@ -3008,11 +3064,15 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
                                        a reported round the brief adds it and the change since
        [--extra-round --reason r]      a repair cycle past the cap goes on, with the user's decision
   final-review --waive ID,ID --reason r  record the final findings the user lets through
-  finish                               run the checks and the regression set outside the run lock;
-                                       only on the final reviewer's pass for the current tip
+  finish [--fresh]                     run the checks and the regression set outside the run lock;
+                                       only on the final reviewer's pass for the current tip; on
+                                       the tree the last integration checked, nothing runs again
   evidence                             index every agent's turns (prompts and CLI output)
   retro --file <report> | --skip --reason <why>   record findings or no-retro decision
   archive                              after finish and retro: snapshot, archive, clean up
+
+  <command> --wake codex               when it ends, queue what it printed into the codex session
+                                       (for integrate, finish and archive in a background terminal)
 
 env: WORKLOOP_ROOT (default ~/.workloop; launch.json holds the default launch settings)
      WORKLOOP_RUN · REX_CLI (default: rex on PATH, else the CLI inside Rex Beta.app)
@@ -3023,8 +3083,10 @@ const OPTIONS = Object.fromEntries([
     "review-profile", "review-provider", "review-model", "review-mode", "review-thinking", "note", "note-file", "text", "file", "override", "reason",
     "check-timeout", "waive", "max-rework-rounds", "for", "wake"].map((k) => [k, { type: "string" }]),
   ...["check", "setup", "clear-launch"].map((k) => [k, { type: "string", multiple: true }]),
-  ...["json", "live", "keep", "again", "merge-tip", "dry-run", "help", "direct", "new-worktree", "skip", "extra-round"].map((k) => [k, { type: "boolean" }]),
+  ...["json", "live", "keep", "again", "merge-tip", "dry-run", "help", "direct", "new-worktree", "skip", "extra-round", "fresh"].map((k) => [k, { type: "boolean" }]),
 ]);
+
+const NEED_ID = ["dispatch", "freeze", "review", "send", "integrate", "cleanup", "retry", "hold", "unhold", "cancel", "criteria"];
 
 export async function main(argv) {
   const { values: opts, positionals } = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true });
@@ -3039,10 +3101,32 @@ export async function main(argv) {
   if (!isRexRun(loadState(dir)) && !(cmd === "status" && !opts.live)) {
     fail(`${dir} was started by the Paseo workloop; continue it with that copy of the skill (this one is rex-local). \`status\` without --live shows it.`);
   }
-  const needId = ["dispatch", "freeze", "review", "send", "integrate", "cleanup", "retry", "hold", "unhold", "cancel", "criteria"];
-  if (needId.includes(cmd) && !id) fail(`${cmd} needs a ticket number`);
+  if (NEED_ID.includes(cmd) && !id) fail(`${cmd} needs a ticket number`);
   if (cmd === "status") return printStatus(dir, loadState(dir), opts.live, opts.json);
   if (cmd === "wait") return cmdWait(dir, opts);
+  if (opts.wake != null) return wakeWhenDone(dir, cmd, opts, () => runCommand(dir, cmd, id, opts));
+  return runCommand(dir, cmd, id, opts);
+}
+
+// `<command> --wake codex`: a long command (`integrate`, `finish`, `archive`) run in
+// a codex background terminal queues what it printed, and how it ended, into the
+// codex session when it ends, as `wait --wake codex` does for a turn.
+async function wakeWhenDone(dir, cmd, opts, run) {
+  const wake = wakeTarget(opts.wake);
+  SAID = [];
+  let error = null;
+  try { await run(); } catch (e) { error = e; }
+  const lines = SAID;
+  SAID = null;
+  if (error && !(error instanceof UserError) && !(error instanceof host.RexError)) throw error;
+  lines.push(error ? `\`${cmd}\` failed: ${error.message}` : `\`${cmd}\` finished`);
+  const steps = nextSteps(dir, loadState(dir));
+  if (steps.length) lines.push(`next: ${steps.join("\n      ")}`);
+  deliverWake(dir, loadState(dir), wake, lines);
+  if (error) throw error;
+}
+
+async function runCommand(dir, cmd, id, opts) {
   const handlers = {
     config: (s) => cmdConfig(dir, s, opts),
     criteria: (s) => cmdCriteria(dir, s, id, opts),
@@ -3060,7 +3144,7 @@ export async function main(argv) {
     cancel: (s) => cmdCancel(dir, s, id, opts),
     note: (s) => cmdNote(dir, s, id, opts),
     "final-review": (s) => cmdFinalReview(dir, s, opts),
-    finish: (s) => cmdFinish(dir, s),
+    finish: (s) => cmdFinish(dir, s, opts),
     evidence: (s) => cmdEvidence(dir, s),
     retro: (s) => cmdRetro(dir, s, opts),
     archive: (s) => cmdArchive(dir, s),
@@ -3072,7 +3156,7 @@ export async function main(argv) {
     if (s.archiveStartedAt && !["note", "retro", "archive", "cleanup", "evidence"].includes(cmd)) fail("archive is in progress; resume archive before starting other work");
     const refusal = checkPhaseRefusal(s, cmd, id);
     if (refusal) fail(refusal);
-    if (needId.includes(cmd)) task(s, id);
+    if (NEED_ID.includes(cmd)) task(s, id);
     return handlers[cmd](s);
   });
   // `integrate` and `finish` run their checks after the lock is released.

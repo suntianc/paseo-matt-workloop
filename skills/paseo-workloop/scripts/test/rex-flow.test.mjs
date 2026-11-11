@@ -318,9 +318,9 @@ test("wait --wake codex queues what it printed into the codex session that start
   const sb = sandbox();
   const log = join(sb.root, "codex.jsonl");
   Object.assign(sb.env, { WORKLOOP_CODEX_CLI: join(HERE, "fake-codex.mjs"), FAKE_CODEX_LOG: log });
-  sb.no(/wait --wake codex needs CODEX_THREAD_ID: start it from the codex session it should wake/, "wait", "--wake", "codex");
+  sb.no(/--wake codex needs CODEX_THREAD_ID: start it from the codex session it should wake/, "wait", "--wake", "codex");
   sb.env.CODEX_THREAD_ID = "thread-1";
-  sb.no(/wait --wake takes codex, not "pi" \(Claude Code and pi with pi-background-run wake/, "wait", "--wake", "pi");
+  sb.no(/--wake takes codex, not "pi" \(Claude Code and pi with pi-background-run wake/, "wait", "--wake", "pi");
   // Nothing runs: waking would only bring the orchestrator back to start this again.
   sb.no(/no turn is running, so there is nothing to wake you for/, "wait", "--wake", "codex");
   assert.ok(!existsSync(log), "no queue call");
@@ -352,6 +352,57 @@ test("wait --wake codex says so when the queue fails, and a timeout wakes the se
   const failed = await sb.start("wait", "--for", "0.01", "--wake", "codex");
   assert.notEqual(failed.code, 0);
   assert.match(failed.out, /could not wake codex session thread-2: Error: fake queue failure/);
+});
+
+test("integrate keeps each check's output, runs a shared command once, and a retry on the same tree runs only what did not pass", async () => {
+  // c1 is both a run check and the ticket's criterion; the second check fails until FLAKY_OK exists.
+  const c1 = `node -e "require('fs').appendFileSync(process.env.COUNT_LOG, 'c1\\n')"`;
+  const flaky = `node -e "console.log('flaky ran'); process.exit(require('fs').existsSync(process.env.FLAKY_OK) ? 0 : 1)"`;
+  const sb = sandbox({ init: false, tickets: { "01-a.md": `# 01: A\n\nBlocked by: None\n\n- [ ] AC1: counts — check: \`${c1}\`\n` } });
+  const count = join(sb.root, "count.log");
+  const okFile = join(sb.root, "flaky-ok");
+  const log = join(sb.root, "codex.jsonl");
+  Object.assign(sb.env, { COUNT_LOG: count, FLAKY_OK: okFile, WORKLOOP_CODEX_CLI: join(HERE, "fake-codex.mjs"), FAKE_CODEX_LOG: log, CODEX_THREAD_ID: "thread-3" });
+  writeFileSync(okFile, ""); // init runs the checks on the base
+  sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", c1, "--check", flaky);
+  unlinkSync(okFile);
+  writeFileSync(count, "");
+  sb.ok("dispatch", "01");
+  sb.work("01");
+  sb.ok("review", "01");
+  sb.reviewed("01");
+
+  // The environment fails the second check: rolled back, and the message names the whole log.
+  const failed = sb.wl("integrate", "01", "--wake", "codex");
+  assert.notEqual(failed.code, 0, failed.out);
+  assert.match(failed.out, /checks: 2 ran; logs in .*evidence\/checks\/integrate-01-/);
+  assert.match(failed.out, /fails after merging[\s\S]*Whole output: .*evidence\/checks\/integrate-01-[^/]+\/02\.log/);
+  assert.equal(readFileSync(count, "utf8"), "c1\n", "the criterion that repeats a check runs once");
+  const logDir = readdirSync(join(sb.runDir, "evidence", "checks"));
+  assert.equal(logDir.length, 1);
+  assert.match(readFileSync(join(sb.runDir, "evidence", "checks", logDir[0], "02.log"), "utf8"), /flaky ran/);
+  // --wake codex queued what it printed and how it ended.
+  const woke = JSON.parse(readFileSync(log, "utf8").trim().split("\n").at(-1));
+  assert.match(woke[4], /^\[workloop repo\/feat\]\nchecks: 2 ran[\s\S]*`integrate` failed: [\s\S]*Whole output:/);
+
+  // Fixed outside the tree: the retry merges to the same tree and runs only what did not pass.
+  writeFileSync(okFile, "");
+  const retried = sb.ok("integrate", "01");
+  assert.match(retried, /checks: 1 ran, 1 passed earlier on this tree and were not run again/);
+  assert.match(retried, /#01 integrated/);
+  assert.equal(readFileSync(count, "utf8"), "c1\n");
+
+  // finish on the tree the integration checked runs nothing again.
+  const tip = sb.state().integration.tip;
+  writeFileSync(join(sb.runDir, "final-review.md"), `Integration tip: ${tip}\n\n## Acceptance\n\n| Row | Spec item | Evidence on the integrated tree |\n|-----|-----------|---------------------------------|\n| M1 | item | evidence |\n`);
+  sb.ok("final-review");
+  const round = sb.state().finalReview;
+  writeFileSync(round.path, `Verdict: pass\nIntegration tip: ${tip}\n`);
+  sb.endTurn(round.agentId);
+  const finished = sb.ok("finish", "--wake", "codex");
+  assert.match(finished, /checks: 0 ran, 2 passed earlier on this tree/);
+  assert.match(JSON.parse(readFileSync(log, "utf8").trim().split("\n").at(-1))[4], /delivery checked[\s\S]*`finish` finished/);
+  assert.equal(readFileSync(count, "utf8"), "c1\n");
 });
 
 function readyForFinal() {

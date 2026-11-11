@@ -1738,13 +1738,16 @@ test("acceptance: finish runs the checks and the whole regression set, and fails
   sb.complete("01");
   sb.finalPass();
   writeFileSync(log, "");
-  sb.ok("finish");
+  // On the tree the integration checked, every command has passed: none runs again.
+  assert.match(sb.ok("finish"), /checks: 0 ran, 2 passed earlier on this tree/);
+  assert.equal(readFileSync(log, "utf8"), "");
+  assert.match(sb.ok("finish", "--fresh"), /checks: 2 ran;/);
   assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), ["check", "01"], "the checks, then the regression set");
 
-  // The same commands run again on the tip at finish, so a regression the tip carries fails it.
+  // With --fresh the same commands run again on the tip, so a regression the tip carries fails it.
   const done = sb.state().completion;
   writeFileSync(broke, "");
-  sb.no(/#01 acceptance `[^`]*` fails on the integration tip/, "finish");
+  sb.no(/#01 acceptance `[^`]*` fails on the integration tip/, "finish", "--fresh");
   assert.deepEqual(sb.state().completion, done, "a failing acceptance command records no delivery");
   rmSync(broke);
   assert.match(sb.ok("finish"), /delivery checked/);
@@ -1821,9 +1824,11 @@ test("check phase: status, note and hold work while integrate's checks run; othe
   const run = sb.start("integrate", "01");
   const checking = await sb.waitFor("the check's identity", () => sb.state().checking?.check && sb.state().checking);
   assert.equal(processIdentity(checking.check.pid, [checking.check.token]), "match", "check.pid is the running check, carrying its token");
-  assert.deepEqual({ ...checking, startedAt: undefined, check: undefined }, {
+  assert.match(checking.logs, /evidence\/checks\/integrate-01-/);
+  assert.deepEqual({ ...checking, startedAt: undefined, check: undefined, logs: undefined }, {
     kind: "integrate", task: "01", candidateSha: before.tasks["01"].candidateSha, prevTip: before.integration.tip,
-    mergeSha: sb.g(before.integration.worktree, "rev-parse", "HEAD"), pid: run.child.pid, startedAt: undefined, check: undefined,
+    mergeSha: sb.g(before.integration.worktree, "rev-parse", "HEAD"), tree: sb.g(before.integration.worktree, "rev-parse", "HEAD^{tree}"),
+    pid: run.child.pid, startedAt: undefined, check: undefined, logs: undefined,
   });
   const phase = new RegExp(`check phase: integrate on #01 is running its checks \\(pid ${run.child.pid}`);
 
