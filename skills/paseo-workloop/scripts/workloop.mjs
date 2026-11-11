@@ -1189,7 +1189,7 @@ function cmdFinalReview(dir, s, opts) {
     ...workFolders(dir, brief),
     feature: s.feature, round, tip, tipShort: short(tip), baseSha: s.baseSha, worktree: wt, branch,
     specPath: pathArg(s.spec), ticketsDir: pathArg(s.tickets), mappingPath: pathArg(mappingPath(dir)),
-    reviewPath: pathArg(path), checks: list(s.config.checks), regressionSet: regressionText(s),
+    reviewPath: pathArg(path), checks: list([...s.config.checks, ...fullChecks(s)]), regressionSet: regressionText(s),
     waivers: indentLines(waiverReport(s)), reviews: reviewList(s), skillsRoot: pathArg(SKILLS_ROOT),
     // A run created before the boundary has no confirmed criteria to cite, so it keeps
     // the brief it always had: every blocking finding stands.
@@ -1313,7 +1313,7 @@ const ownsPhase = (s, phase) => s.checking?.pid === phase.pid && s.checking?.sta
 async function runCheckPhase(dir, phase, commands, cwd, complete, fresh = false) {
   const s0 = loadState(dir);
   const minutes = checkLimit(s0);
-  const passed = fresh ? {} : (s0.checkPasses?.[phase.tree] ?? {});
+  const passed = fresh ? {} : { ...receiptPasses(dir, cwd, phase.tree), ...(s0.checkPasses?.[phase.tree] ?? {}) };
   mkdirSync(phase.logs, { recursive: true });
   const checks = await runChecks(commands, cwd, minutes, (pid, token) => withLock(dir, () => {
     const s = loadState(dir);
@@ -1324,6 +1324,7 @@ async function runCheckPhase(dir, phase, commands, cwd, complete, fresh = false)
   const ran = checks.results.filter((r) => !r.skipped);
   const skipped = checks.results.filter((r) => r.skipped);
   say(`checks: ${ran.length} ran${skipped.length ? `, ${skipped.length} passed earlier on this tree and were not run again (\`--fresh\` runs every one)` : ""}; logs in ${pathArg(phase.logs)}`);
+  for (const r of skipped) say(`  not run again: \`${r.cmd}\` (passed: ${r.skipped})`);
   return withLock(dir, () => {
     const s = loadState(dir);
     if (!ownsPhase(s, phase)) {
@@ -1347,6 +1348,46 @@ function rememberPasses(s, tree, ok) {
   s.checkPasses = Object.fromEntries([...Object.entries(all), [tree, entry]].slice(-KEPT_TREES));
 }
 const treeOf = (cwd) => git(cwd, "rev-parse", "HEAD^{tree}");
+const fullChecks = (s) => s.config.fullChecks || [];
+
+// The commands a `validate.mjs` receipt in the run's evidence shows passing on a
+// commit with this tree: a reviewer's run of a ticket's criteria on its candidate,
+// or the final reviewer's run of the full checks on the tip. Only a complete
+// receipt that started on a clean tree counts, and only a command that passed and
+// left the tree unchanged. The log it names is the evidence.
+const RECEIPT_DEPTH = 5;
+export function receiptPasses(dir, cwd, tree) {
+  const out = {};
+  if (!tree) return out;
+  const trees = new Map();
+  const treeOfCommit = (sha) => {
+    if (!trees.has(sha)) trees.set(sha, gitTry(cwd, "rev-parse", "--verify", "--quiet", `${sha}^{tree}`).out || null);
+    return trees.get(sha);
+  };
+  const walk = (folder, depth) => {
+    let entries;
+    try { entries = readdirSync(folder, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const path = join(folder, e.name);
+      if (e.isDirectory()) {
+        if (depth < RECEIPT_DEPTH && !["node_modules", ".git", "checks"].includes(e.name)) walk(path, depth + 1);
+        continue;
+      }
+      if (e.name !== "receipt.json") continue;
+      let r;
+      try { r = JSON.parse(readFileSync(path, "utf8")); } catch { continue; }
+      if (r?.version !== 1 || !r.complete || !r.initial?.head || r.initial.status !== "") continue;
+      if (treeOfCommit(r.initial.head) !== tree) continue;
+      for (const c of r.checks || []) {
+        if (c.ok && typeof c.cmd === "string" && !c.drift?.length && (c.log || c.reusedFrom != null)) {
+          out[c.cmd] ??= pathArg(c.log ?? path);
+        }
+      }
+    }
+  };
+  walk(join(dir, "evidence"), 1);
+  return out;
+}
 const checkLogs = (dir, label) => join(dir, "evidence", "checks", `${label}-${now().replace(/[:.]/g, "-")}`);
 // A failed command names itself and, for an acceptance command, the ticket it
 // proves: `#02 acceptance \`cmd\` fails` says whose behaviour regressed.
@@ -2004,11 +2045,12 @@ async function cmdInit(opts) {
   if (branchExists(repo, branch)) fail(`branch ${branch} already exists; pick another --feature or delete the branch`);
   const setup = opts.setup || [];
   const checks = opts.check || [];
+  const fullChecks = opts["full-check"] || [];
   const checkTimeout = checkTimeoutSetting(opts["check-timeout"]) ?? DEFAULT_CHECK_TIMEOUT;
   const maxReworkRounds = maxRoundsSetting(opts["max-rework-rounds"]) ?? DEFAULT_MAX_REWORK_ROUNDS;
   const config = {
     maxExecutors: Number(opts["max-executors"] || 2), maxReviewers: Number(opts["max-reviewers"] || 1),
-    checkTimeout, maxReworkRounds, setup, checks, executor: agentConfig(opts, ""), reviewer: agentConfig(opts, "review-"),
+    checkTimeout, maxReworkRounds, setup, checks, fullChecks, executor: agentConfig(opts, ""), reviewer: agentConfig(opts, "review-"),
   };
   for (const role of Object.keys(ROLES)) launchSettings(config, role);
 
@@ -2118,6 +2160,7 @@ function cmdConfig(dir, s, opts) {
   if (opts["max-executors"]) c.maxExecutors = Number(opts["max-executors"]);
   if (opts["max-reviewers"]) c.maxReviewers = Number(opts["max-reviewers"]);
   if (opts.check) c.checks = opts.check;
+  if (opts["full-check"]) c.fullChecks = opts["full-check"];
   if (opts.setup) c.setup = opts.setup;
   const timeout = checkTimeoutSetting(opts["check-timeout"]);
   if (timeout != null) c.checkTimeout = timeout;
@@ -2665,8 +2708,10 @@ function cmdFinish(dir, s, opts = {}) {
   const phase = beginCheckPhase(dir, s, { kind: "finish", tip: s.integration.tip, tree: treeOf(s.integration.worktree), logs: pathArg(checkLogs(dir, "finish")) });
   // The run's checks, then the whole regression set: every integrated ticket's
   // acceptance commands, so the tip that ships is the one that proves each ticket.
-  // On the tree the last integration checked, each of them has passed already.
-  const commands = uniqueCommands([...s.config.checks, ...regressionSet(s)]);
+  // On the tree the last integration checked, each of them has passed already. The
+  // full checks run here only: the final reviewer runs them on this tip, and a
+  // receipt of theirs for this tree stands for the run here.
+  const commands = uniqueCommands([...s.config.checks, ...regressionSet(s), ...fullChecks(s)]);
   return { afterLock: () => runCheckPhase(dir, phase, commands, s.integration.worktree, (s2, checks, minutes) => completeFinish(dir, s2, phase, checks, minutes), opts.fresh) };
 }
 
@@ -3015,14 +3060,14 @@ const HELP = `workloop — run state and Rex/git mechanics for the paseo-workloo
 usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
 
   init --feature <slug> [--repo .] [--base <ref>] [--spec <file>] [--tickets <dir>]
-       [--check <cmd>]... [--setup <cmd>]... [--check-timeout <minutes>] [--max-rework-rounds 2]
+       [--check <cmd>]... [--full-check <cmd>]... [--setup <cmd>]... [--check-timeout <minutes>] [--max-rework-rounds 2]
        [--max-executors 2] [--max-reviewers 1]
        [--profile name] [--provider p] [--model m] [--mode m] [--thinking t]
        [--review-profile name] [--review-provider p] ...
        [--direct]                      one ticket with a Scope line, no spec, no final review
        spec and tickets default to <run dir>/spec.md and <run dir>/issues
   scratch --feature <slug> [--repo .]   create <run dir>/issues and print the run's paths
-  config  [same options as init]       change budgets, checks, time limit, rework cap, launch settings
+  config  [same options as init]       change budgets, checks, full checks, time limit, rework cap, launch settings
           [--clear-launch executor|reviewer]  drop the run's launch overrides for that role, so it
                                        follows the defaults file again
 
@@ -3082,7 +3127,7 @@ const OPTIONS = Object.fromEntries([
   ...["run", "repo", "feature", "base", "spec", "tickets", "max-executors", "max-reviewers", "profile", "provider", "model", "mode", "thinking",
     "review-profile", "review-provider", "review-model", "review-mode", "review-thinking", "note", "note-file", "text", "file", "override", "reason",
     "check-timeout", "waive", "max-rework-rounds", "for", "wake"].map((k) => [k, { type: "string" }]),
-  ...["check", "setup", "clear-launch"].map((k) => [k, { type: "string", multiple: true }]),
+  ...["check", "full-check", "setup", "clear-launch"].map((k) => [k, { type: "string", multiple: true }]),
   ...["json", "live", "keep", "again", "merge-tip", "dry-run", "help", "direct", "new-worktree", "skip", "extra-round", "fresh"].map((k) => [k, { type: "boolean" }]),
 ]);
 

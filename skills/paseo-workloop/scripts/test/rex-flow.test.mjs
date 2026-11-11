@@ -405,6 +405,41 @@ test("integrate keeps each check's output, runs a shared command once, and a ret
   assert.equal(readFileSync(count, "utf8"), "c1\n");
 });
 
+test("full checks run only at the end, and the final reviewer's validate receipt on the tip stands for them", () => {
+  const full = `node -e "require('fs').appendFileSync(process.env.COUNT_LOG, 'full\\n')"`;
+  const sb = sandbox({ init: false });
+  const count = join(sb.root, "count.log");
+  sb.env.COUNT_LOG = count;
+  sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", CHECK, "--full-check", full);
+  assert.deepEqual(sb.state().config.fullChecks, [full]);
+  sb.ok("dispatch", "01");
+  sb.work("01");
+  sb.ok("review", "01");
+  sb.reviewed("01");
+  assert.match(sb.ok("integrate", "01"), /checks: 1 ran;/);
+  assert.ok(!existsSync(count), "integrate does not run the full checks");
+
+  const tip = sb.state().integration.tip;
+  writeFileSync(join(sb.runDir, "final-review.md"), `Integration tip: ${tip}\n\n## Acceptance\n\n| Row | Spec item | Evidence on the integrated tree |\n|-----|-----------|---------------------------------|\n| M1 | item | evidence |\n`);
+  sb.ok("final-review");
+  const round = sb.state().finalReview;
+  assert.ok(readFileSync(readdirSync(join(sb.runDir, "briefs")).filter((f) => f.startsWith("final-")).map((f) => join(sb.runDir, "briefs", f))[0], "utf8").includes(full), "the final brief lists the full checks");
+  // The final reviewer runs the full checks on the tip through validate.mjs.
+  const v = spawnSync(process.execPath, [join(HERE, "..", "validate.mjs"), "--repo", round.worktree, "--expect-sha", tip, "--expect-branch", round.branch,
+    "--output", join(sb.runDir, "evidence", "final-1-full"), "--check", full], { env: sb.env, encoding: "utf8" });
+  assert.equal(v.status, 0, v.stdout + v.stderr);
+  assert.equal(readFileSync(count, "utf8"), "full\n");
+  writeFileSync(round.path, `Verdict: pass\nIntegration tip: ${tip}\n`);
+  sb.endTurn(round.agentId);
+  const out = sb.ok("finish");
+  assert.match(out, /checks: 0 ran, 2 passed earlier on this tree/);
+  assert.match(out, /not run again: `node -e .*full.*` \(passed: .*evidence\/final-1-full\/check-1\.log\)/);
+  assert.equal(readFileSync(count, "utf8"), "full\n", "finish does not run the full checks a second time");
+  // --fresh runs them, receipts or not.
+  assert.match(sb.ok("finish", "--fresh"), /checks: 2 ran;/);
+  assert.equal(readFileSync(count, "utf8"), "full\nfull\n");
+});
+
 function readyForFinal() {
   const sb = sandbox();
   sb.ok("dispatch", "01");
