@@ -32,15 +32,15 @@ When the [workloop-audit](../workloop-audit/SKILL.md) skill is installed, start 
 
 Keep each useful finding short: **what happened and its evidence → what would help → where that change belongs and why**. No fixed finding count or long template is needed.
 
-Possible destinations:
+Possible destinations, from the one that makes the mistake impossible to the one an agent can skip:
 
-- The project's agent instruction file (`Agent.md`, `AGENTS.md` or its actual convention) for a short, stable rule.
-- A skill for a reusable workflow with several steps or decisions.
-- A hook or script check for a reliably detectable mistake that can be blocked mechanically.
-- A test for reproducible business behavior.
-- Reference documentation for third-party limits and troubleshooting knowledge.
+1. The code's structure, when the mistake can be designed out: one owner for the state, one supported way to do the task, the old way an agent would copy deleted.
+2. A type, lint, hook or script check for a reliably detectable mistake, whose error names what to do instead.
+3. A test for reproducible business behavior.
+4. A skill for a reusable workflow with several steps or decisions.
+5. The project's agent instruction file (`Agent.md`, `AGENTS.md` or its actual convention) for a short, stable judgment call, or reference documentation for third-party limits and troubleshooting knowledge. Nothing fails when an agent skips these.
 
-Choose the smallest useful improvement. Check whether it already exists or merely needs wiring up. Avoid turning a one-off workaround into a universal rule. Present the suggestions to the user without creating tickets, editing guidance or installing checks.
+Choose the smallest useful improvement at the earliest destination that fits, and when you choose a later one, say why the earlier ones don't fit. For a proposed check or test, name the mistake in this evidence that it would have caught. Check whether it already exists or merely needs wiring up. Avoid turning a one-off workaround into a universal rule. Present the suggestions to the user without creating tickets, editing guidance or installing checks.
 
 For a run, save the output with `WL retro --file <report>`. At normal close, if nothing warrants retro, use `WL retro --skip --reason "<brief reason>"`. `WL` is the workloop script with `--run <run>`; it records the result without applying suggestions. A mid-run assessment does not replace the assessment after `finish`.
 
