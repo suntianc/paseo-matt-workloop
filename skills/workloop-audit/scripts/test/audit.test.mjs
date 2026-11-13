@@ -5,13 +5,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { inBoundary } from "../../../paseo-workloop/scripts/workloop.mjs";
+import { inBoundary, parseFindings } from "../../../paseo-workloop/scripts/workloop.mjs";
 import { auditRun, classifyReReview, flagsFor, listRuns, main, placesIn, totals, workloopRoot } from "../audit.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -125,6 +125,8 @@ function smallRun(sb) {
   writeFileSync(join(dir, "briefs", `final-2-${s2}.md`), `## Re-review\n\n${NUMBERING}\n`);
   writeFileSync(join(dir, "messages", "01-a1-1.md"), "Fix S1.\n\n## Rework\n\nReproduce each finding first.\n");
   writeFileSync(join(dir, "messages", "01-a1-2.md"), "Fix L1 too.\n");
+  writeFileSync(join(dir, "reports", "01-a1-before-1.md"), "Status: done\n\n## Summary\nOriginal candidate.\n");
+  writeFileSync(join(dir, "reports", "02-a1-before-1.md"), "Status: done\n\n## Summary\nOriginal candidate.\n");
   writeFileSync(join(dir, "reports", "01-a1-before-2.md"), "Status: done\n\n## Findings\n- S1 fixed\n");
   writeFileSync(join(dir, "reports", "01-a1.md"), "Status: done\n\n## Summary\nDid it.\n");
   // Rechecked after the rework: answered, but the method is not reported.
@@ -378,7 +380,7 @@ test("auditRun: facts, categories and the flags one run raises", async () => {
   assert.deepEqual(flagsFor(run), run.flags);
 });
 
-test("auditRun: measures the run directory without scratch/ and the largest evidence items", async () => {
+test("auditRun: measures the whole run without scratch/ and lists its largest children", async () => {
   const sb = sandbox();
   const { dir } = smallRun(sb);
   mkdirSync(join(dir, "evidence", "a"), { recursive: true });
@@ -389,11 +391,9 @@ test("auditRun: measures the run directory without scratch/ and the largest evid
   writeFileSync(join(dir, "scratch", "brief", "build.bin"), Buffer.alloc(2000, 3));
 
   const run = await auditRun("repo", "feat");
-  // The largest direct children of evidence/, by the bytes under each, biggest first.
-  assert.deepEqual(run.disk.largest, [
-    { path: "evidence/a", mb: mb(3000) },
-    { path: "evidence/b", mb: mb(1000) },
-  ]);
+  // The ranking covers the whole run, including records outside evidence/.
+  assert.ok(run.disk.largest.some((item) => item.path === "state.json"));
+  assert.deepEqual(run.disk.largest.find((item) => item.path === "evidence"), { path: "evidence", mb: mb(4000) });
   assert.equal(run.disk.scratchMb, mb(2000));
   // The run directory's size leaves scratch/ out: a scratch that archive will delete
   // must not keep the run looking large.
@@ -405,7 +405,7 @@ test("auditRun: measures the run directory without scratch/ and the largest evid
   try {
     symlinkSync(sb.repo, join(dir, "evidence", "repo-link"), "dir");
     const linked = await auditRun("repo", "feat");
-    assert.deepEqual(linked.disk.largest.map((e) => e.path), ["evidence/a", "evidence/b"]);
+    assert.deepEqual(linked.disk.largest, run.disk.largest);
     assert.equal(linked.disk.mb, run.disk.mb);
   } catch {
     // A platform that refuses symlinks still has the measurements above.
@@ -419,11 +419,11 @@ test("auditRun: measures the run directory without scratch/ and the largest evid
   assert.equal(after.disk.scratchMb, mb(400 * 1024 + 2000));
 });
 
-test("auditRun: a run with no evidence/ or scratch/ measures zero", async () => {
+test("auditRun: records still occupy space without evidence/ or scratch/", async () => {
   const sb = sandbox();
   smallRun(sb);
   const run = await auditRun("repo", "feat");
-  assert.deepEqual(run.disk.largest, []);
+  assert.ok(run.disk.largest.some((item) => item.path === "state.json"));
   assert.equal(run.disk.scratchMb, 0);
   assert.equal(run.disk.mb, mb(bytes(join(sb.wl, "repo", "feat"))));
 });
@@ -450,7 +450,7 @@ test("main run: prints the counts, the categories, the flags and the JSON of one
   assert.match(out, /^tickets 2 · reviews 3 · most rework rounds 1 · past the cap 1 · final rounds 2$/m);
   assert.match(out, /^waivers rework 0 \/ override 0 \/ final 0 · integrate failures 1 · conflicts 1 · retries 1 · takeovers 1 · retro none$/m);
   assert.match(out, /^integration checks: 1, longest 12 min, total 12 min$/m);
-  assert.match(out, /^disk: [\d.]+ MB \(scratch [\d.]+ MB\)$/m);
+  assert.match(out, /^disk: [\d.]+ MiB logical, [\d.]+ MiB allocated \(scratch [\d.]+ MiB\)$/m);
   assert.match(out, /^re-review blocking findings: 3 — carried 2, late 1$/m);
   assert.match(out, /^flags:$/m);
   assert.match(out, /^- \[check\] narrowing · #01 review 2 L1:/m);
@@ -540,7 +540,7 @@ test("flagsFor: a linked ledger behind the run's finish or archive is a check fl
 
 // What `flagsFor` must do with the disk facts `auditRun` measures: an archived run
 // still holding too much, or a scratch/ that archive could not delete.
-test("flagsFor: an archived run over 200 MB, or with scratch/ left, is a check flag", () => {
+test("flagsFor: capacity is info; leftover scratch is a check flag", () => {
   const disk = (over) => ({ mb: 0, scratchMb: 0, largest: [], ...over });
   const run = (over) => ({
     run: "repo/feat", tickets: [], final: { reReviews: [], rounds: 0 }, extraRounds: 0,
@@ -551,10 +551,9 @@ test("flagsFor: an archived run over 200 MB, or with scratch/ left, is a check f
 
   const big = flagsFor(run({ disk: disk({ mb: 512.5, largest: [{ path: "evidence/node_modules", mb: 500 }, { path: "evidence/repo", mb: 12.4 }] }) }));
   assert.equal(big.length, 1, JSON.stringify(big));
-  assert.deepEqual({ kind: big[0].kind, level: big[0].level, where: big[0].where }, { kind: "size", level: "check", where: "run" });
-  // How much is kept, and the largest of what evidence/ holds.
-  assert.match(big[0].text, /still holds 512\.5 MB; largest under evidence\/: evidence\/node_modules 500 MB, evidence\/repo 12\.4 MB/);
-  assert.match(big[0].text, /belong in the scratch folder the brief names, which `archive` deletes/);
+  assert.deepEqual({ kind: big[0].kind, level: big[0].level, where: big[0].where }, { kind: "size", level: "info", where: "run" });
+  assert.match(big[0].text, /retains 512\.5 MiB logical; largest across the run: evidence\/node_modules 500 MiB, evidence\/repo 12\.4 MiB/);
+  assert.doesNotMatch(big[0].text, /no report cites|delete|reclaim/);
 
   // Not archived: the run may still be working, and evidence or a worktree may be expected.
   assert.deepEqual(flagsFor(run({ disk: disk({ mb: 512.5 }), archived: null })), []);
@@ -563,16 +562,15 @@ test("flagsFor: an archived run over 200 MB, or with scratch/ left, is a check f
   // `archive` deletes scratch/, so anything left there is a deletion that failed.
   const scratch = flagsFor(run({ disk: disk({ mb: 1.5, scratchMb: 2.5 }) }));
   assert.equal(scratch.length, 1, JSON.stringify(scratch));
-  assert.match(scratch[0].text, /^scratch\/ still holds 2\.5 MB after archive: archive could not delete it; delete it by hand$/);
+  assert.match(scratch[0].text, /^scratch\/ still holds 2\.5 MiB after archive; inspect cleanup receipts and open files$/);
 
   // Both at once are two flags, and a hand-built run with no disk facts raises none.
   assert.equal(flagsFor(run({ disk: disk({ mb: 300, scratchMb: 1 }) })).filter((f) => f.kind === "size").length, 2);
   assert.deepEqual(flagsFor(run({ disk: undefined })), []);
 
-  // A size flag counts as a signal for the retro, like every other check flag.
+  // Capacity alone does not imply a failed cleanup or a missed retrospective.
   const retro = flagsFor(run({ disk: disk({ mb: 300 }), retro: "none" }));
-  assert.deepEqual(retro.map((f) => f.kind), ["size", "retro"]);
-  assert.match(retro[1].text, /retro is none, though the run has 1 signal\(s\)/);
+  assert.deepEqual(retro.map((f) => f.kind), ["size"]);
 });
 
 // BUG (reported, not fixed): audit.mjs reads `r.record.runs`, but store.mjs's
@@ -615,4 +613,129 @@ test("audit.mjs and req.mjs exist where the skill and the tests name them, and W
   } finally {
     process.env.WORKLOOP_ROOT = before;
   }
+});
+
+// Replays of the November audit false positives, using isolated records only.
+test("regression: cancelled archives already pending in the ledger need no sync", async () => {
+  for (const legacy of [false, true]) {
+    const sb = sandbox();
+    const { dir, state } = smallRun(sb);
+    state.completion = null;
+    state.baseSha = state.integration.tip;
+    for (const task of Object.values(state.tasks)) task.status = "cancelled";
+    if (!legacy) state.archiveStartedAt = state.finishedAt;
+    writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+    for (const args of [["new", "Cancelled run"], ["link", "repo/feat", "REQ-001"]]) {
+      const result = spawnSync(process.execPath, [REQ, ...args, "--project", "repo"], { cwd: sb.repo, env: sb.env, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    }
+    const before = snapshot(sb.root);
+    const run = await auditRun("repo", "feat");
+    assert.equal(run.flags.some((f) => f.kind === "ledger-sync"), false);
+    assert.deepEqual(run.ledger.syncChanges, []);
+    assert.equal(run.ledger.syncedArchive, true);
+    assert.deepEqual(snapshot(sb.root), before);
+  }
+});
+
+test("regression: an interrupted rework's unchanged snapshot is not its answer", async () => {
+  const sb = sandbox();
+  const { dir, state } = smallRun(sb);
+  const old = `Status: done\nCommit: ${sb.shas.c1}\n\n## Summary\nOriginal candidate.\n`;
+  writeFileSync(join(dir, "reports", "01-a1-before-1.md"), old);
+  writeFileSync(join(dir, "reports", "01-a1-before-2.md"), old);
+  // A continuation finishes the report without changing the candidate commit.
+  writeFileSync(join(dir, "reports", "01-a1.md"), `Status: done\nCommit: ${sb.shas.c1}\n\n## Findings\nS1 verified with new evidence.\n`);
+  const run = await auditRun("repo", "feat");
+  const rework = run.tickets[0].reworks[0];
+  assert.equal(rework.answered, true);
+  assert.equal(rework.findingsSection, true);
+  assert.equal(rework.answerMessage, 2);
+  assert.equal(run.flags.some((f) => f.kind === "rework-method" && f.where === "#01 message 1"), false);
+
+  // With only the interrupted snapshot available, the answer is unconfirmed.
+  state.tasks["01"].messages = 1;
+  writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+  writeFileSync(join(dir, "reports", "01-a1.md"), old);
+  const pending = await auditRun("repo", "feat");
+  assert.equal(pending.tickets[0].reworks[0].answered, false);
+  assert.equal(pending.flags.some((f) => f.kind === "rework-method" && f.where === "#01 message 1"), false);
+});
+
+test("regression: unfinished turns cannot confirm a partially written rework answer", async () => {
+  const sb = sandbox();
+  const { dir, state } = smallRun(sb);
+  state.tasks["01"].messages = 1;
+  state.tasks["01"].agentId = "worker";
+  state.agents = { worker: { turns: [{ block: "b1", base: join(dir, "turns", "worker-2") }] } };
+  mkdirSync(join(dir, "turns"));
+  writeFileSync(join(dir, "turns", "worker-2.json"), JSON.stringify({ startedAt: "2024-01-02T00:00:00Z" }));
+  writeFileSync(join(dir, "events.jsonl"), JSON.stringify({ kind: "send", task: "01", n: 1, block: "b1" }) + "\n");
+  writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+  writeFileSync(join(dir, "reports", "01-a1-before-1.md"), "Status: done\nOriginal\n");
+  writeFileSync(join(dir, "reports", "01-a1.md"), "Status: done\nPartial rewrite\n");
+  const run = await auditRun("repo", "feat");
+  assert.equal(run.tickets[0].reworks[0].answered, false);
+  assert.equal(run.flags.some((f) => f.kind === "rework-method" && f.where === "#01 message 1"), false);
+});
+
+test("regression: historical full-review briefs do not acquire a later narrowing rule", async () => {
+  const sb = sandbox();
+  const { dir } = smallRun(sb);
+  const brief = join(dir, "briefs", `01-review-${short(sb.shas.c2)}.md`);
+  writeFileSync(brief, "## Method\nRead the whole change.\n");
+  const run = await auditRun("repo", "feat");
+  assert.equal(run.flags.some((f) => f.kind === "narrowing" && f.where === "#01 review 2 L1" && f.level === "check"), false);
+  assert.equal(run.tickets[0].rounds[0].narrowed, false);
+  assert.equal(run.tickets[0].rounds[0].findings.find((f) => f.id === "L1").category, "late");
+});
+
+test("regression: yes-to-fixed is a format ambiguity, not confirmed failed rework", () => {
+  const { repo, shas: { c1, c2 } } = sandbox();
+  const prevText = table([{ id: "P1", location: "src/old.ts:2", basis: "AC1: old" }]);
+  const text = prevText.replace("| yes |", "| yes → **fixed** |");
+  assert.equal(parseFindings(text)[0].blocking, true, "the shared gate parser remains unchanged");
+  const rows = classifyReReview({ repo, prevSha: c1, sha: c2, text, prevText, brief: NUMBERING });
+  const run = { run: "repo/feat", tickets: [{ id: "01", rounds: [{ review: 2, narrowed: true, findings: rows }], reworks: [] }], final: { reReviews: [], rounds: 0 }, extraRounds: 0, waivers: {}, localRework: 0 };
+  const flags = flagsFor(run);
+  assert.equal(flags.some((f) => f.kind === "not-fixed"), false);
+  assert.equal(rows[0].ambiguousBlocking, true);
+  assert.equal(flags.some((f) => f.kind === "review-format"), true);
+  const counts = totals([{ ...run, flags }]);
+  assert.equal(counts.rawReReviewFindings, 1);
+  assert.equal(counts.reReviewFindings, 0);
+  assert.equal(counts.ambiguousBlocking, 1);
+});
+
+test("regression: disk facts deduplicate hard links and show the whole run", async () => {
+  const sb = sandbox();
+  const dir = writeRun(sb.wl, "repo", "disk", { tasks: {}, config: {} }, []);
+  mkdirSync(join(dir, "retained-private"));
+  mkdirSync(join(dir, "evidence"));
+  writeFileSync(join(dir, "retained-private", "vm.bin"), Buffer.alloc(1024 * 1024));
+  writeFileSync(join(dir, "evidence", "recording.mp4"), Buffer.alloc(400 * 1024));
+  linkSync(join(dir, "evidence", "recording.mp4"), join(dir, "retained-private", "recording.mp4"));
+  const run = await auditRun("repo", "disk");
+  assert.equal(run.disk.mb, mb(bytes(dir) - 400 * 1024));
+  assert.equal(run.disk.unit, "MiB");
+  assert.ok(run.disk.largest.some((x) => x.path === "retained-private"));
+  assert.equal(run.disk.largest[0].path, "retained-private");
+});
+
+test("regression: genuine missing-method answers and unresolved S3 remain visible", async () => {
+  const sb = sandbox();
+  const { dir } = smallRun(sb);
+  const run = await auditRun("repo", "feat");
+  assert.ok(run.flags.some((f) => f.kind === "rework-method" && f.where === "#02 message 1"));
+  const prevText = table([{ id: "S3", location: "src/old.ts:2", basis: "AC1: close must stop the process" }]);
+  const findings = classifyReReview({ repo: sb.repo, prevSha: sb.shas.c1, sha: sb.shas.c2, text: prevText, prevText, brief: NUMBERING });
+  assert.deepEqual(findings.map((f) => [f.id, f.category, f.trusted]), [["S3", "carried", true]]);
+  assert.equal(findings[0].ambiguousBlocking, undefined);
+});
+
+test("regression: a frozen ledger conflict is not advertised as fixable by sync", () => {
+  const flags = flagsFor({ run: "repo/feat", tickets: [], final: { reReviews: [], rounds: 0 }, extraRounds: 0, waivers: {}, localRework: 0,
+    ledger: { checked: true, linked: true, requirement: "REQ-001", syncedFinish: false, syncedArchive: true, syncChanges: [], conflict: { recorded: "aaa", reported: "bbb" } } });
+  assert.deepEqual(flags.map((f) => f.kind), ["ledger-conflict"]);
+  assert.match(flags[0].text, /sync cannot overwrite/);
 });
