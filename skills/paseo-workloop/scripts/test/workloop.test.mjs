@@ -1668,7 +1668,7 @@ test("acceptance: a manual reason is part of the confirmed criterion, and a run 
   ]);
 });
 
-test("acceptance: integrate runs the checks, then this ticket's commands, then the regression set, and stores them", () => {
+test("acceptance: integrate runs the checks, then this ticket's commands only, and stores them", () => {
   const sb = sandbox({ init: null, tickets: {} });
   const log = slash(join(sb.root, "ran.log"));
   const run = (label) => `node -e "require('fs').appendFileSync('${log}','${label}\\n')"`;
@@ -1697,11 +1697,11 @@ test("acceptance: integrate runs the checks, then this ticket's commands, then t
   sb.ok("review", "02");
   sb.reviewed("02");
   sb.ok("integrate", "02");
-  assert.deepEqual(ran(), ["check", "02", "02b", "01"], "checks, then this ticket's commands, then the integrated ticket's, in ticket order");
+  assert.deepEqual(ran(), ["check", "02", "02b"], "checks, then this ticket's commands; an integrated ticket's commands do not run again");
   assert.deepEqual(sb.state().tasks["02"].acceptance.map((a) => a.command), [run("02"), run("02b")]);
 });
 
-test("acceptance: a later ticket that breaks an earlier command rolls back, naming the command and its ticket", () => {
+test("acceptance: an earlier ticket's acceptance commands gate neither a later integration nor finish", () => {
   const sb = sandbox({ tickets: {
     "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: the guard holds — check: `node -e \"process.exit(require('fs').existsSync('REGRESSED') ? 1 : 0)\"`\n",
     "02-b.md": "# 02: B\n\nBlocked by: 01\n",
@@ -1713,42 +1713,37 @@ test("acceptance: a later ticket that breaks an earlier command rolls back, nami
   sb.ok("review", "02");
   sb.reviewed("02");
   const tip = sb.state().integration.tip;
-  const out = sb.no(/#01 acceptance `[^`]*` fails after merging #02; integration rolled back to/, "integrate", "02");
-  assert.match(out, /REGRESSED/, "the output names the failing command");
+  assert.match(sb.ok("integrate", "02"), /checks: 1 ran;/);
   const s = sb.state();
-  assert.equal(s.integration.tip, tip);
-  assert.equal(sb.g(s.integration.worktree, "rev-parse", "HEAD"), tip);
-  assert.equal(s.tasks["02"].status, "in_review");
-  assert.equal(s.tasks["02"].acceptance, undefined, "a failed integration stores no commands");
-  const failed = sb.events("integrate_failed").at(-1);
-  assert.equal(failed.task, "02");
-  assert.equal(failed.acceptanceTask, "01");
-  assert.match(failed.check, /REGRESSED/);
-  assert.equal(failed.rolledBack, true);
+  assert.notEqual(s.integration.tip, tip);
+  assert.equal(s.tasks["02"].status, "done");
+  assert.equal(sb.events("integrate_failed").length, 0);
+  sb.finalPass();
+  assert.match(sb.ok("finish", "--fresh"), /checks: 1 ran;[\s\S]*delivery checked/);
 });
 
-test("acceptance: finish runs the checks and the whole regression set, and fails when a command fails on the tip", () => {
+test("acceptance: finish runs the checks and the full checks, not the acceptance commands, and fails when one fails on the tip", () => {
   const sb = sandbox({ init: null, tickets: {} });
   const log = slash(join(sb.root, "ran.log"));
   const broke = slash(join(sb.root, "broke"));
   const run = (label) => `node -e "require('fs').appendFileSync('${log}','${label}\\n')"`;
-  const guard = `node -e "require('fs').appendFileSync('${log}','01\\n');process.exit(require('fs').existsSync('${broke}') ? 1 : 0)"`;
-  writeFileSync(join(sb.runDir, "issues", "01-a.md"), `# 01: A\n\nBlocked by: None\n\n- [ ] AC1: guard — check: \`${guard}\`\n`);
-  sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", run("check"));
+  const full = `node -e "require('fs').appendFileSync('${log}','full\\n');process.exit(require('fs').existsSync('${broke}') ? 1 : 0)"`;
+  writeFileSync(join(sb.runDir, "issues", "01-a.md"), `# 01: A\n\nBlocked by: None\n\n- [ ] AC1: proof — check: \`${run("01")}\`\n`);
+  sb.ok("init", "--feature", "feat", "--repo", sb.repo, "--check", run("check"), "--full-check", full);
   sb.complete("01");
   sb.finalPass();
   writeFileSync(log, "");
-  // On the tree the integration checked, every command has passed: none runs again.
-  assert.match(sb.ok("finish"), /checks: 0 ran, 2 passed earlier on this tree/);
-  assert.equal(readFileSync(log, "utf8"), "");
+  // The checks passed on the tree the integration checked; the full checks run here first.
+  assert.match(sb.ok("finish"), /checks: 1 ran, 1 passed earlier on this tree/);
+  assert.equal(readFileSync(log, "utf8"), "full\n");
+  writeFileSync(log, "");
   assert.match(sb.ok("finish", "--fresh"), /checks: 2 ran;/);
-  assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), ["check", "01"], "the checks, then the regression set");
+  assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), ["check", "full"], "the checks, then the full checks; no acceptance command");
 
-  // With --fresh the same commands run again on the tip, so a regression the tip carries fails it.
   const done = sb.state().completion;
   writeFileSync(broke, "");
-  sb.no(/#01 acceptance `[^`]*` fails on the integration tip/, "finish", "--fresh");
-  assert.deepEqual(sb.state().completion, done, "a failing acceptance command records no delivery");
+  sb.no(/`node -e [^`]*full[^`]*` fails on the integration tip/, "finish", "--fresh");
+  assert.deepEqual(sb.state().completion, done, "a failing full check records no delivery");
   rmSync(broke);
   assert.match(sb.ok("finish"), /delivery checked/);
 });
@@ -2424,14 +2419,13 @@ test("acceptance: an acceptance command falls under the check time limit", () =>
   assert.equal(sb.events("integrate_failed").at(-1).timedOut, true);
 });
 
-test("acceptance: status shows the regression set's size, and --json lists each task's commands", () => {
+test("acceptance: status --json lists each task's commands, and status shows no regression set", () => {
   const sb = sandbox({ tickets: {
     "01-a.md": "# 01: A\n\nBlocked by: None\n\n- [ ] AC1: one works — check: `node -e \"0\"`\n- [ ] AC2: a manual criterion, no command — manual: a reviewer reads it\n- [ ] AC3: two works — check: `node --version`\n",
     "02-b.md": "# 02: B\n\nBlocked by: 01\n",
   } });
-  assert.doesNotMatch(sb.ok("status"), /regression set/);
   sb.complete("01");
-  assert.match(sb.ok("status"), /regression set: 2 commands from 1 ticket\b/);
+  assert.doesNotMatch(sb.ok("status"), /regression set/);
   const json = JSON.parse(sb.ok("status", "--json"));
   assert.deepEqual(json.tasks.find((t) => t.id === "01").acceptance, [
     { criterion: "one works", command: 'node -e "0"' },
@@ -3184,11 +3178,12 @@ test("final review: the start makes a round at the tip with its own branch, work
   const brief = readFileSync(join(sb.runDir, "briefs", `final-1-${s.integration.tip.slice(0, 8)}.md`), "utf8");
   assert.doesNotMatch(brief, /\{\{/);
   for (const input of [f.worktree, f.tip, s.spec, s.tickets, join(sb.runDir, "final-review.md"), `git diff ${s.baseSha}..${s.integration.tip}`,
-    "node --version", s.tasks["01"].review.path, f.path]) {
+    s.tasks["01"].review.path, f.path]) {
     assert.ok(brief.includes(slash(input)), `${input}\n${brief}`);
   }
+  assert.ok(!brief.includes("node --version"), "a ticket's acceptance command is not re-run at the final review");
   assert.match(brief, /The waiver ledger, every finding the run let through, to re-assess:\n {2}waived findings: none/);
-  for (const step of ["Cross-ticket review", "Verify the acceptance mapping", "Re-run the checks and the regression set", "Re-assess every waiver", "Run the changed surface for real"]) {
+  for (const step of ["Cross-ticket review", "Verify the acceptance mapping", "Re-run the checks and the full checks", "Re-assess every waiver", "Run the changed surface for real"]) {
     assert.ok(brief.includes(`**${step}`), `${step}\n${brief}`);
   }
   assert.match(brief, /## Boundary\n/);
@@ -3257,6 +3252,9 @@ test("final review: a round after a reported one adds that report, its tip and t
   assert.ok(brief.includes(`written for integration tip \`${first.tip}\``), `the previous tip\n${brief}`);
   assert.ok(brief.includes(`git diff ${first.tip}..${tip}`), `the change since\n${brief}`);
   assert.equal(brief.match(/## Re-review/g).length, 1, "one previous round, named once");
+  // It re-runs only what the change since can have changed: the repair's acceptance commands.
+  assert.ok(brief.includes("the acceptance commands of the tickets integrated since `" + first.tip.slice(0, 8) + "`: `node --version` (#02)"), brief);
+  assert.match(brief, /Don't re-run the other checks and full checks: `finish` runs each one that has no passing receipt on this tree\./);
   // New findings continue the previous round's numbering, as a ticket re-review does.
   assert.match(brief, /Number each new finding after the highest number the previous review used for its letter \(after `P4` comes `P5`\), so that no ID ever names two different findings\./);
 });
@@ -3271,6 +3269,7 @@ test("final review: --again at the same tip re-reviews that tip on both sides of
   assert.ok(brief.includes(slash(first.path)), brief);
   assert.ok(brief.includes(`git diff ${first.tip}..${first.tip}`), `the same tip on both sides\n${brief}`);
   assert.match(brief, /When the two tips are the same, nothing has changed since\./);
+  assert.match(brief, /the tickets integrated since `[0-9a-f]{8}`: none\./);
 });
 
 test("final review: a round with no report is neither a reviewed tip nor the previous round", () => {

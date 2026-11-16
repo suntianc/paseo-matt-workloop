@@ -11,8 +11,7 @@ These are given here. Don't ask for them.
 - Spec: `{{specPath}}`.
 - Tickets: `{{ticketsDir}}`.
 - The orchestrator's acceptance mapping: `{{mappingPath}}`. Treat it as claims to verify, not as evidence.
-- The run's checks: {{checks}}.
-- The regression set, every integrated ticket's acceptance commands: {{regressionSet}}.
+- The run's checks and full checks: {{checks}}.
 - The waiver ledger, every finding the run let through, to re-assess:
 {{waivers}}
 - Each ticket's last review report, whose non-blocking findings are reference:
@@ -20,9 +19,9 @@ These are given here. Don't ask for them.
 {{notes}}
 ## Method
 
-- **Cross-ticket review.** Read the whole change and look for what per-ticket reviews cannot see: interface drift between tickets built in parallel, duplicated or contradictory logic, leftover scaffolding, and dead code created by combining the tickets.
+- **Cross-ticket review.** Read the whole change and look for what per-ticket reviews cannot see: interface drift between tickets built in parallel, duplicated or contradictory logic, leftover scaffolding, dead code created by combining the tickets, and tests the run added that none of the commands below runs.
 - **Verify the acceptance mapping.** Take each row in turn and establish for yourself that its evidence holds on this tree: re-run what it names, or inspect the file or behaviour it points at. Say what you checked and what it printed.
-- **Re-run the checks and the regression set.** Run every command above on this tree from its root, through `validate.mjs` with the tip and branch above and an `--output` under your evidence folder (see the validation reference). A command's output is the evidence; nothing pasted into the mapping or a report is. `finish` reads those receipts: a command that passed there on this tip is not run a second time.
+- **Re-run the checks and the full checks.** Each ticket's acceptance commands proved it at its own integration and are not re-run here; the project's suites in these commands are what guard the run now. Run every command above on this tree from its root, through `validate.mjs` with the tip and branch above and an `--output` under your evidence folder (see the validation reference). A command's output is the evidence; nothing pasted into the mapping or a report is. `finish` reads those receipts: a command that passed there on this tip is not run a second time.
 - **Re-assess every waiver.** For each ledger entry (its `L` label is in the list above, and you cite it as `Waiver L3`), answer two questions: does the finding still hold on this tree, and does the reason it was let through still hold? Report the outcome under `## Waivers`, one of three:
   - the finding still holds and its reason still holds: a note, no finding;
   - the finding still holds and its reason no longer does: a blocking `Waiver` finding citing the entry, `Waiver L3: <why the reason no longer covers it>`;

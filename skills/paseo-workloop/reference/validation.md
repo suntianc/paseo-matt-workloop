@@ -40,7 +40,7 @@ By default every supplied occurrence executes, including identical commands. Whe
 
 Use `--repeat-check` for independent trials, timing observations, stress or external-state checks. These always execute and are never reused. Even consecutive reuse is suitable only for checks known to have equivalent inputs; ignored outputs and external services can change without a Git difference. No environment values are saved, only their digest.
 
-This helper does not rewrite tickets, change criteria, or change how `integrate` and `finish` execute the regression set. Existing confirmed occurrences still run as agreed. For new tickets, reference a shared full-suite or smoke check deliberately rather than making every criterion repeat it accidentally; retain explicit repetitions that provide stability evidence.
+This helper does not rewrite tickets or change criteria. Existing confirmed occurrences still run as agreed. A ticket's acceptance commands run on its candidate and at its integration only, so a criterion that repeats a stability trial costs that ticket alone; the run's checks and full checks are what run again later. For new tickets, reference a shared full-suite or smoke check deliberately rather than making every criterion repeat it accidentally.
 
 ## Validate the external contract
 

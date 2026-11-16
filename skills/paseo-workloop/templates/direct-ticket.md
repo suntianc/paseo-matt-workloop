@@ -19,7 +19,7 @@
      - Keep as is / Not in this change: write both from the user's words, not from what seems convenient. "Add X" keeps what is already there; list it, so a ticket that removes it is visible when the user reads it. Give a kept behaviour a criterion when it must be proved. Delete a line that has nothing to say.
      - The Scope line is checked against the diff: a candidate touching any other file is refused. List directories as `dir/`.
      - Leave out public behaviour, shared interfaces and open product decisions. If the change needs them, it isn't a direct run.
-     - The reviewer re-runs every command below, and integration and finish run them again, so give each criterion a command that can run again on any later tree. Nothing reviews the change after the reviewer.
+     - The reviewer re-runs every command below on the candidate, and integration runs it once on the merged tree; neither later integrations nor finish run it again. What must keep working afterwards belongs in a test the run's checks or full checks run. Nothing reviews the change after the reviewer.
      - End every criterion with `— check: \`<command>\``, or with `— manual: <why no command can check it>` when none can; `init` refuses one with neither. The run's checks run at every integration, so no criterion repeats them.
      - Number the criteria `AC1`, `AC2`, …: the user confirms them with the ticket, and a later change is recorded with `WL criteria` after they agree to it.
      - Bound every criterion: the reviewer holds it to its letter. Replace "all", "every", "never" with the scope they cover, and write a known limit into the criterion. -->

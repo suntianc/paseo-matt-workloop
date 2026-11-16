@@ -293,8 +293,8 @@ export async function runChecks(cmds, cwd, minutes, onSpawn, { logDir, skip } = 
   return { ok: true, results };
 }
 
-// One command list, each command once: a check a ticket's criterion repeats, or a
-// command two tickets share, runs at its first place only.
+// One command list, each command once: a check a ticket's criterion repeats runs
+// at its first place only.
 export function uniqueCommands(list) {
   const seen = new Set();
   return list.filter((e) => {
@@ -1033,10 +1033,12 @@ function finalGate(dir, s) {
     + `or record why ${open.length === 1 ? "it stands" : "they stand"} with \`final-review --waive ${ids} --reason "<why>"\``;
 }
 
-// The regression set as one line for the final reviewer's brief.
-function regressionText(s) {
-  const set = regressionSet(s);
-  return set.length ? set.map((e) => `\`${e.cmd}\` (#${e.task})`).join(", ") : "none — every criterion is manual";
+// The acceptance commands of the tickets a later final round has to prove: those
+// integrated between the previous round's tip and this one, as one line for its brief.
+function sinceText(s, from, to) {
+  const merged = new Set(from === to ? [] : git(s.integration.worktree, "rev-list", `${from}..${to}`).split("\n").filter(Boolean));
+  const since = tasksOf(s).filter((t) => t.status === "done" && merged.has(t.mergeSha)).flatMap((t) => commandEntries(t, t.acceptance));
+  return since.length ? since.map((e) => `\`${e.cmd}\` (#${e.task})`).join(", ") : "none";
 }
 
 // Each ticket's last review report: the one its task carries, else the newest in
@@ -1189,13 +1191,14 @@ function cmdFinalReview(dir, s, opts) {
     ...workFolders(dir, brief),
     feature: s.feature, round, tip, tipShort: short(tip), baseSha: s.baseSha, worktree: wt, branch,
     specPath: pathArg(s.spec), ticketsDir: pathArg(s.tickets), mappingPath: pathArg(mappingPath(dir)),
-    reviewPath: pathArg(path), checks: list([...s.config.checks, ...fullChecks(s)]), regressionSet: regressionText(s),
+    reviewPath: pathArg(path), checks: list([...s.config.checks, ...fullChecks(s)]),
     waivers: indentLines(waiverReport(s)), reviews: reviewList(s), skillsRoot: pathArg(SKILLS_ROOT),
     // A run created before the boundary has no confirmed criteria to cite, so it keeps
     // the brief it always had: every blocking finding stands.
     boundary: numberedCriteria(s) ? `\n${render("final-reviewer-boundary.md", { floorClasses: floorClasses() })}` : "",
     reReview: prev ? `\n${render("final-reviewer-re-review.md", {
       previousReview: pathArg(prev.path), previousTip: prev.tip, previousShort: short(prev.tip), tip,
+      since: sinceText(s, prev.tip, tip),
     })}` : "",
     notes: [`Setup completed in this worktree before dispatch. Preparation receipt: ${pathArg(join(setupEvidence, "receipt.json"))}.`, notesFrom(opts)].filter(Boolean).join("\n\n"),
   };
@@ -1562,7 +1565,8 @@ export function acceptanceCriteria(file, text, { numbered = false, explicit = fa
   return out;
 }
 
-// The commands among a ticket's criteria, in order: the regression set's entries.
+// The commands among a ticket's criteria, in order: the proof its reviewer and its
+// integration run.
 const criterionCommands = (criteria) => criteria.filter((c) => c.command).map(({ criterion, command }) => ({ criterion, command }));
 export function acceptanceCommands(file, text, opts) {
   return criterionCommands(acceptanceCriteria(file, text, opts));
@@ -1670,11 +1674,12 @@ function readTickets(dir, { numbered = false, explicit = false } = {}) {
   return { tickets, warnings };
 }
 
-// The regression set: every integrated ticket's acceptance commands, in ticket
-// number order, run again at each later integration and at finish. Each entry
-// carries its ticket, so a failure says whose accepted behaviour broke.
+// A ticket's acceptance commands prove that ticket once: on its candidate, by its
+// reviewer, and on the merged tree, by its integration. They are not run again at
+// later integrations or at finish; what must keep working afterwards is guarded by
+// the tests the run's checks and full checks run. Each entry carries its ticket, so
+// a failure says whose criterion it is.
 const commandEntries = (t, acceptance = []) => acceptance.map((a) => ({ cmd: a.command, task: t.id, criterion: a.criterion }));
-const regressionSet = (s) => tasksOf(s).filter((t) => t.status === "done").flatMap((t) => commandEntries(t, t.acceptance));
 
 // A ticket's criteria are confirmed once: a run that uses numbered criteria records
 // them when the ticket enters the run, and from then on only `criteria <NN>` (after
@@ -2235,6 +2240,7 @@ function cmdDispatch(dir, s, id, opts) {
     branch, baseSha: tip, startSha: tip, worktree: "(set at dispatch)", reportPath: pathArg(reportPath(dir, t)),
     skillsRoot: pathArg(SKILLS_ROOT), implementSkill: skillPath("implement"), tddSkill: skillPath("tdd"),
     integrationBranch: s.integration.branch, checks: list(s.config.checks),
+    fullChecks: fullChecks(s).length ? list(fullChecks(s)) : "none",
     setup: !t.reuseWorktree && s.config.setup.length ? `- Before anything else, set up the worktree: ${list(s.config.setup)}.` : "",
     notes: [t.handoff || "", notesFrom(opts)].filter(Boolean).join("\n\n"),
   };
@@ -2362,6 +2368,7 @@ function cmdReview(dir, s, id, opts) {
     task: t.id, title: t.title, worktree: pathArg(t.worktree), branch: t.branch, candidateSha: t.candidateSha, candidateShort: short(t.candidateSha),
     fixedPoint: t.fixedPoint, ticketPath: pathArg(t.file), specPath: pathArg(isDirect(s) ? t.file : s.spec), executorReport: pathArg(reportPath(dir, t)),
     reviewPath: pathArg(path), skillsRoot: pathArg(SKILLS_ROOT), codeReviewSkill: skillPath("code-review"), notes: notesFrom(opts),
+    checks: list([...s.config.checks, ...fullChecks(s)]),
     direct: isDirect(s) ? `\n${render("reviewer-direct.md", { boundaryFinding: parts.boundaryFinding, reReviewLimit: parts.reReviewLimit })}` : "",
     reReview: bounded && prev ? `\n${render("reviewer-re-review.md", {
       previousReview: pathArg(prev.path), previousCandidate: prev.candidateSha, previousShort: short(prev.candidateSha), candidateSha: t.candidateSha,
@@ -2513,8 +2520,8 @@ function cmdIntegrate(dir, s, id, opts) {
   }
   const phase = beginCheckPhase(dir, s, { kind: "integrate", task: t.id, candidateSha: t.candidateSha, prevTip: prev, mergeSha: head(integ), tree: treeOf(integ), logs: pathArg(checkLogs(dir, `integrate-${t.id}`)) });
   const override = verdict === "pass" ? null : opts.override;
-  // The run's checks, then this ticket's acceptance commands, then the regression set.
-  const commands = uniqueCommands([...s.config.checks, ...commandEntries(t, acceptance), ...regressionSet(s).filter((e) => e.task !== t.id)]);
+  // The run's checks, then this ticket's acceptance commands.
+  const commands = uniqueCommands([...s.config.checks, ...commandEntries(t, acceptance)]);
   return { afterLock: () => runCheckPhase(dir, phase, commands, integ, (s2, checks, minutes) => completeIntegrate(dir, s2, phase, checks, minutes, opts.override, override, acceptance), opts.fresh) };
 }
 
@@ -2706,12 +2713,11 @@ function cmdFinish(dir, s, opts = {}) {
   const reminder = finishGates(dir, s);
   if (reminder) say(reminder);
   const phase = beginCheckPhase(dir, s, { kind: "finish", tip: s.integration.tip, tree: treeOf(s.integration.worktree), logs: pathArg(checkLogs(dir, "finish")) });
-  // The run's checks, then the whole regression set: every integrated ticket's
-  // acceptance commands, so the tip that ships is the one that proves each ticket.
-  // On the tree the last integration checked, each of them has passed already. The
-  // full checks run here only: the final reviewer runs them on this tip, and a
-  // receipt of theirs for this tree stands for the run here.
-  const commands = uniqueCommands([...s.config.checks, ...regressionSet(s), ...fullChecks(s)]);
+  // The run's checks, then the full checks: the project's own suites guard the tip
+  // that ships. On the tree the last integration checked, the checks have passed
+  // already. The full checks run here only: the final reviewer runs them on this
+  // tip, and a receipt of theirs for this tree stands for the run here.
+  const commands = uniqueCommands([...s.config.checks, ...fullChecks(s)]);
   return { afterLock: () => runCheckPhase(dir, phase, commands, s.integration.worktree, (s2, checks, minutes) => completeFinish(dir, s2, phase, checks, minutes), opts.fresh) };
 }
 
@@ -3010,11 +3016,6 @@ function printStatus(dir, s, live, asJson = false) {
   say(`run ${s.project}/${s.feature}${isDirect(s) ? " (direct)" : ""}${isRexRun(s) ? "" : " · Paseo run"} · base ${s.baseRef}@${short(s.baseSha)} · ${s.integration.branch}@${short(s.integration.tip)}${s.finishedAt ? " · FINISHED" : ""}`);
   const reviewing = tasksOf(s).filter((t) => t.review && !reviewReport(t)).length;
   say(`executors ${executorsBusy(s)}/${s.config.maxExecutors} · reviews pending ${reviewing} (max ${s.config.maxReviewers})`);
-  const regression = regressionSet(s);
-  if (regression.length) {
-    const tickets = new Set(regression.map((e) => e.task));
-    say(`regression set: ${regression.length} command${regression.length === 1 ? "" : "s"} from ${tickets.size} ticket${tickets.size === 1 ? "" : "s"} — run again at every integration and at finish`);
-  }
   const waived = waivedFindings(s);
   if (waived) say(`waived findings: ${waived} — the user reviews them at finish`);
   if (suggestions.length) {
@@ -3093,8 +3094,8 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
   send <NN> --text t | --file f | --merge-tip   the idle executor's next turn, same conversation
        [--waive ID,ID --reason r]      a rework answers every blocking finding: name it, or waive it
        [--extra-round --reason r]      a rework round past the cap goes on, with the user's decision
-  integrate <NN> [--override reason]   merge, then the checks and the regression set outside the run
-                                       lock; retain turns/worktree; --override records the
+  integrate <NN> [--override reason]   merge, then the checks and this ticket's acceptance commands
+                                       outside the run lock; retain turns/worktree; --override records the
                                        blocking findings it lets through. Each command once, its
                                        whole output in evidence/checks/; one that passed on this
                                        same tree is not run again unless --fresh
@@ -3109,7 +3110,7 @@ usage: node workloop.mjs [--run <dir|project/feature>] <command> [args]
                                        a reported round the brief adds it and the change since
        [--extra-round --reason r]      a repair cycle past the cap goes on, with the user's decision
   final-review --waive ID,ID --reason r  record the final findings the user lets through
-  finish [--fresh]                     run the checks and the regression set outside the run lock;
+  finish [--fresh]                     run the checks and the full checks outside the run lock;
                                        only on the final reviewer's pass for the current tip; on
                                        the tree the last integration checked, nothing runs again
   evidence                             index every agent's turns (prompts and CLI output)

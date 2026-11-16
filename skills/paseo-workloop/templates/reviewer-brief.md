@@ -10,6 +10,7 @@ These are given here. Don't ask for them.
 - Fixed point: `{{fixedPoint}}`, the merge-base with the integration branch. The change under review is `git diff {{fixedPoint}}...{{candidateSha}}`.
 - Spec: the ticket `{{ticketPath}}` (with its acceptance criteria) and the spec `{{specPath}}`.
 - Executor's report: `{{executorReport}}`. Treat it as claims to check, not as evidence.
+- The run's checks and full checks: {{checks}}. After integration they are the only commands that run this ticket's tests again; its acceptance commands are not re-run.
 {{notes}}
 ## Method
 

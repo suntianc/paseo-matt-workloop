@@ -29,7 +29,7 @@ Read the `implement` skill at `{{implementSkill}}` and follow it, with these ove
 - Before ad hoc browser/hardware validation, read `{{skillsRoot}}/paseo-workloop/reference/validation.md`: choose a new evidence directory, verify the current UI lifecycle, and preserve the first failed attempt. Report the named gap when validation consumes its budget without new evidence.
 - Where a skill says "call the Skill tool with X", read `{{skillsRoot}}/X/SKILL.md` and follow it instead, so you use the same skill versions as the rest of the run. Don't invoke skills through a tool.
 
-After integration the orchestrator runs these checks: {{checks}}. It then runs the acceptance commands this ticket names (each criterion ending in `— check: \`<command>\``) and those of every ticket already integrated, from the root of the integrated tree and within the run's check time limit. Make sure they all pass in your worktree before you report `done`.
+After integration the orchestrator runs these checks: {{checks}}, then the acceptance commands this ticket names (each criterion ending in `— check: \`<command>\``), from the root of the integrated tree and within the run's check time limit. Make sure they all pass in your worktree before you report `done`. Those acceptance commands prove this ticket once and are not run again after it is integrated. From then on its behaviour is guarded only by the tests the checks above and the full checks run at the end of the run ({{fullChecks}}), so put every test you add where one of those commands runs it.
 
 ## Rules
 
