@@ -3018,7 +3018,8 @@ test("whole-run retro precedes archival, preserves evidence, and never applies s
   assert.equal(existsSync(sb.state().integration.worktree), false);
   const index = JSON.parse(readFileSync(join(sb.runDir, "evidence", "index.json")));
   assert.equal(index.agents.length, 2);
-  for (const a of index.agents) assert.ok(readFileSync(join(sb.runDir, "evidence", a.file), "utf8").length, a.id);
+  // Archive indexes the agents and keeps no copy of what they printed.
+  for (const a of index.agents) assert.equal(a.file, undefined, a.id);
   assert.equal(readFileSync(retroPath, "utf8"), readFileSync(report, "utf8"));
   assert.equal(existsSync(join(sb.repo, "AGENTS.md")), false);
   assert.match(sb.ok("archive"), /already archived/);
@@ -3463,7 +3464,7 @@ test("final review: evidence captures the reviewer session and archive removes a
   const entry = index.agents.find((a) => a.id === round.agentId);
   assert.ok(entry, "evidence carries the reviewer session");
   assert.deepEqual(entry.tasks, [{ task: "final", attempt: "r1", role: "reviewer" }]);
-  assert.ok(readFileSync(join(sb.runDir, "evidence", entry.file), "utf8").length);
+  assert.equal(entry.file, undefined, "archive keeps no transcript");
 });
 
 test("final review: archive retains and lists a dirty final worktree", () => {

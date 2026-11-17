@@ -50,9 +50,9 @@ Assess whether a narrower, permitted scope can continue ordinary existing checks
 
 ### 3. Finish and archive
 
-A done ticket with no cleanup time is normally waiting for the whole run's retrospective, not an interrupted cleanup. `finish` validates delivery and retains every agent's turns. Record retro findings or a brief skip reason, then `archive` gathers the turns into evidence and cleans up together.
+A done ticket with no cleanup time is normally waiting for the whole run's retrospective, not an interrupted cleanup. `finish` validates delivery and retains every agent's turns. Record retro findings or a brief skip reason, then `archive` indexes the agents, deletes what they printed and cleans up together.
 
-If archive was interrupted, rerun `WL archive`. It reuses the saved evidence and resumes cleanup. Existing guards protect dirty and unmerged work; cancelled/replaced worktrees are retained for a separate decision while their tabs are closed. Read the retained-path list before deleting anything manually.
+If archive was interrupted, rerun `WL archive`. It reuses the saved agent index and resumes cleanup. Existing guards protect dirty and unmerged work; cancelled/replaced worktrees are retained for a separate decision while their tabs are closed. Read the retained-path list before deleting anything manually.
 
 ### 4. A final review in flight
 

@@ -2752,7 +2752,7 @@ function completeFinish(dir, s, phase, checks, minutes) {
   if (boundary) say(boundary);
   say(criteriaReport(s));
   say("Nothing was pushed or merged into the base; that is the user's call.");
-  say("Agent turns retained. Read the run evidence, assess retro, then archive. Use `evidence` to index the turn logs.");
+  say("Agent turns retained until archive. Read the run evidence, assess retro, then archive: archive keeps the run's records and deletes what the agents printed. Use `evidence` to index the turn logs.");
 }
 
 // Every agent the run started: replaced attempts, superseded reviewers and the final
@@ -2763,7 +2763,7 @@ function runAgents(s) {
 
 // One file per agent: each turn's prompt and everything its CLI printed, from the
 // turn files the run already holds, so nothing depends on a CLI keeping its sessions.
-function cmdEvidence(dir, s) {
+function cmdEvidence(dir, s, { transcripts = true } = {}) {
   const folder = join(dir, "evidence");
   if (s.finishedAt && existsSync(join(folder, "index.json"))) return say(`archived run: use the preserved evidence at ${folder}`);
   mkdirSync(folder, { recursive: true });
@@ -2771,6 +2771,9 @@ function cmdEvidence(dir, s) {
   const agents = runAgents(s);
   for (const a of agents) {
     const rec = s.agents[a.id];
+    const last = rec.turns.at(-1);
+    Object.assign(a, { provider: rec.provider, session: rec.session ?? (last ? turnMeta(last)?.session : null) ?? null, turns: rec.turns.length, capturedAt: now() });
+    if (!transcripts) continue;
     const file = `${encodeURIComponent(a.id)}.txt`;
     const turns = rec.turns.map((t) => {
       const f = turnFiles(t.base);
@@ -2779,14 +2782,13 @@ function cmdEvidence(dir, s) {
       return `=== turn ${t.n} · ${t.title} · started ${t.startedAt} · ${ended}\n--- prompt\n${read(f.prompt)}\n--- output\n${read(f.log)}\n`;
     });
     writeAtomic(join(folder, file), `${rec.provider} ${rec.role} for ${rec.task} (${rec.launch})\n\n${turns.join("\n")}`);
-    const last = rec.turns.at(-1);
-    Object.assign(a, { file, provider: rec.provider, session: rec.session ?? (last ? turnMeta(last)?.session : null) ?? null, turns: rec.turns.length, capturedAt: now() });
+    a.file = file;
   }
-  const index = { capturedAt: now(), completion: s.completion?.at || null, format: "agent-run turn files: each turn's prompt and its CLI's raw output; turns/ keeps the originals.", agents };
+  const index = { capturedAt: now(), completion: s.completion?.at || null, format: transcripts ? "agent-run turn files: each turn's prompt and its CLI's raw output; turns/ keeps the originals." : "the run's agents and attempts; archive keeps each turn's prompt and exit record and deletes what the agents printed.", agents };
   writeAtomic(join(folder, "index.json"), `${JSON.stringify(index, null, 2)}\n`);
   s.evidence = { completion: index.completion, capturedAt: index.capturedAt, path: join(folder, "index.json") };
   record(dir, s, "evidence", { agents: agents.length });
-  say(`saved ${agents.length} agent transcripts: ${folder}`);
+  say(transcripts ? `saved ${agents.length} agent transcripts: ${folder}` : `indexed ${agents.length} agents: ${folder}`);
 }
 
 function cmdRetro(dir, s, opts) {
@@ -2808,16 +2810,31 @@ function requireArchiveReady(s) {
   if (s.retro?.completion !== s.completion.at) fail("assess retro before archive: retro --file <report> or --skip --reason <why>");
 }
 
+// An archived run keeps its records: state, events, tickets, briefs, reports,
+// reviews, check receipts, retro, and each turn's prompt, spec and exit record.
+// What every agent printed is only read for retro, which comes before archive.
+function pruneTranscripts(dir, s) {
+  const files = [
+    ...Object.values(s.agents || {}).flatMap((a) => a.turns.flatMap((t) => [turnFiles(t.base).log, `${turnFiles(t.base).log}.tools.txt`])),
+    ...Object.keys(s.agents || {}).map((id) => join(dir, "evidence", `${encodeURIComponent(id)}.txt`)),
+  ].filter((f) => existsSync(f));
+  let bytes = 0;
+  for (const f of files) {
+    try { const size = statSync(f).size; rmSync(f, { force: true }); bytes += size; } catch (e) { say(`could not delete ${f} (${e.code || e.message})`); }
+  }
+  return bytes;
+}
+
 function cmdArchive(dir, s) {
   if (s.finishedAt) return say("already archived; run evidence is retained");
   requireArchiveReady(s);
   const agents = runAgents(s);
   for (const a of agents) requireIdle(a.id, "run agent", true);
   if (existsSync(s.integration.worktree)) checkIntegration(s);
-  // Snapshot every agent's turns before the first destructive cleanup. On an
-  // interrupted archive reuse that snapshot.
+  // Index every agent before the first destructive cleanup. On an interrupted
+  // archive reuse that index.
   if (!s.archiveStartedAt) {
-    cmdEvidence(dir, s);
+    cmdEvidence(dir, s, { transcripts: false });
     s.archiveStartedAt = now();
     record(dir, s, "archive-start");
   }
@@ -2856,10 +2873,11 @@ function cmdArchive(dir, s) {
   if (existsSync(s.integration.worktree)) git(s.repo, "worktree", "remove", s.integration.worktree);
   // The run's Rex session goes with it; every tab in it was the run's.
   if (s.rex?.session) host.killSession(s.rex.session);
+  const transcripts = pruneTranscripts(dir, s);
   s.finishedAt = now();
   s.retainedWorktrees = [...retained.values()];
-  record(dir, s, "archive", { retainedWorktrees: s.retainedWorktrees, scratchFreed: freed });
-  say(`archived. ${s.integration.branch} stays at ${short(s.integration.tip)}; evidence and retro remain in ${dir} (${megabytes(dirBytes(dir))}${freed ? `, after deleting ${megabytes(freed)} of scratch` : ""})`);
+  record(dir, s, "archive", { retainedWorktrees: s.retainedWorktrees, scratchFreed: freed, transcriptsFreed: transcripts });
+  say(`archived. ${s.integration.branch} stays at ${short(s.integration.tip)}; the run's records and retro remain in ${dir} (${megabytes(dirBytes(dir))}${freed || transcripts ? `, after deleting ${megabytes(freed + transcripts)} of scratch and agent output` : ""})`);
   if (retained.size) say(`unmerged or dirty work retained for your decision:\n${[...retained.values()].map((a) => `  ${a.worktree} (${a.branch})`).join("\n")}`);
 }
 

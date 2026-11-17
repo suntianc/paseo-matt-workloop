@@ -166,10 +166,10 @@ test("a ticket goes from dispatch to archive with every agent a turn in the run'
   const done = sb.state();
   assert.ok(done.finishedAt);
   assert.ok(sb.db().sessions.find((x) => x.id === done.rex.session).killed, "archive closes the run's Rex session");
-  const index = JSON.parse(readFileSync(join(sb.runDir, "evidence", "index.json"), "utf8"));
-  assert.equal(index.agents.length, 4); // executor, two reviewers, final reviewer
-  const transcript = readFileSync(join(sb.runDir, "evidence", `${t.agentId}.txt`), "utf8");
-  assert.match(transcript, /=== turn 1 · #01 exec a1[\s\S]*=== turn 2 · #01 exec a1 · 1[\s\S]*Fix S1/);
+  // Archive keeps the run's records and deletes what the agents printed.
+  const turn = done.agents[t.agentId].turns[0].base;
+  assert.ok(existsSync(`${turn}.prompt.md`) && existsSync(`${turn}.spec.json`));
+  assert.ok(!existsSync(`${turn}.log`), "agent output is deleted at archive");
 });
 
 test("no launch settings, an unknown provider, or a setting the CLI does not take refuses before anything is created", () => {

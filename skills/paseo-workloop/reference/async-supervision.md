@@ -22,7 +22,7 @@ For turn `n` of agent `<id>`, under `<run dir>/turns/`:
 | `<id>-<n>.log.tools.txt` | available full tool results for Devin, Codex and pi, when a result was emitted |
 | `<id>-<n>.json` | the conversation id as soon as it is known, then the exit code and end time |
 
-[agent-run.mjs](../scripts/agent-run.mjs) runs in the tab and writes these files. The tab formats Markdown and tool calls; DSH tool results show at most two lines. For other providers, Ctrl+O opens tool details while the turn runs and Esc returns to the transcript. After the turn, the tools file holds the available full results. `evidence` and `archive` gather every agent's turns into `evidence/<id>.txt`.
+[agent-run.mjs](../scripts/agent-run.mjs) runs in the tab and writes these files. The tab formats Markdown and tool calls; DSH tool results show at most two lines. For other providers, Ctrl+O opens tool details while the turn runs and Esc returns to the transcript. After the turn, the tools file holds the available full results. `evidence` gathers every agent's turns into `evidence/<id>.txt` for retro; `archive` deletes those copies and the turn logs.
 
 ## Waiting
 

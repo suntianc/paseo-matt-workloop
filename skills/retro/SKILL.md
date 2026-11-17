@@ -26,7 +26,7 @@ Use the requested session or run; default to the current one. For a workloop run
 
 When the [workloop-audit](../workloop-audit/SKILL.md) skill is installed, start a run's retro with `node <workloop-audit skill>/scripts/audit.mjs run <project>/<feature>`. It counts what the run's records show and flags what its rules expect but the records contradict. Answer every `check` flag in the retro, with its cause or why it was expected, and pass its reminder line, if it prints one, to the user. Without the skill, retro works as below.
 
-`node <workloop skill>/scripts/workloop.mjs --run <run> evidence` saves child activity transcripts and their IDs under `evidence/`. Archived runs keep those files. CLI activity may curate tool output; return to original sessions when the precise output matters. State missing evidence or uncertainty rather than filling gaps with a guessed cause.
+`node <workloop skill>/scripts/workloop.mjs --run <run> evidence` saves child activity transcripts and their IDs under `evidence/`. Archive deletes the transcripts and the turn logs, keeping the run's records, so read them before archiving. CLI activity may curate tool output; return to original sessions when the precise output matters. State missing evidence or uncertainty rather than filling gaps with a guessed cause.
 
 ## Output
 
@@ -44,4 +44,4 @@ Choose the smallest useful improvement at the earliest destination that fits, an
 
 For a run, save the output with `WL retro --file <report>`. At normal close, if nothing warrants retro, use `WL retro --skip --reason "<brief reason>"`. `WL` is the workloop script with `--run <run>`; it records the result without applying suggestions. A mid-run assessment does not replace the assessment after `finish`.
 
-After a completed run's assessment, `WL archive` can proceed without waiting for the user to choose improvements. Retro can be invoked again later using the retained evidence.
+After a completed run's assessment, `WL archive` can proceed without waiting for the user to choose improvements. Retro can be invoked again later from the run's records; what the agents printed is gone by then.

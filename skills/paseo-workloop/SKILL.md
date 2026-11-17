@@ -47,7 +47,7 @@ For interrupted operations or an unrecoverable conversation, read [recovery](ref
 
 ## Finish, retro and archive
 
-`finish` verifies delivery and retains every agent's turns. In a full run it accepts only the independent final reviewer's report for the current integration tip: a pass, or a `changes_requested` whose blocking findings the user let through. Assess the whole run for recurring problems or repeated wasted effort using [retro](../retro/SKILL.md). Record findings with `retro --file <report>`, or a brief no-retro decision with `retro --skip --reason <why>`. Then `archive` gathers every agent's turns into evidence and closes the run's Rex session. The user's decision on suggestions does not hold archival open.
+`finish` verifies delivery and retains every agent's turns. In a full run it accepts only the independent final reviewer's report for the current integration tip: a pass, or a `changes_requested` whose blocking findings the user let through. Assess the whole run for recurring problems or repeated wasted effort using [retro](../retro/SKILL.md). Record findings with `retro --file <report>`, or a brief no-retro decision with `retro --skip --reason <why>`. Then `archive` keeps the run's records and an agent index, deletes what the agents printed, and closes the run's Rex session. The user's decision on suggestions does not hold archival open.
 
 Users can request retro at any point, including during Quick or after archival. A mid-run retro covers evidence so far and does not stop execution. Retro produces findings and suggestions only; adopting them is a separate user decision.
 
