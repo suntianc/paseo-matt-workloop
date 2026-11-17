@@ -492,6 +492,9 @@ test("main all: --save writes one report, the next all compares, and run reminds
   const compared = await capture(() => main(["all"]));
   assert.match(compared, /compared with the check of \d{4}-\d{2}-\d{2} \(3 runs\):/);
   assert.match(compared, /  carried: 2 \(67%\) → 2 \(67%\)/);
+  // A narrowed check compares with the same project's saved runs only.
+  const other = await capture(() => main(["all", "--project", "other"]));
+  assert.match(other, /compared with the check of \d{4}-\d{2}-\d{2} \(0 runs\):/);
 
   // The check is newer than every completion, so `run` no longer reminds.
   const after = await capture(() => main(["run", "repo/feat"]));

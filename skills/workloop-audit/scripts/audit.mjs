@@ -601,7 +601,12 @@ export async function main(argv) {
       try { runs.push(await auditRun(project, feature)); } catch (error) { runs.push({ run: `${project}/${feature}`, error: error.message, tickets: [], final: { reReviews: [], rounds: 0 }, flags: [] }); }
     }
     const report = { schemaVersion: 2, at: new Date().toISOString(), runs: runs.length, totals: totals(runs.filter((r) => !r.error)), unreadable: runs.filter((r) => r.error).map((r) => ({ run: r.run, error: r.error })) };
-    const before = lastCheck();
+    const saved = lastCheck();
+    // A narrowed check compares with the same project's runs in the saved detail.
+    const before = !saved || !only ? saved
+      : saved.detail ? { ...saved, runs: saved.detail.filter((r) => r.run.startsWith(`${only}/`)).length,
+          totals: totals(saved.detail.filter((r) => r.run.startsWith(`${only}/`) && !r.error)) }
+      : null;
     if (flag("save")) {
       mkdirSync(AUDIT_DIR(), { recursive: true });
       writeFileSync(join(AUDIT_DIR(), `${report.at.replace(/[:.]/g, "-")}.json`), `${JSON.stringify({ ...report, detail: runs }, null, 2)}\n`);

@@ -34,7 +34,7 @@ Ledger checks use the requirement ledger's pure delivery/sync functions. A cance
 
 When the user asks how the workflow is doing, run the check in a session that did not orchestrate the runs it judges — a separate agent, so no orchestrator grades its own work.
 
-1. `AUDIT all` for the counts across runs, the change since the last saved check, and every `check` flag. Add `--project <name>` to narrow it.
+1. `AUDIT all` for the counts across runs, the change since the last saved check, and every `check` flag. Add `--project <name>` to narrow it; the comparison then uses that project's runs from the saved check.
 2. **Verify before concluding.** Read the records behind every `check` flag and sample each nonempty category. For review scope, use the brief issued for that round. For capacity, inspect actual files, report references, retention decisions and later cleanup receipts before suggesting any exact cleanup. For `carried`, compare both rows: old IDs may have been reused. A cell such as `yes → fixed` is ambiguous even though the gate parser counts it; exclude it from failed-rework conclusions until manually resolved. Say how many items you checked and how many held.
 3. Write the result for the user: raw counts, manual findings, explained items and false positives, with evidence. Compare with the last saved check and `$WORKLOOP_ROOT/.workloop-audit/baseline.md` when present, separating compatible measurements from changed counting rules. Older snapshots count ambiguous cells and hard links differently; their category shares are not a like-for-like trend. Suggestions are the user's to decide; change nothing.
 4. When the user accepts the result, `AUDIT all --save` keeps it as the point the next check compares against.
